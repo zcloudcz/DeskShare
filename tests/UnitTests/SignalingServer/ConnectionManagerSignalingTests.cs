@@ -1,4 +1,4 @@
-﻿using System.Net.WebSockets;
+using System.Net.WebSockets;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using DeskShare.SignalingServer.Services;
@@ -7,6 +7,18 @@ namespace DeskShare.UnitTests.SignalingServer;
 
 public class ConnectionManagerSignalingTests
 {
+    [Fact]
+    public void WebSocketToken_IsSingleUse_AndMapsBackToClientId()
+    {
+        var manager = CreateConnectionManager();
+
+        var token = manager.IssueWebSocketToken("server-1");
+
+        Assert.True(manager.ValidateAndConsumeToken(token, out var clientId));
+        Assert.Equal("server-1", clientId);
+        Assert.False(manager.ValidateAndConsumeToken(token, out _)); // second use must fail
+    }
+
     private ConnectionManager CreateConnectionManager()
     {
         var logger = Substitute.For<ILogger<ConnectionManager>>();

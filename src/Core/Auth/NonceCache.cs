@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 
 namespace DeskShare.Core.Auth;
 
@@ -115,12 +115,13 @@ public sealed class NonceCache : IDisposable
             // Force immediate cleanup before rejecting
             CleanupExpiredNonces(null);
 
-            // If still full after cleanup, reject (potential DoS attack)
+            // Still full after cleanup: reject this request instead of throwing.
+            // An exception here would propagate into the auth path and let a flood
+            // of bogus nonces knock out authentication for everyone.
             if (_usedNonces.Count >= _maxCacheSize)
             {
-                throw new InvalidOperationException(
-                    $"Nonce cache is full ({_maxCacheSize} entries). " +
-                    "Possible DoS attack or cleanup not keeping up with load.");
+                Interlocked.Increment(ref _totalNoncesProcessed);
+                return false;
             }
         }
 

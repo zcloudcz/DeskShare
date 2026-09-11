@@ -18,15 +18,15 @@
   <!-- NuGet packages shared by both WPF and Avalonia desktop clients -->
   <ItemGroup>
     <!-- Configuration & DI -->
-    <PackageReference Include="Microsoft.Extensions.Configuration" Version="9.0.10" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.11" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.11" />
 
     <!-- Logging with Serilog -->
     <PackageReference Include="Serilog" Version="4.3.0" />
 
     <!-- WebRTC video decoding -->
-    <PackageReference Include="SIPSorcery" Version="8.0.23" />
-    <PackageReference Include="SIPSorceryMedia.FFmpeg" Version="8.0.12" />
+    <PackageReference Include="SIPSorcery" Version="10.0.16" />
+    <PackageReference Include="SIPSorceryMedia.FFmpeg" Version="10.0.16" />
   </ItemGroup>
 
 </Project>

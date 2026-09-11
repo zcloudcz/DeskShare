@@ -1,4 +1,5 @@
 using System.Net.WebSockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading.RateLimiting;
@@ -63,6 +64,11 @@ builder.Services.AddHostedService<StunServer>();
 var turnEnabled = builder.Configuration.GetValue<bool>("Turn:Enabled", false);
 if (turnEnabled)
 {
+    // testuser/testpass would turn the relay into an open proxy — never allow it outside Development.
+    if (builder.Configuration.GetValue<bool>("Turn:EnableTestUser", false) && !builder.Environment.IsDevelopment())
+        throw new InvalidOperationException(
+            "Turn:EnableTestUser is only allowed in the Development environment.");
+
     builder.Services.AddSingleton(new TurnServerOptions
     {
         Port = builder.Configuration.GetValue<int>("Turn:Port", 3478),
@@ -516,7 +522,7 @@ app.MapGet("/", async (HttpContext context) =>
 // ============================================================
 // REGISTER ENDPOINT — rate limited
 // ============================================================
-app.MapPost("/register", async (HttpContext context, IServerSessionStorage sessionStorage) =>
+app.MapPost("/register", async (HttpContext context, IServerSessionStorage sessionStorage, ConnectionManager cm) =>
 {
     try
     {
@@ -531,6 +537,9 @@ app.MapPost("/register", async (HttpContext context, IServerSessionStorage sessi
 
         if (response.Success)
         {
+            // The sender connects to /signal right after registering. Without a token it would need
+            // AllowLegacyConnections, which is off by default, so hand it one here.
+            response.WebSocketToken = cm.IssueWebSocketToken(registration.ServerId);
             return Results.Ok(response);
         }
         else
@@ -626,7 +635,11 @@ IResult ValidateDiagnosticsAccess(HttpContext ctx)
     var providedKey = ctx.Request.Headers["X-Api-Key"].FirstOrDefault()
                    ?? ctx.Request.Query["apiKey"].FirstOrDefault();
 
-    if (string.IsNullOrEmpty(providedKey) || providedKey != diagnosticsApiKey)
+    // Constant-time comparison so response timing does not leak how many leading bytes matched.
+    if (string.IsNullOrEmpty(providedKey) ||
+        !CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(providedKey),
+            Encoding.UTF8.GetBytes(diagnosticsApiKey)))
         return Results.Unauthorized();
 
     return null!;

@@ -55,6 +55,19 @@ function getBaseUrl() {
     return `${url.protocol === 'wss:' ? 'https:' : 'http:'}//${url.host}`;
 }
 
+// Mirrors RequestSigningService.SignRequest on the server: HMAC-SHA256(passkey, "serverId|timestamp|nonce").
+// The server re-formats the parsed timestamp with .NET's round-trip format ("O"), which has 7 fractional
+// digits, so the 3-digit JS ISO string is padded with "0000" before "Z" to produce the same bytes.
+// crypto.subtle only exists in secure contexts (https/localhost); elsewhere we fall back to unsigned (legacy).
+async function signAuthRequest(serverId, passkey, timestamp, nonce) {
+    if (!crypto.subtle || !passkey) return null;
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey('raw', enc.encode(passkey), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const message = `${serverId}|${timestamp.replace('Z', '0000Z')}|${nonce}`;
+    const sig = await crypto.subtle.sign('HMAC', key, enc.encode(message));
+    return btoa(String.fromCharCode(...new Uint8Array(sig)));
+}
+
 async function authenticate() {
     const baseUrl = getBaseUrl();
     const serverId = document.getElementById('serverId').value;
@@ -67,12 +80,15 @@ async function authenticate() {
 
     clientId = clientId || crypto.randomUUID();
 
+    const timestamp = new Date().toISOString();
+    const nonce = crypto.randomUUID();
     const body = {
         ServerId: serverId,
         Passkey: passkey,
         ClientId: clientId,
-        Timestamp: new Date().toISOString(),
-        Nonce: crypto.randomUUID()
+        Timestamp: timestamp,
+        Nonce: nonce,
+        Signature: await signAuthRequest(serverId, passkey, timestamp, nonce)
     };
 
     updateStatus('Authenticating...', 'info');
@@ -97,13 +113,14 @@ async function connect() {
         const authResult = await authenticate();
         if (!authResult) return;
 
-        if (authResult.IceServers && authResult.IceServers.length > 0) {
-            config = { iceServers: authResult.IceServers };
+        // HTTP JSON from the minimal API is camelCase (WebSocket signaling messages stay PascalCase).
+        if (authResult.iceServers && authResult.iceServers.length > 0) {
+            config = { iceServers: authResult.iceServers };
         }
 
         const signalingUrl = document.getElementById('signalingUrl').value;
         const wsUrl = new URL(signalingUrl);
-        wsUrl.searchParams.set('token', authResult.WebSocketToken);
+        wsUrl.searchParams.set('token', authResult.webSocketToken);
 
         updateStatus('Connecting to signaling server...', 'info');
         updateConnectionState('Connecting');

@@ -1,4 +1,4 @@
-﻿namespace DeskShare.Core.Auth;
+namespace DeskShare.Core.Auth;
 
 /// <summary>
 /// Message sent from Server to SignalingServer to register/update authentication details.
@@ -61,6 +61,12 @@ public sealed class ServerRegistrationResponse
     /// The registered server ID (echo back for confirmation).
     /// </summary>
     public string? ServerId { get; set; }
+
+    /// <summary>
+    /// One-time, short-lived token the sender must present on the /signal WebSocket upgrade
+    /// (query parameter <c>token</c>). Issued only on successful registration.
+    /// </summary>
+    public string? WebSocketToken { get; set; }
 }
 
 /// <summary>

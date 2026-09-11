@@ -1,4 +1,6 @@
-﻿namespace DeskShare.Core.Models;
+using System.Buffers;
+
+namespace DeskShare.Core.Models;
 
 /// <summary>
 /// Represents a captured frame from screen capture system.
@@ -32,6 +34,7 @@ public sealed class Frame : IDisposable
     public int Stride { get; }
 
     private bool _disposed;
+    private readonly bool _pooled;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="Frame"/> class.
@@ -62,6 +65,20 @@ public sealed class Frame : IDisposable
     }
 
     /// <summary>
+    /// Creates a frame whose <paramref name="data"/> was rented from <see cref="ArrayPool{T}.Shared"/>.
+    /// The array may be longer than Stride * Height; consumers must use Stride/Height, not Data.Length.
+    /// Dispose returns the array to the pool.
+    /// </summary>
+    public static Frame FromPooled(int width, int height, byte[] data, int stride, DateTime timestamp)
+        => new(width, height, data, stride, timestamp, pooled: true);
+
+    private Frame(int width, int height, byte[] data, int stride, DateTime timestamp, bool pooled)
+        : this(width, height, data, stride, timestamp)
+    {
+        _pooled = pooled;
+    }
+
+    /// <summary>
     /// Releases all resources used by the Frame.
     /// </summary>
     public void Dispose()
@@ -69,7 +86,9 @@ public sealed class Frame : IDisposable
         if (_disposed)
             return;
 
-        // Data array will be garbage collected
         _disposed = true;
+
+        if (_pooled)
+            ArrayPool<byte>.Shared.Return(Data);
     }
 }

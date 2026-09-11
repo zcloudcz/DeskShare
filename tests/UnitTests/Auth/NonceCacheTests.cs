@@ -1,4 +1,4 @@
-﻿using DeskShare.Core.Auth;
+using DeskShare.Core.Auth;
 using Xunit;
 
 namespace DeskShare.UnitTests.Auth;
@@ -215,7 +215,7 @@ public class NonceCacheTests
     }
 
     [Fact]
-    public void TryUseNonce_WhenCacheFull_ThrowsInvalidOperationException()
+    public void TryUseNonce_WhenCacheFull_ReturnsFalse()
     {
         // Arrange - very small cache for testing
         using var cache = new NonceCache(maxCacheSize: 5, nonceTtl: TimeSpan.FromHours(1));
@@ -226,9 +226,8 @@ public class NonceCacheTests
             cache.TryUseNonce($"nonce{i}");
         }
 
-        // Act & Assert - 6th nonce should throw (cache full, nothing to cleanup)
-        Assert.Throws<InvalidOperationException>(() =>
-            cache.TryUseNonce("nonce-overflow"));
+        // Act & Assert - 6th nonce is rejected (cache full, nothing to cleanup), no exception
+        Assert.False(cache.TryUseNonce("nonce-overflow"));
     }
 
     [Fact]

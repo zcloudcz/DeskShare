@@ -1,4 +1,4 @@
-﻿using DeskShare.Core.Models;
+using DeskShare.Core.Models;
 
 namespace DeskShare.UnitTests.Models;
 
@@ -7,6 +7,24 @@ namespace DeskShare.UnitTests.Models;
 /// </summary>
 public sealed class FrameTests
 {
+    [Fact]
+    public void FromPooled_Dispose_ReturnsBufferToPool()
+    {
+        // Arrange: rent a buffer big enough for a 2x2 BGRA frame; pool may hand back a larger array
+        var rented = System.Buffers.ArrayPool<byte>.Shared.Rent(16);
+        var frame = Frame.FromPooled(2, 2, rented, 8, DateTime.UtcNow);
+        Assert.Same(rented, frame.Data);
+
+        // Act
+        frame.Dispose();
+        frame.Dispose(); // idempotent - must not double-return
+
+        // Assert: the very next rent of the same size hands back the returned array
+        var again = System.Buffers.ArrayPool<byte>.Shared.Rent(16);
+        Assert.Same(rented, again);
+        System.Buffers.ArrayPool<byte>.Shared.Return(again);
+    }
+
     [Fact]
     public void Constructor_ValidParameters_CreatesFrame()
     {

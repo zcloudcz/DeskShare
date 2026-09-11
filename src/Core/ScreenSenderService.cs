@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using DeskShare.Core.WebRTC;
 using DeskShare.Core.Conversion;
@@ -27,6 +27,9 @@ public class ScreenSenderService : IHostedService, IDisposable
     private WebRTCSessionWithInput? _webrtcSessionWithInput;
     private CapturePipeline? _pipeline;
     private bool _disposed;
+
+    // One-time WebSocket upgrade token received from /register (see ServerRegistrationResponse)
+    private string? _webSocketToken;
 
     // Passkey rotation fields
     private string? _currentPasskey;
@@ -173,7 +176,7 @@ public class ScreenSenderService : IHostedService, IDisposable
                     width,
                     height,
                     _configuration.TargetFps,
-                    _configuration.SignalingServerUrl,
+                    BuildSignalingUrl(),
                     _configuration.ServerId);
 
                 if (!initialized)
@@ -217,7 +220,7 @@ public class ScreenSenderService : IHostedService, IDisposable
                     width,
                     height,
                     _configuration.TargetFps,
-                    _configuration.SignalingServerUrl,
+                    BuildSignalingUrl(),
                     _configuration.ServerId);
 
                 if (!initialized)
@@ -309,6 +312,19 @@ public class ScreenSenderService : IHostedService, IDisposable
     }
 
     /// <summary>
+    /// Signaling URL with the one-time token from registration appended, if we have one.
+    /// The signaler adds its own <c>clientId</c> parameter; the server prefers <c>token</c> when both are present.
+    /// </summary>
+    private string BuildSignalingUrl()
+    {
+        if (string.IsNullOrEmpty(_webSocketToken))
+            return _configuration.SignalingServerUrl;
+
+        var separator = _configuration.SignalingServerUrl.Contains('?') ? "&" : "?";
+        return $"{_configuration.SignalingServerUrl}{separator}token={Uri.EscapeDataString(_webSocketToken)}";
+    }
+
+    /// <summary>
     /// Registers this server with the SignalingServer so clients can discover and authenticate.
     /// </summary>
     private async Task RegisterWithSignalingServerAsync()
@@ -348,6 +364,7 @@ public class ScreenSenderService : IHostedService, IDisposable
                 var result = await response.Content.ReadFromJsonAsync<ServerRegistrationResponse>();
                 if (result?.Success == true)
                 {
+                    _webSocketToken = result.WebSocketToken;
                     _logger.LogInformation("Successfully registered with SignalingServer | ServerId: {ServerId}", ServerId);
                 }
                 else

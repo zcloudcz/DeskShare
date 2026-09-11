@@ -7,15 +7,20 @@
 
 ---
 
+> **Stav 2026-09-11:** #0, #1, #2, #3, #5, #7 hotovo (viz git log). #4 (dedup Core ↔ ScreenSenderApp)
+> a #8/#9 zůstávají. Navíc opraveno: SIPSorcery 8.0.23 → 10.0.16 (2× known DoS CVE, blokovalo build),
+> sender dostává WebSocket token z `/register` (bez toho `AllowLegacyConnections: false` = Production
+> nefunkční), WebClient posílá HMAC podpis + čte camelCase odpovědi, Development Kestrel port kolize.
+
 ## 🔴 Kritické (opravit hned)
 
-### 0. Chybí git repozitář
+### 0. Chybí git repozitář — ✅ hotovo 2026-09-11
 Složka není git repo. Žádná historie, žádný rollback, žádný CI.
 
 **Řešení:** `git init`, initial commit, push na GitHub. Bez toho je každá další
 změna hazard.
 
-### 1. Timing-unsafe porovnání API klíče
+### 1. Timing-unsafe porovnání API klíče — ✅ hotovo 2026-09-11
 **Kde:** `src/SignalingServer/Program.cs:629`
 
 ```csharp
@@ -29,7 +34,7 @@ správně používá `CryptographicOperations.FixedTimeEquals` — tady ne.
 **Řešení:** porovnat přes `CryptographicOperations.FixedTimeEquals` na UTF8
 bytech obou hodnot. ~5 minut práce.
 
-### 2. Nebezpečné defaulty v appsettings.json
+### 2. Nebezpečné defaulty v appsettings.json — ✅ hotovo 2026-09-11
 **Kde:** `src/SignalingServer/appsettings.json:52-53`
 
 ```json
@@ -47,7 +52,7 @@ s jiným než Production environmentem (Staging, zapomenutá env proměnná…).
 **Řešení:** otočit defaulty na bezpečné hodnoty v base configu;
 `appsettings.Development.json` ať si nebezpečné chování explicitně povolí.
 
-### 3. Per-frame alokace v capture pipeline
+### 3. Per-frame alokace v capture pipeline — ✅ hotovo 2026-09-11
 **Kde:** `src/Core/Platforms/Windows/DesktopDuplicator.cs:209`
 (+ duplikát `src/ScreenSenderApp/Capture/DesktopDuplicator.cs:209`)
 
@@ -90,7 +95,7 @@ konfigurací, ne konstantou.
 
 ## 🟠 Vysoké
 
-### 5. NonceCache hází výjimku při zaplnění (DoS)
+### 5. NonceCache hází výjimku při zaplnění (DoS) — ✅ hotovo 2026-09-11
 **Kde:** `src/Core/Auth/NonceCache.cs:113-125`
 
 Útočník floodem zaplní nonce cache → `InvalidOperationException` v auth path
@@ -105,7 +110,7 @@ konfigurací, ne konstantou.
 
 **Řešení:** přesunout inline skripty/styly do souborů, případně nonce-based CSP.
 
-### 7. TURN test user testuser/testpass
+### 7. TURN test user testuser/testpass — ✅ hotovo 2026-09-11
 **Kde:** `src/Turn/TurnServer.cs:35-39`, `appsettings.Development.json` má
 `EnableTestUser: true`.
 

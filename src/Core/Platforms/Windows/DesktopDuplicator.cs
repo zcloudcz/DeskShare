@@ -1,4 +1,5 @@
-﻿using DeskShare.Core.Interfaces;
+using System.Buffers;
+using DeskShare.Core.Interfaces;
 using DeskShare.Core.Models;
 using Serilog;
 using Vortice.Direct3D11;
@@ -206,7 +207,9 @@ public sealed class DesktopDuplicator : IScreenCapturer
             {
                 // Calculate data size
                 var dataSize = (int)mappedResource.RowPitch * Height;
-                var data = new byte[dataSize];
+                // Rent instead of allocate: a fresh ~8 MB array per frame at 30 fps lands on the LOH
+                // and causes gen2 GC stalls. Frame.Dispose (called by the pipeline) returns it.
+                var data = ArrayPool<byte>.Shared.Rent(dataSize);
 
                 // Copy data from mapped memory
                 unsafe
@@ -219,7 +222,7 @@ public sealed class DesktopDuplicator : IScreenCapturer
                 }
 
                 // Create Frame object with captured data
-                frame = new Frame(
+                frame = Frame.FromPooled(
                     Width,
                     Height,
                     data,
