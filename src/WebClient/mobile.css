@@ -1,0 +1,286 @@
+/**
+ * Mobile & Responsive Styles for DeskShare PWA
+ *
+ * Provides touch-friendly controls, responsive layout,
+ * and mobile-optimized video viewing.
+ *
+ * For junior developers:
+ * - Media queries (@media) apply styles only when screen matches the condition.
+ * - "max-width: 768px" targets tablets and phones in portrait.
+ * - "max-width: 480px" targets small phones.
+ * - touch-action CSS controls how the browser handles touch gestures.
+ * - -webkit-tap-highlight-color removes the blue tap flash on mobile browsers.
+ */
+
+/* ============================================
+   BASE RESPONSIVE OVERRIDES
+   ============================================ */
+
+/* Tablet and smaller (portrait iPad, large phones) */
+@media (max-width: 768px) {
+    body {
+        padding: 10px;
+    }
+
+    h1 {
+        font-size: 1.3rem;
+        margin: 10px 0;
+    }
+
+    /* Stack label and input vertically on mobile */
+    label {
+        display: block;
+        width: 100%;
+        margin-bottom: 5px;
+    }
+
+    input[type="text"] {
+        width: 100%;
+        box-sizing: border-box;
+        font-size: 16px; /* Prevents iOS zoom on focus */
+    }
+
+    /* Make buttons full-width and touch-friendly */
+    .control-group {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    button {
+        flex: 1 1 auto;
+        min-width: 100px;
+        min-height: 44px; /* Apple's recommended minimum touch target */
+        font-size: 14px;
+        margin-right: 0;
+        -webkit-tap-highlight-color: transparent;
+    }
+
+    /* Video container takes full width */
+    .video-container {
+        min-height: 250px;
+        border-radius: 4px;
+    }
+
+    video {
+        width: 100%;
+        height: auto;
+    }
+
+    /* Stats grid: 2 columns on tablet */
+    .stats {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+        padding: 10px;
+    }
+
+    .stats-grid {
+        grid-template-columns: 1fr;
+        gap: 10px;
+    }
+
+    .stat-value {
+        font-size: 18px;
+    }
+
+    /* Keyboard shortcuts grid: single column on mobile */
+    .keyboard-shortcuts {
+        grid-template-columns: 1fr;
+    }
+
+    /* Info box adjustments */
+    .info-box {
+        padding: 10px;
+        font-size: 14px;
+    }
+}
+
+/* Small phones */
+@media (max-width: 480px) {
+    body {
+        padding: 5px;
+    }
+
+    h1 {
+        font-size: 1.1rem;
+    }
+
+    .controls {
+        padding: 12px;
+    }
+
+    /* Stack buttons vertically on small screens */
+    .control-group {
+        flex-direction: column;
+    }
+
+    button {
+        width: 100%;
+        min-height: 48px;
+        font-size: 15px;
+    }
+
+    .video-container {
+        min-height: 200px;
+    }
+
+    /* Stats: single column on small phones */
+    .stats {
+        grid-template-columns: 1fr;
+    }
+
+    .stat-item {
+        padding: 5px 0;
+    }
+
+    .stat-value {
+        font-size: 16px;
+    }
+
+    .stat-label {
+        font-size: 11px;
+    }
+}
+
+/* ============================================
+   TOUCH-SPECIFIC STYLES
+   ============================================ */
+
+/* Only apply touch styles on devices that support touch */
+@media (pointer: coarse) {
+    /* Prevent text selection while controlling remote desktop */
+    .video-container.control-active {
+        user-select: none;
+        -webkit-user-select: none;
+        /* Prevent browser gestures on the video (scroll, zoom, etc.) */
+        touch-action: none;
+    }
+
+    /* Show cursor on touch devices (desktop hides it during control) */
+    .video-container.control-active video {
+        cursor: default;
+    }
+
+    /* Larger touch targets for interactive elements */
+    button {
+        min-height: 48px;
+        padding: 12px 20px;
+    }
+
+    input[type="text"] {
+        min-height: 44px;
+        padding: 10px 12px;
+    }
+
+    /* Remove hover effects on touch devices (they cause sticky states) */
+    button:hover {
+        background: #4a9eff;
+    }
+
+    button.success:hover {
+        background: #4caf50;
+    }
+
+    button.warning:hover {
+        background: #ff9800;
+    }
+
+    button:disabled:hover {
+        background: #666;
+    }
+}
+
+/* ============================================
+   LANDSCAPE ORIENTATION ON MOBILE
+   ============================================ */
+
+/* Landscape phone: maximize video area */
+@media (max-height: 500px) and (orientation: landscape) {
+    body {
+        padding: 5px;
+    }
+
+    h1 {
+        display: none; /* Hide title to save space */
+    }
+
+    .controls {
+        padding: 8px;
+        margin-bottom: 5px;
+    }
+
+    /* Compact controls in landscape */
+    .control-group {
+        display: flex;
+        flex-direction: row;
+        gap: 5px;
+    }
+
+    label {
+        display: none; /* Hide labels in landscape to save space */
+    }
+
+    input[type="text"] {
+        flex: 1;
+        min-width: 0;
+    }
+
+    button {
+        min-height: 36px;
+        padding: 6px 12px;
+        font-size: 13px;
+    }
+
+    /* Video takes most of the screen */
+    .video-container {
+        min-height: 0;
+        height: calc(100vh - 120px);
+    }
+
+    /* Hide stats in landscape to maximize video */
+    .stats,
+    .stats-grid,
+    .info-box {
+        display: none;
+    }
+}
+
+/* ============================================
+   PWA STANDALONE MODE
+   ============================================ */
+
+/* When running as installed PWA (no browser chrome) */
+@media (display-mode: standalone) {
+    body {
+        /* Add safe area insets for notched phones (iPhone X+) */
+        padding-top: env(safe-area-inset-top, 10px);
+        padding-bottom: env(safe-area-inset-bottom, 10px);
+        padding-left: env(safe-area-inset-left, 10px);
+        padding-right: env(safe-area-inset-right, 10px);
+    }
+
+    /* Slightly larger video in standalone mode */
+    .video-container {
+        border-radius: 0;
+    }
+}
+
+/* ============================================
+   FULLSCREEN MODE OVERRIDES
+   ============================================ */
+
+/* When video container is in fullscreen */
+.video-container:fullscreen,
+.video-container:-webkit-full-screen {
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.video-container:fullscreen video,
+.video-container:-webkit-full-screen video {
+    max-width: 100vw;
+    max-height: 100vh;
+    object-fit: contain;
+}

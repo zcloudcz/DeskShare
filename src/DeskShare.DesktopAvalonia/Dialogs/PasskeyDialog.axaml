@@ -1,0 +1,84 @@
+<!--
+    Passkey input dialog - replaces Microsoft.VisualBasic.Interaction.InputBox.
+    In the WPF project, InputBox was used to prompt for passkey when connecting to saved servers.
+    Avalonia doesn't have InputBox, so we create a proper dialog for it.
+-->
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="DeskShare.DesktopAvalonia.Dialogs.PasskeyDialog"
+        Title="Passkey Required"
+        Height="220" Width="450"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        Background="#F5F5F5"
+        ShowInTaskbar="False">
+
+    <Window.Styles>
+        <Style Selector="Button.dialogButton">
+            <Setter Property="Background" Value="#0078D4"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="20,10"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="MinWidth" Value="100"/>
+            <Setter Property="CornerRadius" Value="4"/>
+        </Style>
+        <Style Selector="Button.dialogButton:pointerover">
+            <Setter Property="Background" Value="#005A9E"/>
+        </Style>
+
+        <Style Selector="Button.cancelButton">
+            <Setter Property="Background" Value="#F0F0F0"/>
+            <Setter Property="Foreground" Value="#333333"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="20,10"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="MinWidth" Value="100"/>
+            <Setter Property="CornerRadius" Value="4"/>
+        </Style>
+        <Style Selector="Button.cancelButton:pointerover">
+            <Setter Property="Background" Value="#E0E0E0"/>
+        </Style>
+    </Window.Styles>
+
+    <Border Background="White"
+            BorderBrush="#E0E0E0"
+            BorderThickness="1"
+            CornerRadius="8"
+            Margin="20"
+            Padding="25">
+        <StackPanel>
+            <TextBlock x:Name="PromptText"
+                     Text="Enter the current 9-character passkey from the server:"
+                     FontSize="14"
+                     Foreground="#666666"
+                     TextWrapping="Wrap"
+                     Margin="0,0,0,15"/>
+
+            <TextBox x:Name="PasskeyTextBox"
+                   Padding="10,8"
+                   FontSize="16"
+                   FontFamily="Consolas"
+                   MaxLength="11"
+                   BorderBrush="#CCCCCC"
+                   BorderThickness="1"
+                   Watermark="XXX-XXX-XXX"
+                   Margin="0,0,0,20"
+                   KeyDown="PasskeyTextBox_KeyDown"/>
+
+            <Grid ColumnDefinitions="*,10,*">
+                <Button Grid.Column="0"
+                      Content="OK"
+                      Classes="dialogButton"
+                      Click="Ok_Click"/>
+
+                <Button Grid.Column="2"
+                      Content="Cancel"
+                      Classes="cancelButton"
+                      Click="Cancel_Click"/>
+            </Grid>
+        </StackPanel>
+    </Border>
+</Window>

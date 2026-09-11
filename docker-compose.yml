@@ -1,0 +1,51 @@
+# Docker Compose for DeskShare SignalingServer + CoTURN
+# Usage:
+#   docker compose up -d        # Start all services in background
+#   docker compose logs -f      # Follow logs from all services
+#   docker compose down         # Stop and remove containers
+
+version: '3.8'
+
+services:
+  # SignalingServer: WebSocket signaling + static WebClient serving
+  signaling-server:
+    build: .
+    container_name: deskshare-signaling
+    ports:
+      # HTTPS signaling port (WebSocket + REST API)
+      - "5151:5151"
+      # Additional service port (metrics, etc.)
+      - "9090:9090"
+    environment:
+      # Run in Production mode (disables developer exception pages, etc.)
+      - ASPNETCORE_ENVIRONMENT=Production
+      # Listen on HTTPS on port 5151 inside the container
+      - ASPNETCORE_URLS=https://+:5151
+    volumes:
+      # Persist logs outside the container for debugging
+      - ./logs:/app/logs
+      # Mount TLS certificates as read-only (for HTTPS)
+      - ./certs:/app/certs:ro
+    restart: unless-stopped
+    depends_on:
+      - coturn
+
+  # CoTURN: TURN/STUN server for NAT traversal
+  # Required when peers are behind firewalls or symmetric NATs.
+  coturn:
+    image: coturn/coturn:latest
+    container_name: deskshare-coturn
+    # Host networking is required for TURN to work correctly with
+    # UDP relay ports and candidate discovery.
+    network_mode: host
+    volumes:
+      # Mount custom TURN server configuration (read-only)
+      - ./docker/coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+      # Persist TURN server logs
+      - ./docker/coturn/logs:/var/log/coturn
+    environment:
+      # TURN credentials — MUST be set via .env file or environment variables
+      - TURN_USER=${TURN_USER:?TURN_USER must be set}
+      - TURN_PASSWORD=${TURN_PASSWORD:?TURN_PASSWORD must be set}
+    restart: unless-stopped
+    command: ["-c", "/etc/coturn/turnserver.conf"]

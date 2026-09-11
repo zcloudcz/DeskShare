@@ -1,0 +1,47 @@
+# CI/CD Pipeline: Build and Test
+# Runs on every push to main and on pull requests.
+# Uses windows-latest because DXGI Desktop Duplication tests require Windows.
+
+name: Build and Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_requests:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+
+    steps:
+      # Step 1: Check out the repository source code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step 2: Install .NET 8 SDK (required for building the solution)
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # Step 3: Restore NuGet packages for all projects in the solution
+      - name: Restore dependencies
+        run: dotnet restore DeskShare.sln
+
+      # Step 4: Build the entire solution in Release configuration
+      - name: Build solution
+        run: dotnet build DeskShare.sln --configuration Release --no-restore
+
+      # Step 5: Run all unit and integration tests, output results in TRX format
+      - name: Run tests
+        run: dotnet test DeskShare.sln --configuration Release --no-build --logger trx --results-directory TestResults
+
+      # Step 6: Upload test results as a build artifact (useful for debugging failed tests)
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: TestResults/
+          retention-days: 30

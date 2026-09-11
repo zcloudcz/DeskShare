@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#4a9eff">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="DeskShare">
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" type="image/svg+xml" href="icons/icon-192.svg">
+    <link rel="apple-touch-icon" href="icons/icon-192.svg">
+    <title>DeskShare WebClient</title>
+    <link rel="stylesheet" href="mobile.css">
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a1a;
+            color: #fff;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            text-align: center;
+            color: #4a9eff;
+        }
+
+        .controls {
+            background: #2a2a2a;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: inline-block;
+            width: 150px;
+            font-weight: 600;
+        }
+
+        input[type="text"] {
+            padding: 8px 12px;
+            border: 1px solid #444;
+            border-radius: 4px;
+            background: #333;
+            color: #fff;
+            width: 300px;
+        }
+
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            background: #4a9eff;
+            color: #fff;
+            font-weight: 600;
+            cursor: pointer;
+            margin-right: 10px;
+            transition: background 0.3s;
+        }
+
+        button:hover {
+            background: #357abd;
+        }
+
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+
+        .status.info {
+            background: #1e4d7b;
+            border-left: 4px solid #4a9eff;
+        }
+
+        .status.success {
+            background: #1e5c1e;
+            border-left: 4px solid #4caf50;
+        }
+
+        .status.error {
+            background: #7b1e1e;
+            border-left: 4px solid #f44336;
+        }
+
+        .video-container {
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            text-align: center;
+            min-height: 400px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        video {
+            max-width: 100%;
+            height: auto;
+        }
+
+        .placeholder {
+            color: #666;
+            font-size: 18px;
+        }
+
+        .stats {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: #888;
+            text-transform: uppercase;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #4a9eff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🖥️ RemoteDesktop WebClient</h1>
+
+        <div class="controls">
+            <div class="control-group">
+                <label for="signalingUrl">Signaling Server:</label>
+                <input type="text" id="signalingUrl" value="wss://localhost:5151/signal" />
+            </div>
+
+            <div class="control-group">
+                <label for="serverId">Server ID:</label>
+                <input type="text" id="serverId" value="" placeholder="Paste Server ID from ScreenSenderApp console" />
+            </div>
+            <div class="control-group">
+                <label for="passkey">Passkey:</label>
+                <input type="text" id="passkey" value="" placeholder="XXX-XXX-XXX" />
+                <small style="display: block; margin-left: 150px; color: #ff9800;">
+                    <strong>⚠️ IMPORTANT:</strong> Copy the full Server ID GUID from the ScreenSenderApp console window and paste it here before connecting.
+                </small>
+            </div>
+
+            <div class="control-group">
+                <button id="connectBtn" onclick="connect()">Connect</button>
+                <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+                <button id="fullscreenBtn" onclick="toggleFullscreen()" disabled>Fullscreen</button>
+            </div>
+
+            <div id="status" class="status info" style="display: none;">
+                <strong>Status:</strong> <span id="statusText">Ready</span>
+            </div>
+        </div>
+
+        <div class="video-container" id="videoContainer">
+            <video id="remoteVideo" autoplay playsinline></video>
+            <div id="placeholder" class="placeholder">No video stream. Click Connect to start.</div>
+        </div>
+
+        <div class="stats">
+            <div class="stat-item">
+                <div class="stat-label">Connection</div>
+                <div class="stat-value" id="connectionState">Disconnected</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Client ID</div>
+                <div class="stat-value" id="clientId" style="font-size: 16px;">-</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">WebRTC State</div>
+                <div class="stat-value" id="webrtcState">New</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Bitrate</div>
+                <div class="stat-value" id="bitrate">- Kbps</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Framerate</div>
+                <div class="stat-value" id="fps">- fps</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Packet Loss</div>
+                <div class="stat-value" id="packetLoss">-%</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Latency (RTT)</div>
+                <div class="stat-value" id="latency">- ms</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="client.js"></script>
+    <script>
+        // Register service worker for PWA offline support
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('service-worker.js')
+                .then((reg) => console.log('[PWA] Service worker registered, scope:', reg.scope))
+                .catch((err) => console.warn('[PWA] Service worker registration failed:', err));
+        }
+    </script>
+</body>
+</html>

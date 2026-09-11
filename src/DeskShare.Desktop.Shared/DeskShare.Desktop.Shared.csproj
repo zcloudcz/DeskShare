@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Target net8.0 for cross-platform compatibility (used by both WPF and Avalonia projects) -->
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Required for unsafe memory operations in VideoSink frame rendering -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <!-- References to shared project libraries -->
+  <ItemGroup>
+    <ProjectReference Include="..\Core\DeskShare.Core.csproj" />
+    <ProjectReference Include="..\SignalingServer\DeskShare.SignalingServer.csproj" />
+  </ItemGroup>
+
+  <!-- NuGet packages shared by both WPF and Avalonia desktop clients -->
+  <ItemGroup>
+    <!-- Configuration & DI -->
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="9.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.10" />
+
+    <!-- Logging with Serilog -->
+    <PackageReference Include="Serilog" Version="4.3.0" />
+
+    <!-- WebRTC video decoding -->
+    <PackageReference Include="SIPSorcery" Version="8.0.23" />
+    <PackageReference Include="SIPSorceryMedia.FFmpeg" Version="8.0.12" />
+  </ItemGroup>
+
+</Project>

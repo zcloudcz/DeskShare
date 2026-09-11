@@ -1,0 +1,168 @@
+<!--
+    Fullscreen projection window for remote desktop viewing.
+    Avalonia equivalent of WPF's ProjectionWindow.xaml.
+
+    Key changes:
+    - xmlns changed to Avalonia namespace
+    - Image element is the same in Avalonia
+    - ProgressBar is the same in Avalonia
+    - WindowState="Maximized" → same in Avalonia
+    - KeyDown event handler → same syntax
+    - Cursor="Hand" → same in Avalonia
+-->
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="DeskShare.DesktopAvalonia.Windows.ProjectionWindow"
+        Title="DeskShare - Viewer"
+        Height="800" Width="1280"
+        WindowState="Maximized"
+        Background="Black"
+        KeyDown="Window_KeyDown">
+
+    <Grid>
+        <!-- Video Display Area -->
+        <Border x:Name="VideoContainer"
+                Background="Black"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Stretch">
+            <Grid>
+                <!-- Video Image Display -->
+                <Border Background="#1E1E1E"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center">
+                    <Image x:Name="VideoImage"
+                         Stretch="Uniform"/>
+                </Border>
+
+                <!-- Connection Status Overlay -->
+                <Border x:Name="ConnectionStatusOverlay"
+                      Background="#CC000000"
+                      HorizontalAlignment="Center"
+                      VerticalAlignment="Center"
+                      Padding="40"
+                      CornerRadius="8"
+                      IsVisible="True">
+                    <StackPanel>
+                        <TextBlock x:Name="StatusText"
+                                 Text="Connecting to server..."
+                                 FontSize="24"
+                                 Foreground="White"
+                                 HorizontalAlignment="Center"
+                                 Margin="0,0,0,15"/>
+
+                        <ProgressBar IsIndeterminate="True"
+                                   Width="300"
+                                   Height="6"
+                                   Background="#444444"
+                                   Foreground="#0078D4"/>
+
+                        <TextBlock x:Name="ServerIdText"
+                                 FontSize="14"
+                                 Foreground="#CCCCCC"
+                                 HorizontalAlignment="Center"
+                                 Margin="0,15,0,0"
+                                 FontFamily="Consolas"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- Top Toolbar -->
+                <Border x:Name="TopToolbar"
+                      Background="#CC1E1E1E"
+                      Height="50"
+                      VerticalAlignment="Top"
+                      IsVisible="False">
+                    <Grid Margin="15,0" ColumnDefinitions="Auto,*,Auto">
+                        <!-- Connection Info -->
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="Connected to:"
+                                     Foreground="White"
+                                     FontSize="14"
+                                     VerticalAlignment="Center"
+                                     Margin="0,0,10,0"/>
+                            <TextBlock x:Name="ConnectedServerIdText"
+                                     Foreground="#0078D4"
+                                     FontSize="14"
+                                     FontFamily="Consolas"
+                                     FontWeight="Bold"
+                                     VerticalAlignment="Center"/>
+                        </StackPanel>
+
+                        <!-- Stats Display -->
+                        <StackPanel Grid.Column="1"
+                                  Orientation="Horizontal"
+                                  HorizontalAlignment="Center"
+                                  VerticalAlignment="Center">
+                            <Border Background="#333333"
+                                  CornerRadius="4"
+                                  Padding="10,5"
+                                  Margin="5,0">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="FPS: " Foreground="#CCCCCC" FontSize="12"/>
+                                    <TextBlock x:Name="FpsText" Text="30" Foreground="White" FontSize="12" FontWeight="Bold"/>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Background="#333333"
+                                  CornerRadius="4"
+                                  Padding="10,5"
+                                  Margin="5,0">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="Latency: " Foreground="#CCCCCC" FontSize="12"/>
+                                    <TextBlock x:Name="LatencyText" Text="45ms" Foreground="White" FontSize="12" FontWeight="Bold"/>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Background="#333333"
+                                  CornerRadius="4"
+                                  Padding="10,5"
+                                  Margin="5,0">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="Quality: " Foreground="#CCCCCC" FontSize="12"/>
+                                    <TextBlock x:Name="QualityText" Text="1080p" Foreground="White" FontSize="12" FontWeight="Bold"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+
+                        <!-- Control Buttons -->
+                        <StackPanel Grid.Column="2"
+                                  Orientation="Horizontal"
+                                  VerticalAlignment="Center">
+                            <Button x:Name="FullscreenButton"
+                                  Content="Fullscreen"
+                                  Background="#444444"
+                                  Foreground="White"
+                                  BorderThickness="0"
+                                  Padding="12,8"
+                                  Margin="5,0"
+                                  Cursor="Hand"
+                                  Click="ToggleFullscreen_Click"/>
+
+                            <Button Content="Disconnect"
+                                  Background="#D13438"
+                                  Foreground="White"
+                                  BorderThickness="0"
+                                  Padding="12,8"
+                                  Margin="5,0"
+                                  Cursor="Hand"
+                                  Click="Disconnect_Click"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <!-- Fullscreen hint -->
+                <Border x:Name="FullscreenHint"
+                      Background="#CC000000"
+                      CornerRadius="4"
+                      Padding="15,8"
+                      VerticalAlignment="Top"
+                      HorizontalAlignment="Center"
+                      Margin="0,20,0,0"
+                      IsVisible="False">
+                    <TextBlock Text="Press F11 or ESC to exit fullscreen"
+                             Foreground="White"
+                             FontSize="14"/>
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

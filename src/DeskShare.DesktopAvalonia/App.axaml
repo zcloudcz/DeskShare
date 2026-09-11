@@ -1,0 +1,17 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="DeskShare.DesktopAvalonia.App">
+    <!--
+        Avalonia Application definition.
+        WPF equivalent: App.xaml
+        Key differences:
+        - xmlns changed from WPF to Avalonia namespace
+        - File extension is .axaml instead of .xaml
+        - No StartupUri; main window is created in OnFrameworkInitializationCompleted()
+        - FluentTheme replaces WPF default theme for modern look
+    -->
+    <Application.Styles>
+        <!-- Fluent theme provides modern Material-like styling across all platforms -->
+        <FluentTheme />
+    </Application.Styles>
+</Application>

@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  coturn:
+    image: coturn/coturn:latest
+    container_name: remotedesktop-coturn
+    network_mode: host
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+      - ./certs:/etc/coturn:ro
+      - ./logs:/var/log/coturn
+    restart: unless-stopped
+    environment:
+      - DETECT_EXTERNAL_IP=yes
+      # Set TURN credentials via environment or .env file
+      # NEVER commit real credentials to version control
+      - TURN_USER=${TURN_USER:?Set TURN_USER in .env file}
+      - TURN_PASSWORD=${TURN_PASSWORD:?Set TURN_PASSWORD in .env file}
+    # Pass credentials to coturn via command line (overrides config file)
+    command:
+      - "-c"
+      - "/etc/coturn/turnserver.conf"
+      - "--user=${TURN_USER}:${TURN_PASSWORD}"

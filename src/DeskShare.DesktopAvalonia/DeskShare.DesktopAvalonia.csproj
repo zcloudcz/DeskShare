@@ -1,0 +1,71 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Project references: shared library provides services/models, Core + SignalingServer via transitive -->
+  <ItemGroup>
+    <ProjectReference Include="..\DeskShare.Desktop.Shared\DeskShare.Desktop.Shared.csproj" />
+    <ProjectReference Include="..\SignalingServer\DeskShare.SignalingServer.csproj" />
+    <ProjectReference Include="..\Core\DeskShare.Core.csproj" />
+  </ItemGroup>
+
+  <!-- NuGet packages: Avalonia UI + platform-specific packages only -->
+  <ItemGroup>
+    <!-- Avalonia UI framework (cross-platform replacement for WPF) -->
+    <PackageReference Include="Avalonia" Version="11.2.3" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.2.3" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.2.3" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.2.3" />
+    <!-- MessageBox.Avalonia replaces WPF's MessageBox.Show() for dialogs -->
+    <PackageReference Include="MessageBox.Avalonia" Version="3.1.6" />
+
+    <!-- Configuration & DI -->
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="9.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="9.0.10" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.10" />
+
+    <!-- Logging with Serilog -->
+    <PackageReference Include="Serilog.Extensions.Hosting" Version="9.0.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
+    <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+
+    <!-- WebRTC video decoding (needed transitively but explicit for clarity) -->
+    <PackageReference Include="SIPSorcery" Version="8.0.23" />
+    <PackageReference Include="SIPSorceryMedia.FFmpeg" Version="8.0.12" />
+  </ItemGroup>
+
+  <!-- Copy appsettings.json to output directory -->
+  <ItemGroup>
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- Target net8.0 (cross-platform) instead of net8.0-windows (WPF) -->
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Required for unsafe memory operations in VideoSink frame rendering -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <!-- FFmpeg Native Libraries Deployment (same as WPF project) -->
+  <PropertyGroup>
+    <FFmpegPath>$(USERPROFILE)\.nuget\packages\ffmpeg.autogen\7.0.0\runtimes\win-x64\native</FFmpegPath>
+    <FFmpegLocalPath>$(ProjectDir)ffmpeg</FFmpegLocalPath>
+  </PropertyGroup>
+
+  <!-- Copy FFmpeg DLLs to output directory for video decoding -->
+  <ItemGroup>
+    <None Include="$(FFmpegPath)\*.dll" Condition="Exists('$(FFmpegPath)')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>ffmpeg\%(Filename)%(Extension)</Link>
+    </None>
+    <None Include="$(FFmpegLocalPath)\*.dll" Condition="Exists('$(FFmpegLocalPath)')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>ffmpeg\%(Filename)%(Extension)</Link>
+    </None>
+  </ItemGroup>
+
+</Project>
