@@ -182,7 +182,7 @@ jobs:
       # Homebrew's ffmpeg@8 and makes the dylibs relocatable (major-version names, @loader_path install names).
       - name: Add FFmpeg (Homebrew ffmpeg@8)
         run: |
-          brew install ffmpeg@8 dylibbundler
+          brew install ffmpeg@8
           bash scripts/bundle-ffmpeg-macos.sh publish/ffmpeg
 
       - name: Create .icns icon
