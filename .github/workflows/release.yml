@@ -178,20 +178,12 @@ jobs:
       - name: Publish Avalonia app (osx-arm64)
         run: dotnet publish src/DeskShare.DesktopAvalonia/DeskShare.DesktopAvalonia.csproj -c Release -r osx-arm64 --self-contained true -o publish -p:Version=${{ needs.release.outputs.version }}
 
-      # No prebuilt FFmpeg 8 shared libs for macOS exist as a download, so take Homebrew's ffmpeg@8 and
-      # make the dylibs relocatable (dylibbundler rewrites their inter-dependencies to @loader_path).
-      - name: Add FFmpeg (Homebrew ffmpeg@8 + dylibbundler)
+      # No prebuilt FFmpeg 8 shared libs for macOS exist as a download; scripts/bundle-ffmpeg-macos.sh takes
+      # Homebrew's ffmpeg@8 and makes the dylibs relocatable (major-version names, @loader_path install names).
+      - name: Add FFmpeg (Homebrew ffmpeg@8)
         run: |
           brew install ffmpeg@8 dylibbundler
-          PREFIX="$(brew --prefix ffmpeg@8)"
-          mkdir -p publish/ffmpeg
-          for lib in avcodec avdevice avfilter avformat avutil swresample swscale; do
-            cp "$PREFIX/lib/lib$lib."*[0-9].dylib publish/ffmpeg/
-          done
-          ARGS=""
-          for f in publish/ffmpeg/*.dylib; do ARGS="$ARGS -x $f"; done
-          dylibbundler -od -b -cd $ARGS -d publish/ffmpeg -p @loader_path/ -s "$PREFIX/lib" -s "$(brew --prefix)/lib" -i /usr/lib
-          ls publish/ffmpeg | head -50
+          bash scripts/bundle-ffmpeg-macos.sh publish/ffmpeg
 
       - name: Create .icns icon
         run: |
