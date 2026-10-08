@@ -244,7 +244,7 @@ jobs:
           --icon deskshare.icns
           --runtime osx-arm64
           --outputDir Releases
-          ${{ steps.sign.outputs.app_identity != '' && format('--signAppIdentity "{0}" --signEntitlements src/DeskShare.DesktopAvalonia/entitlements.plist --notaryProfile deskshare --keychain "{1}"', steps.sign.outputs.app_identity, steps.sign.outputs.keychain) || '' }}
+          ${{ steps.sign.outputs.app_identity != '' && format('--signAppIdentity "{0}" --signEntitlements src/DeskShare.DesktopAvalonia/DeskShare.entitlements --notaryProfile deskshare --keychain "{1}"', steps.sign.outputs.app_identity, steps.sign.outputs.keychain) || '' }}
           ${{ steps.sign.outputs.inst_identity != '' && format('--signInstallIdentity "{0}"', steps.sign.outputs.inst_identity) || '--noInst' }}
 
       - name: List packages
