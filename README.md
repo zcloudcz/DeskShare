@@ -8,6 +8,8 @@ Vysokovýkonná aplikace pro streamování pracovních ploch a oken na Windows p
 - Windows instalátor: [DeskShare-win-Setup.exe](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Setup.exe) (Velopack, automatické aktualizace)
 - Přenosná verze: [DeskShare-win-Portable.zip](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Portable.zip)
 - Web viewer (bez instalace): https://app.deskshare.zcloud.cz/webclient/index.html
+- macOS (Apple Silicon, beta, jen prohlížení): [DeskShare-osx-Setup.pkg](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-osx-Setup.pkg) (podepsáno + notarizováno)
+- Linux x64 (beta, jen prohlížení): [DeskShare.AppImage](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare.AppImage)
 
 Hostovaný signaling server běží na `app.deskshare.zcloud.cz` (Azure App Service, nasazení přes
 `.github/workflows/deploy-signaling.yml`). Vydání vzniká pushnutím tagu `vX.Y.Z` (`release.yml`).
