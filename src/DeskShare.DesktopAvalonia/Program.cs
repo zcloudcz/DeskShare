@@ -1,4 +1,5 @@
 using Avalonia;
+using Velopack;
 
 namespace DeskShare.DesktopAvalonia;
 
@@ -18,6 +19,9 @@ public class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        // Velopack must run first: on install/update/uninstall it creates shortcuts or exits early.
+        VelopackApp.Build().Run();
+
         // BuildAvaloniaApp() creates the Avalonia application with its configuration.
         // StartWithClassicDesktopLifetime() runs it as a standard desktop app with a main window.
         BuildAvaloniaApp()

@@ -30,6 +30,7 @@
     <!-- WebRTC video decoding (needed transitively but explicit for clarity) -->
     <PackageReference Include="SIPSorcery" Version="10.0.16" />
     <PackageReference Include="SIPSorceryMedia.FFmpeg" Version="10.0.16" />
+    <PackageReference Include="Velopack" Version="1.2.161" />
   </ItemGroup>
 
   <!-- Copy appsettings.json to output directory -->
@@ -47,23 +48,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <!-- Required for unsafe memory operations in VideoSink frame rendering -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>DeskShare</AssemblyName>
   </PropertyGroup>
 
-  <!-- FFmpeg Native Libraries Deployment (same as WPF project) -->
-  <PropertyGroup>
-    <FFmpegPath>$(USERPROFILE)\.nuget\packages\ffmpeg.autogen\7.0.0\runtimes\win-x64\native</FFmpegPath>
-    <FFmpegLocalPath>$(ProjectDir)ffmpeg</FFmpegLocalPath>
-  </PropertyGroup>
-
-  <!-- Copy FFmpeg DLLs to output directory for video decoding -->
+  <!-- FFmpeg native libraries: ./ffmpeg holds the platform's shared libs (dll / so / dylib), filled by CI
+       (see release.yml) or by hand; VideoSink loads them from <app>/ffmpeg at runtime. -->
   <ItemGroup>
-    <None Include="$(FFmpegPath)\*.dll" Condition="Exists('$(FFmpegPath)')">
+    <None Include="$(ProjectDir)ffmpeg\**\*" Condition="Exists('$(ProjectDir)ffmpeg')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Link>ffmpeg\%(Filename)%(Extension)</Link>
-    </None>
-    <None Include="$(FFmpegLocalPath)\*.dll" Condition="Exists('$(FFmpegLocalPath)')">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Link>ffmpeg\%(Filename)%(Extension)</Link>
+      <Link>ffmpeg\%(RecursiveDir)%(Filename)%(Extension)</Link>
     </None>
   </ItemGroup>
 

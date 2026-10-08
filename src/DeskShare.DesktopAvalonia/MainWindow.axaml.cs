@@ -65,6 +65,13 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
+        // Screen capture is implemented for Windows (DXGI) and Linux/X11 only; the macOS capturer is a stub.
+        if (OperatingSystem.IsMacOS())
+        {
+            StartServerButton.IsEnabled = false;
+            StartServerButton.Content = "Sharing from macOS is not available yet";
+        }
+
         // Setup logging and services from DI container (same as WPF project)
         _logger = App.ServiceProvider?.GetService<ILogger<MainWindow>>()
                   ?? throw new InvalidOperationException("Logger not available");

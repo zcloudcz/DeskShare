@@ -147,6 +147,7 @@ public partial class App : Application
 
             var logger = ServiceProvider.GetRequiredService<ILogger<App>>();
             logger.LogInformation("DeskShare Avalonia application started");
+            _ = UpdateService.CheckAndStageAsync(logger);
 
             // Create and show the main window (replaces WPF's StartupUri)
             desktop.MainWindow = new MainWindow();

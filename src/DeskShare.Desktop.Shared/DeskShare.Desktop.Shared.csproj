@@ -26,6 +26,9 @@
     <!-- WebRTC video decoding -->
     <PackageReference Include="SIPSorcery" Version="10.0.16" />
     <PackageReference Include="SIPSorceryMedia.FFmpeg" Version="10.0.16" />
+
+    <!-- Auto-update (UpdateService) -->
+    <PackageReference Include="Velopack" Version="1.2.161" />
   </ItemGroup>
 
 </Project>

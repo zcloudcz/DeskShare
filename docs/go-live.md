@@ -75,3 +75,33 @@ Release. The landing page links to `releases/latest/download/...`, so nothing el
   Fix later with coturn on a small VM or Azure Container Instance and `Turn:*` / `IceServers` config.
 - Installer is not code-signed → SmartScreen warning (the landing page explains it).
 - `/register` is unauthenticated (anyone can overwrite a ServerId registration) — see MEMORY.md audit list.
+
+## 7. macOS signing + notarization (Apple Developer account)
+
+`release.yml` builds the Avalonia viewer for Apple Silicon on a macOS runner. Without secrets the build is
+unsigned (Gatekeeper: right-click → Open, or `xattr -dr com.apple.quarantine DeskShare.app`). To sign and
+notarize, set these repo secrets once:
+
+| Secret | Value |
+|---|---|
+| `APPLE_CERT_P12_BASE64` | `base64 -i certs.p12` of a .p12 exported from Keychain Access that contains **both** "Developer ID Application" and "Developer ID Installer" certificates (with private keys). Create them at developer.apple.com → Certificates. |
+| `APPLE_CERT_PASSWORD` | password chosen when exporting the .p12 |
+| `APPLE_ID` | Apple ID e-mail of the developer account |
+| `APPLE_TEAM_ID` | 10-character Team ID (developer.apple.com → Membership) |
+| `APPLE_APP_PASSWORD` | app-specific password generated at appleid.apple.com (Sign-In and Security → App-Specific Passwords) |
+
+```powershell
+gh secret set APPLE_CERT_P12_BASE64 -R zcloudcz/DeskShare < certs.p12.b64
+gh secret set APPLE_CERT_PASSWORD -R zcloudcz/DeskShare
+gh secret set APPLE_ID -R zcloudcz/DeskShare
+gh secret set APPLE_TEAM_ID -R zcloudcz/DeskShare
+gh secret set APPLE_APP_PASSWORD -R zcloudcz/DeskShare
+```
+
+The workflow imports the certificate into a temporary keychain, derives the identities with
+`security find-identity`, stores notarytool credentials and passes them to `vpk pack`
+(`--signAppIdentity`, `--signInstallIdentity`, `--notaryProfile`). Without the Installer certificate only the
+portable `.app` zip is produced (`--noInst`).
+
+Linux (AppImage, x64) needs nothing extra. Both non-Windows builds are viewer-only betas built without a
+test machine; `MainWindow` disables "Start Server" on macOS (no capture implementation yet).

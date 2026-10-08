@@ -1,7 +1,15 @@
-# Release: build the Windows desktop app, package it with Velopack and publish a GitHub Release.
-# Triggered by pushing a version tag (v1.2.3). The landing page links to
-# https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Setup.exe
+# Release: build the desktop apps, package them with Velopack and publish a GitHub Release.
+# Triggered by pushing a version tag (v1.2.3; a tag containing '-' such as v1.2.3-beta.1 becomes a pre-release).
+# Windows (WPF) is the primary, tested build. macOS (Avalonia, Apple Silicon) and Linux (Avalonia, AppImage)
+# are viewer-only betas built on GitHub runners; they are added to the same release after the Windows job.
+#
+# The landing page links to https://github.com/zcloudcz/DeskShare/releases/latest/download/<asset>,
 # so every tag automatically becomes the download offered on deskshare.zcloud.cz.
+#
+# macOS signing/notarization needs repo secrets (unsigned build when missing):
+#   APPLE_CERT_P12_BASE64  – base64 of a .p12 holding "Developer ID Application" (+ "Developer ID Installer")
+#   APPLE_CERT_PASSWORD    – password of that .p12
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD – Apple ID, team id and an app-specific password for notarytool
 
 name: Release
 
@@ -13,9 +21,17 @@ on:
 permissions:
   contents: write   # vpk upload creates the GitHub Release and uploads assets
 
+env:
+  VPK_VERSION: 1.2.161
+  FFMPEG_BTBN: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest
+
 jobs:
   release:
+    name: Windows
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
 
     steps:
       - name: Checkout repository
@@ -26,11 +42,14 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      # Version comes from the tag: v1.2.3 → 1.2.3
+      # Version comes from the tag: v1.2.3 → 1.2.3; a '-' in the tag marks a pre-release
       - name: Resolve version
         id: version
         shell: pwsh
-        run: '"version=$($env:GITHUB_REF_NAME.TrimStart(''v''))" >> $env:GITHUB_OUTPUT'
+        run: |
+          $v = $env:GITHUB_REF_NAME.TrimStart('v')
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "prerelease=$($v.Contains('-'))" >> $env:GITHUB_OUTPUT
 
       - name: Restore dependencies
         run: dotnet restore DeskShare.sln
@@ -57,7 +76,7 @@ jobs:
         run: Copy-Item -Path src/DeskShare.Desktop/ffmpeg -Destination publish/ffmpeg -Recurse
 
       - name: Install Velopack CLI
-        run: dotnet tool install -g vpk --version 1.2.161
+        run: dotnet tool install -g vpk --version ${{ env.VPK_VERSION }}
 
       - name: Pack with Velopack
         run: >
@@ -83,3 +102,173 @@ jobs:
           --tag ${{ github.ref_name }}
           --releaseName "DeskShare ${{ github.ref_name }}"
           --publish
+          ${{ steps.version.outputs.prerelease == 'True' && '--pre' || '' }}
+
+  release-linux:
+    name: Linux (beta, viewer)
+    runs-on: ubuntu-latest
+    needs: release
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish Avalonia app (linux-x64)
+        run: dotnet publish src/DeskShare.DesktopAvalonia/DeskShare.DesktopAvalonia.csproj -c Release -r linux-x64 --self-contained true -o publish -p:Version=${{ needs.release.outputs.version }}
+
+      # FFmpeg 8.1 LGPL shared libs (libavcodec.so.62 …) next to the app; VideoSink loads them from <app>/ffmpeg.
+      - name: Add FFmpeg
+        run: |
+          curl -sSL -o ffmpeg.tar.xz "$FFMPEG_BTBN/ffmpeg-n8.1-latest-linux64-lgpl-shared-8.1.tar.xz"
+          mkdir -p ffmpeg-src publish/ffmpeg
+          tar -xJf ffmpeg.tar.xz -C ffmpeg-src --strip-components=1
+          cp -a ffmpeg-src/lib/*.so* publish/ffmpeg/
+          ls publish/ffmpeg
+
+      - name: Install Velopack CLI
+        run: dotnet tool install -g vpk --version ${{ env.VPK_VERSION }}
+
+      - name: Pack with Velopack (AppImage)
+        run: >
+          vpk pack
+          --packId DeskShare
+          --packVersion ${{ needs.release.outputs.version }}
+          --packDir publish
+          --mainExe DeskShare
+          --packTitle DeskShare
+          --packAuthors "Martin Zahálka"
+          --icon src/DeskShare.DesktopAvalonia/deskshare.png
+          --categories Network
+          --runtime linux-x64
+          --outputDir Releases
+
+      - name: List packages
+        run: ls -la Releases
+
+      - name: Upload to GitHub Release
+        run: >
+          vpk upload github
+          --outputDir Releases
+          --repoUrl https://github.com/${{ github.repository }}
+          --token ${{ secrets.GITHUB_TOKEN }}
+          --tag ${{ github.ref_name }}
+          --merge
+          --publish
+          ${{ needs.release.outputs.prerelease == 'True' && '--pre' || '' }}
+
+  release-macos:
+    name: macOS (beta, viewer, Apple Silicon)
+    runs-on: macos-latest
+    needs: release
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish Avalonia app (osx-arm64)
+        run: dotnet publish src/DeskShare.DesktopAvalonia/DeskShare.DesktopAvalonia.csproj -c Release -r osx-arm64 --self-contained true -o publish -p:Version=${{ needs.release.outputs.version }}
+
+      # No prebuilt FFmpeg 8 shared libs for macOS exist as a download, so take Homebrew's ffmpeg@8 and
+      # make the dylibs relocatable (dylibbundler rewrites their inter-dependencies to @loader_path).
+      - name: Add FFmpeg (Homebrew ffmpeg@8 + dylibbundler)
+        run: |
+          brew install ffmpeg@8 dylibbundler
+          PREFIX="$(brew --prefix ffmpeg@8)"
+          mkdir -p publish/ffmpeg
+          for lib in avcodec avdevice avfilter avformat avutil swresample swscale; do
+            cp "$PREFIX/lib/lib$lib."*[0-9].dylib publish/ffmpeg/
+          done
+          ARGS=""
+          for f in publish/ffmpeg/*.dylib; do ARGS="$ARGS -x $f"; done
+          dylibbundler -od -b -cd $ARGS -d publish/ffmpeg -p @loader_path/ -s "$PREFIX/lib" -s "$(brew --prefix)/lib" -i /usr/lib
+          ls publish/ffmpeg | head -50
+
+      - name: Create .icns icon
+        run: |
+          mkdir deskshare.iconset
+          for s in 16 32 64 128 256 512; do
+            sips -z $s $s src/DeskShare.DesktopAvalonia/deskshare.png --out deskshare.iconset/icon_${s}x${s}.png >/dev/null
+          done
+          cp deskshare.iconset/icon_512x512.png deskshare.iconset/icon_256x256@2x.png
+          iconutil -c icns deskshare.iconset -o deskshare.icns
+
+      # Developer ID certificates + notarytool credentials from secrets; skipped (unsigned build) when absent.
+      - name: Import signing certificate
+        id: sign
+        if: ${{ env.HAS_APPLE_CERT == 'true' }}
+        env:
+          HAS_APPLE_CERT: ${{ secrets.APPLE_CERT_P12_BASE64 != '' }}
+          P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KC_PASS="$(uuidgen)"
+          echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KC_PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KC_PASS" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PASS" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain
+          rm "$RUNNER_TEMP/cert.p12"
+          APP_ID="$(security find-identity -v -p codesigning "$KEYCHAIN" | grep 'Developer ID Application' | head -1 | sed -E 's/.*"(.+)"/\1/')"
+          INST_ID="$(security find-identity -v "$KEYCHAIN" | grep 'Developer ID Installer' | head -1 | sed -E 's/.*"(.+)"/\1/')"
+          echo "app identity: $APP_ID"; echo "installer identity: ${INST_ID:-<none>}"
+          xcrun notarytool store-credentials deskshare --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --keychain "$KEYCHAIN"
+          {
+            echo "keychain=$KEYCHAIN"
+            echo "app_identity=$APP_ID"
+            echo "inst_identity=$INST_ID"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install Velopack CLI
+        run: dotnet tool install -g vpk --version ${{ env.VPK_VERSION }}
+
+      # Signed + notarized when certificates are present; the .pkg installer needs the Installer certificate,
+      # otherwise only the portable .app zip is produced.
+      - name: Pack with Velopack
+        run: >
+          vpk pack
+          --packId DeskShare
+          --packVersion ${{ needs.release.outputs.version }}
+          --packDir publish
+          --mainExe DeskShare
+          --packTitle DeskShare
+          --packAuthors "Martin Zahálka"
+          --bundleId cz.zcloud.deskshare
+          --icon deskshare.icns
+          --runtime osx-arm64
+          --outputDir Releases
+          ${{ steps.sign.outputs.app_identity != '' && format('--signAppIdentity "{0}" --signEntitlements src/DeskShare.DesktopAvalonia/entitlements.plist --notaryProfile deskshare --keychain "{1}"', steps.sign.outputs.app_identity, steps.sign.outputs.keychain) || '' }}
+          ${{ steps.sign.outputs.inst_identity != '' && format('--signInstallIdentity "{0}"', steps.sign.outputs.inst_identity) || '--noInst' }}
+
+      - name: List packages
+        run: ls -la Releases
+
+      - name: Upload to GitHub Release
+        run: >
+          vpk upload github
+          --outputDir Releases
+          --repoUrl https://github.com/${{ github.repository }}
+          --token ${{ secrets.GITHUB_TOKEN }}
+          --tag ${{ github.ref_name }}
+          --merge
+          --publish
+          ${{ needs.release.outputs.prerelease == 'True' && '--pre' || '' }}
+
+      - name: Remove signing keychain
+        if: ${{ always() && steps.sign.outputs.keychain != '' }}
+        run: security delete-keychain "${{ steps.sign.outputs.keychain }}" || true
