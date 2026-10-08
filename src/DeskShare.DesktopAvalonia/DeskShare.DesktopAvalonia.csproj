@@ -1,9 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Project references: shared library provides services/models, Core + SignalingServer via transitive -->
+  <!-- Project references: shared library provides services/models; signaling is a hosted service, see appsettings.json -->
   <ItemGroup>
     <ProjectReference Include="..\DeskShare.Desktop.Shared\DeskShare.Desktop.Shared.csproj" />
-    <ProjectReference Include="..\SignalingServer\DeskShare.SignalingServer.csproj" />
     <ProjectReference Include="..\Core\DeskShare.Core.csproj" />
   </ItemGroup>
 

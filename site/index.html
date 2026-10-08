@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeskShare – sdílení obrazovky Windows přes WebRTC</title>
+<meta name="description" content="DeskShare streamuje plochu Windows do prohlížeče nebo aplikace přes WebRTC s latencí pod 150 ms. Přístup chrání passkey měnící se každých 45 sekund. Open source, zdarma.">
+<link rel="canonical" href="https://deskshare.zcloud.cz/">
+<link rel="alternate" hreflang="cs" href="https://deskshare.zcloud.cz/">
+<link rel="alternate" hreflang="en" href="https://deskshare.zcloud.cz/en/">
+<link rel="alternate" hreflang="x-default" href="https://deskshare.zcloud.cz/en/">
+<link rel="icon" href="/assets/icon.png" type="image/png">
+<meta property="og:title" content="DeskShare – sdílení obrazovky Windows přes WebRTC">
+<meta property="og:description" content="Sdílejte plochu Windows, sledujte ji z prohlížeče odkudkoli. Passkey, šifrování, open source.">
+<meta property="og:image" content="https://deskshare.zcloud.cz/assets/icon.png">
+<meta property="og:url" content="https://deskshare.zcloud.cz/">
+<meta property="og:type" content="website">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;600&display=swap">
+<link rel="stylesheet" href="/assets/site.css">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DeskShare","operatingSystem":"Windows 10, Windows 11","applicationCategory":"UtilitiesApplication","offers":{"@type":"Offer","price":"0","priceCurrency":"CZK"},"downloadUrl":"https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Setup.exe","license":"https://opensource.org/licenses/MIT","author":{"@type":"Person","name":"Martin Zahálka"}}
+</script>
+</head>
+<body>
+<div class="wrap">
+<header class="site-header">
+  <a class="brand" href="/"><img src="/assets/icon.png" alt="">DeskShare</a>
+  <nav>
+    <a href="#jak">Jak to funguje</a>
+    <a href="#stazeni">Stažení</a>
+    <a href="https://github.com/zcloudcz/DeskShare">GitHub</a>
+    <a class="lang" href="/en/" lang="en" hreflang="en">EN</a>
+  </nav>
+</header>
+
+<main>
+<section class="hero" style="border-top:0">
+  <div>
+    <h1>Sdílejte obrazovku Windows. Sledujte ji odkudkoli z prohlížeče.</h1>
+    <p class="lead">DeskShare streamuje plochu přes WebRTC přímo mezi počítači, s latencí pod 150 ms. Přístup chrání passkey, který se mění každých 45 sekund.</p>
+    <div class="actions">
+      <a class="btn primary" href="https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Setup.exe">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        Stáhnout pro Windows
+      </a>
+      <a class="btn secondary" href="https://app.deskshare.zcloud.cz/webclient/index-control.html">Otevřít prohlížeč obrazovky</a>
+    </div>
+    <p class="meta" id="release-meta" data-label="Aktuální verze">Windows 10/11, 64bit · zdarma · MIT licence</p>
+  </div>
+
+  <div class="viewer" aria-hidden="true">
+    <div class="laptop">
+      <div class="desktop">
+        <div class="window">
+          <div class="titlebar"><span class="dot"></span>Připojeno k pracovna-pc</div>
+          <div class="remote">
+            <div class="pane"></div><div class="pane"></div><div class="pane"></div>
+            <div class="bar"></div>
+            <div class="cursor"></div>
+          </div>
+        </div>
+        <div class="taskbar"></div>
+      </div>
+    </div>
+    <div class="passkey">
+      <span class="ring"></span>
+      <div><code>482 913</code><small>passkey, platí 45 s</small></div>
+    </div>
+  </div>
+</section>
+
+<section id="jak">
+  <h2>Jak to funguje</h2>
+  <ol class="steps">
+    <li>
+      <h3>Nainstalujte DeskShare</h3>
+      <p>Na počítači, který chcete sdílet, spusťte aplikaci a klikněte na Start Server. Zobrazí se ID serveru a aktuální passkey.</p>
+    </li>
+    <li>
+      <h3>Pošlete ID a passkey</h3>
+      <p>Tomu, kdo se má připojit, stačí obojí přepsat do prohlížeče nebo do aplikace DeskShare. Passkey se každých 45 sekund obnoví.</p>
+    </li>
+    <li>
+      <h3>Rozhodněte o ovládání</h3>
+      <p>Ve výchozím stavu druhá strana obrazovku jen vidí. Myš a klávesnici povolíte vy, a kdykoli je zase odeberete.</p>
+    </li>
+  </ol>
+</section>
+
+<section id="stazeni">
+  <h2>Stažení</h2>
+  <div class="downloads">
+    <div class="dl">
+      <div>
+        <h3>DeskShare pro Windows</h3>
+        <p>Instalátor s automatickými aktualizacemi. Sdílí vaši obrazovku a zároveň umí sledovat jiné počítače.</p>
+      </div>
+      <a class="btn primary" href="https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Setup.exe">Stáhnout DeskShare-win-Setup.exe</a>
+    </div>
+    <div class="dl">
+      <div>
+        <h3>Přenosná verze</h3>
+        <p>Stejná aplikace bez instalace, rozbalíte a spustíte. Hodí se na cizí počítač nebo na flash disk.</p>
+      </div>
+      <a class="btn secondary" href="https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Portable.zip">Stáhnout DeskShare-win-Portable.zip</a>
+    </div>
+    <div class="dl">
+      <div>
+        <h3>Prohlížeč obrazovky na webu</h3>
+        <p>Pro sledování není potřeba nic instalovat. Funguje v Chrome, Edge, Firefoxu i Safari, včetně mobilu.</p>
+      </div>
+      <a class="btn secondary" href="https://app.deskshare.zcloud.cz/webclient/index-control.html">Otevřít app.deskshare.zcloud.cz</a>
+    </div>
+  </div>
+  <p class="note"><strong>Varování SmartScreen.</strong> Instalátor zatím není podepsaný certifikátem, Windows proto při prvním spuštění zobrazí varování. Zvolte „Další informace“ a „Přesto spustit“. Pravost můžete ověřit porovnáním s vydáním na GitHubu.</p>
+</section>
+
+<section id="bezpecnost">
+  <h2>Bezpečnost</h2>
+  <dl class="facts">
+    <div>
+      <dt>Obraz jde přímo mezi počítači</dt>
+      <dd>WebRTC posílá video peer-to-peer, šifrované DTLS a SRTP. Server zprostředkuje jen navázání spojení, obraz přes něj neteče.</dd>
+    </div>
+    <div>
+      <dt>Passkey s krátkou platností</dt>
+      <dd>Každý pokus o připojení je podepsaný HMAC-SHA256 s aktuálním passkey a jednorázovým nonce, takže zachycený požadavek nejde přehrát.</dd>
+    </div>
+    <div>
+      <dt>Ovládání jen se souhlasem</dt>
+      <dd>Vzdálené ovládání myši a klávesnice je vypnuté, dokud ho na sdílejícím počítači nezapnete. Konkrétní klienty můžete trvale povolit nebo zablokovat.</dd>
+    </div>
+    <div>
+      <dt>Otevřený kód</dt>
+      <dd>Celý zdrojový kód včetně serveru je na GitHubu pod licencí MIT. Server si můžete provozovat i sami.</dd>
+    </div>
+  </dl>
+</section>
+</main>
+
+<footer>
+  <p>DeskShare je open source projekt. Provozuje Martin Zahálka, IČO 07783809 · <a href="mailto:martin@zcloud.cz">martin@zcloud.cz</a></p>
+  <p><a href="https://github.com/zcloudcz/DeskShare">Zdrojový kód a vydání na GitHubu</a> · <a href="https://github.com/zcloudcz/DeskShare/issues">Nahlásit chybu</a> · <a href="/en/" lang="en" hreflang="en">English</a></p>
+</footer>
+</div>
+<script src="/assets/site.js" defer></script>
+</body>
+</html>

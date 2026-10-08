@@ -620,7 +620,7 @@ public partial class MainWindow : Window
         try
         {
             using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-            var signalingUrl = "http://localhost:5151";
+            var signalingUrl = SignalingUrl.HttpBaseFromConfig(App.Configuration!);
 
             var clientId = DeskShare.Core.ServerIdGenerator.GenerateServerId();
             var nonce = Guid.NewGuid().ToString();

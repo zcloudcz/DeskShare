@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeskShare – Windows screen sharing over WebRTC</title>
+<meta name="description" content="DeskShare streams your Windows desktop to a browser or app over WebRTC with under 150 ms latency. Access is protected by a passkey that changes every 45 seconds. Open source, free.">
+<link rel="canonical" href="https://deskshare.zcloud.cz/en/">
+<link rel="alternate" hreflang="cs" href="https://deskshare.zcloud.cz/">
+<link rel="alternate" hreflang="en" href="https://deskshare.zcloud.cz/en/">
+<link rel="alternate" hreflang="x-default" href="https://deskshare.zcloud.cz/en/">
+<link rel="icon" href="/assets/icon.png" type="image/png">
+<meta property="og:title" content="DeskShare – Windows screen sharing over WebRTC">
+<meta property="og:description" content="Share your Windows desktop and watch it from any browser. Passkey, encryption, open source.">
+<meta property="og:image" content="https://deskshare.zcloud.cz/assets/icon.png">
+<meta property="og:url" content="https://deskshare.zcloud.cz/en/">
+<meta property="og:type" content="website">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;600&display=swap">
+<link rel="stylesheet" href="/assets/site.css">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DeskShare","operatingSystem":"Windows 10, Windows 11","applicationCategory":"UtilitiesApplication","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"downloadUrl":"https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Setup.exe","license":"https://opensource.org/licenses/MIT","author":{"@type":"Person","name":"Martin Zahálka"}}
+</script>
+</head>
+<body>
+<div class="wrap">
+<header class="site-header">
+  <a class="brand" href="/en/"><img src="/assets/icon.png" alt="">DeskShare</a>
+  <nav>
+    <a href="#how">How it works</a>
+    <a href="#download">Download</a>
+    <a href="https://github.com/zcloudcz/DeskShare">GitHub</a>
+    <a class="lang" href="/" lang="cs" hreflang="cs">CS</a>
+  </nav>
+</header>
+
+<main>
+<section class="hero" style="border-top:0">
+  <div>
+    <h1>Share your Windows screen. Watch it from any browser, anywhere.</h1>
+    <p class="lead">DeskShare streams the desktop over WebRTC directly between computers, with under 150 ms latency. Access is protected by a passkey that changes every 45 seconds.</p>
+    <div class="actions">
+      <a class="btn primary" href="https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Setup.exe">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        Download for Windows
+      </a>
+      <a class="btn secondary" href="https://app.deskshare.zcloud.cz/webclient/index-control.html">Open the web viewer</a>
+    </div>
+    <p class="meta" id="release-meta" data-label="Latest version">Windows 10/11, 64-bit · free · MIT license</p>
+  </div>
+
+  <div class="viewer" aria-hidden="true">
+    <div class="laptop">
+      <div class="desktop">
+        <div class="window">
+          <div class="titlebar"><span class="dot"></span>Connected to office-pc</div>
+          <div class="remote">
+            <div class="pane"></div><div class="pane"></div><div class="pane"></div>
+            <div class="bar"></div>
+            <div class="cursor"></div>
+          </div>
+        </div>
+        <div class="taskbar"></div>
+      </div>
+    </div>
+    <div class="passkey">
+      <span class="ring"></span>
+      <div><code>482 913</code><small>passkey, valid for 45 s</small></div>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <h2>How it works</h2>
+  <ol class="steps">
+    <li>
+      <h3>Install DeskShare</h3>
+      <p>On the computer you want to share, run the app and click Start Server. It shows a server ID and the current passkey.</p>
+    </li>
+    <li>
+      <h3>Send the ID and passkey</h3>
+      <p>The other person types both into the web viewer or the DeskShare app. The passkey renews every 45 seconds.</p>
+    </li>
+    <li>
+      <h3>Decide about control</h3>
+      <p>By default the other side can only watch. You enable mouse and keyboard control, and you can take it away at any time.</p>
+    </li>
+  </ol>
+</section>
+
+<section id="download">
+  <h2>Download</h2>
+  <div class="downloads">
+    <div class="dl">
+      <div>
+        <h3>DeskShare for Windows</h3>
+        <p>Installer with automatic updates. Shares your screen and can also view other computers.</p>
+      </div>
+      <a class="btn primary" href="https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Setup.exe">Download DeskShare-win-Setup.exe</a>
+    </div>
+    <div class="dl">
+      <div>
+        <h3>Portable version</h3>
+        <p>The same app without installation: unzip and run. Handy on someone else's computer or a USB stick.</p>
+      </div>
+      <a class="btn secondary" href="https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Portable.zip">Download DeskShare-win-Portable.zip</a>
+    </div>
+    <div class="dl">
+      <div>
+        <h3>Web viewer</h3>
+        <p>Nothing to install for watching. Works in Chrome, Edge, Firefox and Safari, including phones.</p>
+      </div>
+      <a class="btn secondary" href="https://app.deskshare.zcloud.cz/webclient/index-control.html">Open app.deskshare.zcloud.cz</a>
+    </div>
+  </div>
+  <p class="note"><strong>SmartScreen warning.</strong> The installer is not code-signed yet, so Windows shows a warning on first run. Choose “More info” and “Run anyway”. You can verify the file against the release on GitHub.</p>
+</section>
+
+<section id="security">
+  <h2>Security</h2>
+  <dl class="facts">
+    <div>
+      <dt>Video goes directly between computers</dt>
+      <dd>WebRTC sends the stream peer-to-peer, encrypted with DTLS and SRTP. The server only brokers the connection; no video passes through it.</dd>
+    </div>
+    <div>
+      <dt>Short-lived passkey</dt>
+      <dd>Every connection attempt is signed with HMAC-SHA256 using the current passkey and a one-time nonce, so a captured request cannot be replayed.</dd>
+    </div>
+    <div>
+      <dt>Control only with consent</dt>
+      <dd>Remote mouse and keyboard control stays off until you turn it on at the sharing computer. Specific clients can be trusted permanently or blocked.</dd>
+    </div>
+    <div>
+      <dt>Open source</dt>
+      <dd>The full source code, server included, is on GitHub under the MIT license. You can also host the server yourself.</dd>
+    </div>
+  </dl>
+</section>
+</main>
+
+<footer>
+  <p>DeskShare is an open source project by Martin Zahálka · <a href="mailto:martin@zcloud.cz">martin@zcloud.cz</a></p>
+  <p><a href="https://github.com/zcloudcz/DeskShare">Source code and releases on GitHub</a> · <a href="https://github.com/zcloudcz/DeskShare/issues">Report a bug</a> · <a href="/" lang="cs" hreflang="cs">Česky</a></p>
+</footer>
+</div>
+<script src="/assets/site.js" defer></script>
+</body>
+</html>

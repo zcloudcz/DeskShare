@@ -53,12 +53,19 @@ else
     Log.Information("In-memory storage initialized");
 }
 
-// Add STUN server as hosted service
-builder.Services.AddSingleton(new StunServerOptions
+// Add STUN server as hosted service (disabled on hosts without UDP, e.g. Azure App Service)
+if (builder.Configuration.GetValue<bool>("Stun:Enabled", true))
 {
-    Port = builder.Configuration.GetValue<int>("Stun:Port", 3478)
-});
-builder.Services.AddHostedService<StunServer>();
+    builder.Services.AddSingleton(new StunServerOptions
+    {
+        Port = builder.Configuration.GetValue<int>("Stun:Port", 3478)
+    });
+    builder.Services.AddHostedService<StunServer>();
+}
+else
+{
+    Log.Information("STUN server is DISABLED (Stun:Enabled=false)");
+}
 
 // Add TURN server as hosted service (only if enabled)
 var turnEnabled = builder.Configuration.GetValue<bool>("Turn:Enabled", false);
@@ -224,7 +231,12 @@ app.UseCors();
 app.UseRateLimiter();
 
 // Serve WebClient static files from /webclient path
-var webClientPath = Path.Combine(Directory.GetCurrentDirectory(), "..", "WebClient");
+// Dev layout: src/SignalingServer → ../WebClient. Published layout: WebClient copied next to the binaries.
+var webClientPath = Path.Combine(AppContext.BaseDirectory, "WebClient");
+if (!Directory.Exists(webClientPath))
+{
+    webClientPath = Path.Combine(Directory.GetCurrentDirectory(), "..", "WebClient");
+}
 if (Directory.Exists(webClientPath))
 {
     app.UseStaticFiles(new StaticFileOptions

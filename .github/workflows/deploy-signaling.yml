@@ -1,0 +1,45 @@
+# Deploys the SignalingServer (+ WebClient) to Azure App Service "deskshare-signaling"
+# (app.deskshare.zcloud.cz). Runs on every push to main that touches the server or its dependencies.
+# Secret AZURE_WEBAPP_PUBLISH_PROFILE = publish profile XML downloaded from the App Service.
+
+name: Deploy signaling server
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/SignalingServer/**'
+      - 'src/Core/**'
+      - 'src/Common/**'
+      - 'src/Stun/**'
+      - 'src/Turn/**'
+      - 'src/WebClient/**'
+      - '.github/workflows/deploy-signaling.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish SignalingServer
+        run: dotnet publish src/SignalingServer/DeskShare.SignalingServer.csproj -c Release -o publish
+
+      # Program.cs serves ./WebClient (next to the binaries) under /webclient
+      - name: Add WebClient
+        run: cp -r src/WebClient publish/WebClient
+
+      - name: Deploy to Azure App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: deskshare-signaling
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          package: publish

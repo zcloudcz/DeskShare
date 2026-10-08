@@ -11,6 +11,7 @@ using DeskShare.Desktop.Shared.Services;
 using DeskShare.Desktop.Services;
 // Core interfaces for DI registration
 using DeskShare.Core.Interfaces;
+using Velopack;
 
 namespace DeskShare.Desktop;
 
@@ -23,6 +24,20 @@ public partial class App : Application
     public static IConfiguration? Configuration { get; private set; }
     public static ObservableCollection<string> LogMessages { get; } = new();
     public static bool ShowLogTab { get; private set; }
+
+    /// <summary>
+    /// Custom entry point (see StartupObject in csproj). Velopack must run first: on install/update/uninstall
+    /// it creates shortcuts or exits early before any WPF window is shown.
+    /// </summary>
+    [STAThread]
+    public static void Main(string[] args)
+    {
+        VelopackApp.Build().Run();
+
+        var app = new App();
+        app.InitializeComponent();
+        app.Run();
+    }
 
     protected override void OnStartup(StartupEventArgs e)
     {

@@ -1,94 +1,25 @@
-# Download FFmpeg binaries for RemoteDesktop.Desktop
-# This script downloads FFmpeg shared libraries (DLLs) for Windows x64
-
+# Downloads the FFmpeg 8.1 shared (LGPL) Windows x64 DLLs required by SIPSorceryMedia.FFmpeg
+# (FFmpeg.AutoGen 8.1 → avcodec-62 etc.) into ./ffmpeg. Used by developers and by the release CI.
+# Source: BtbN/FFmpeg-Builds (https://github.com/BtbN/FFmpeg-Builds), LGPL build so it can be redistributed.
 param(
-    [string]$Version = "7.0",
-    [string]$OutputDir = ".\ffmpeg"
+    [string]$Url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip",
+    [string]$Destination = (Join-Path $PSScriptRoot "ffmpeg")
 )
 
 $ErrorActionPreference = "Stop"
+$tmp = Join-Path ([System.IO.Path]::GetTempPath()) "deskshare-ffmpeg"
+Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path $tmp, $Destination | Out-Null
 
-Write-Host "==================================================================" -ForegroundColor Cyan
-Write-Host " FFmpeg Native Libraries Downloader" -ForegroundColor Cyan
-Write-Host "==================================================================" -ForegroundColor Cyan
-Write-Host ""
+Write-Host "Downloading $Url"
+Invoke-WebRequest -Uri $Url -OutFile "$tmp\ffmpeg.zip"
+Expand-Archive -Path "$tmp\ffmpeg.zip" -DestinationPath $tmp -Force
 
-# Create output directory
-if (-not (Test-Path $OutputDir)) {
-    New-Item -ItemType Directory -Path $OutputDir | Out-Null
-    Write-Host "Created directory: $OutputDir" -ForegroundColor Green
-}
+# Only the runtime DLLs are needed (no ffmpeg.exe, headers or import libs).
+$bin = Get-ChildItem -Path $tmp -Recurse -Directory -Filter bin | Select-Object -First 1
+Get-ChildItem -Path $Destination -Filter *.dll | Remove-Item -Force
+Copy-Item -Path (Join-Path $bin.FullName "*.dll") -Destination $Destination -Force
+Remove-Item $tmp -Recurse -Force
 
-# FFmpeg download URLs
-$ffmpegUrl = "https://github.com/Ruslan-B/FFmpeg.AutoGen/raw/master/FFmpeg/bin/x64"
-
-# List of required DLL files
-$requiredDlls = @(
-    "avcodec-60.dll",
-    "avdevice-60.dll",
-    "avfilter-9.dll",
-    "avformat-60.dll",
-    "avutil-58.dll",
-    "swresample-4.dll",
-    "swscale-7.dll"
-)
-
-Write-Host "Downloading FFmpeg $Version binaries from GitHub..." -ForegroundColor Yellow
-Write-Host "Source: $ffmpegUrl" -ForegroundColor Gray
-Write-Host ""
-
-$downloadedCount = 0
-$failedCount = 0
-
-foreach ($dll in $requiredDlls) {
-    $url = "$ffmpegUrl/$dll"
-    $outputPath = Join-Path $OutputDir $dll
-
-    try {
-        Write-Host "Downloading: $dll... " -NoNewline
-
-        # Download with progress
-        $webClient = New-Object System.Net.WebClient
-        $webClient.DownloadFile($url, $outputPath)
-
-        if (Test-Path $outputPath) {
-            $fileSize = (Get-Item $outputPath).Length / 1MB
-            Write-Host "OK ($([math]::Round($fileSize, 2)) MB)" -ForegroundColor Green
-            $downloadedCount++
-        } else {
-            Write-Host "FAILED" -ForegroundColor Red
-            $failedCount++
-        }
-    }
-    catch {
-        Write-Host "FAILED: $_" -ForegroundColor Red
-        $failedCount++
-    }
-}
-
-Write-Host ""
-Write-Host "==================================================================" -ForegroundColor Cyan
-Write-Host " Download Summary" -ForegroundColor Cyan
-Write-Host "==================================================================" -ForegroundColor Cyan
-Write-Host "Downloaded: $downloadedCount / $($requiredDlls.Count)" -ForegroundColor $(if ($downloadedCount -eq $requiredDlls.Count) { "Green" } else { "Yellow" })
-Write-Host "Failed: $failedCount" -ForegroundColor $(if ($failedCount -eq 0) { "Green" } else { "Red" })
-Write-Host "Output Directory: $OutputDir" -ForegroundColor Gray
-Write-Host ""
-
-if ($downloadedCount -eq $requiredDlls.Count) {
-    Write-Host "✅ All FFmpeg libraries downloaded successfully!" -ForegroundColor Green
-    Write-Host ""
-    Write-Host "Next steps:" -ForegroundColor Yellow
-    Write-Host "  1. Rebuild the project: dotnet build" -ForegroundColor Gray
-    Write-Host "  2. FFmpeg DLLs will be automatically copied to output directory" -ForegroundColor Gray
-    Write-Host ""
-    exit 0
-} else {
-    Write-Host "⚠️ Some libraries failed to download!" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "Alternative installation methods:" -ForegroundColor Yellow
-    Write-Host "  1. winget install 'FFmpeg (Shared)' --version 7.0" -ForegroundColor Gray
-    Write-Host "  2. Download from: https://www.gyan.dev/ffmpeg/builds/" -ForegroundColor Gray
-    Write-Host ""
-    exit 1
-}
+Get-ChildItem $Destination -Filter *.dll | ForEach-Object { Write-Host "  $($_.Name)" }
+Write-Host "FFmpeg DLLs ready in $Destination"

@@ -69,3 +69,12 @@ logs/
 *.tmp
 *.temp
 MEMORY.md
+
+# Release / deploy artifacts
+publish/
+Releases/
+certs/
+*.pfx
+.env
+# FFmpeg native DLLs (downloaded, ~140 MB)
+src/DeskShare.Desktop/ffmpeg/

@@ -1,4 +1,4 @@
-﻿# DeskShare Release Builder
+# DeskShare Release Builder
 # Creates portable deployment packages for Windows
 
 param(
@@ -69,7 +69,7 @@ $publishDir = "publish/DeskShare-$Version"
 $screenSenderPublish = "$publishDir/ScreenSenderApp"
 
 # Publish as self-contained (includes .NET runtime)
-dotnet publish src/ScreenSenderApp/RemoteDesktop.ScreenSenderApp.csproj `
+dotnet publish src/ScreenSenderApp/DeskShare.ScreenSenderApp.csproj `
     --configuration $Configuration `
     --output $screenSenderPublish `
     --runtime win-x64 `
@@ -90,7 +90,7 @@ Write-Host "[6/7] Publishing SignalingServer (portable)..." -ForegroundColor Yel
 
 $signalingPublish = "$publishDir/SignalingServer"
 
-dotnet publish src/SignalingServer/RemoteDesktop.SignalingServer.csproj `
+dotnet publish src/SignalingServer/DeskShare.SignalingServer.csproj `
     --configuration $Configuration `
     --output $signalingPublish `
     --runtime win-x64 `
@@ -136,11 +136,11 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
 Write-Host "Starting SignalingServer..." -ForegroundColor Yellow
-Start-Process -FilePath "SignalingServer\RemoteDesktop.SignalingServer.exe" -WorkingDirectory "SignalingServer"
+Start-Process -FilePath "SignalingServer\DeskShare.SignalingServer.exe" -WorkingDirectory "SignalingServer"
 Start-Sleep -Seconds 2
 
 Write-Host "Starting ScreenSenderApp..." -ForegroundColor Yellow
-Start-Process -FilePath "ScreenSenderApp\RemoteDesktop.ScreenSenderApp.exe" -WorkingDirectory "ScreenSenderApp"
+Start-Process -FilePath "ScreenSenderApp\DeskShare.ScreenSenderApp.exe" -WorkingDirectory "ScreenSenderApp"
 Start-Sleep -Seconds 2
 
 Write-Host ""
@@ -155,8 +155,8 @@ Write-Host "Press any key to stop all services..." -ForegroundColor Yellow
 
 Write-Host ""
 Write-Host "Stopping services..." -ForegroundColor Yellow
-Stop-Process -Name "RemoteDesktop.SignalingServer" -ErrorAction SilentlyContinue
-Stop-Process -Name "RemoteDesktop.ScreenSenderApp" -ErrorAction SilentlyContinue
+Stop-Process -Name "DeskShare.SignalingServer" -ErrorAction SilentlyContinue
+Stop-Process -Name "DeskShare.ScreenSenderApp" -ErrorAction SilentlyContinue
 Write-Host "✓ All services stopped" -ForegroundColor Green
 "@
 
@@ -167,7 +167,7 @@ Write-Host "  ✓ Start-All.ps1 created" -ForegroundColor Green
 $startSignalingScript = @'
 # Start SignalingServer only
 Set-Location SignalingServer
-.\RemoteDesktop.SignalingServer.exe
+.\DeskShare.SignalingServer.exe
 '@
 
 Set-Content -Path "$publishDir/Start-SignalingServer.ps1" -Value $startSignalingScript -Encoding UTF8
@@ -177,7 +177,7 @@ Write-Host "  ✓ Start-SignalingServer.ps1 created" -ForegroundColor Green
 $startScreenSenderScript = @'
 # Start ScreenSenderApp only
 Set-Location ScreenSenderApp
-.\RemoteDesktop.ScreenSenderApp.exe
+.\DeskShare.ScreenSenderApp.exe
 '@
 
 Set-Content -Path "$publishDir/Start-ScreenSender.ps1" -Value $startScreenSenderScript -Encoding UTF8

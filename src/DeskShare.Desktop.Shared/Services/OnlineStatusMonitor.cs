@@ -1,5 +1,6 @@
 using System.Net.Http;
 using System.Net.Http.Json;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using DeskShare.Desktop.Shared.Models;
 
@@ -17,7 +18,7 @@ public class OnlineStatusMonitor : IDisposable
     private Timer? _checkTimer;
     private bool _disposed;
 
-    private const string SignalingServerUrl = "http://localhost:5151";
+    private readonly string _signalingServerUrl;
     private static readonly TimeSpan CheckInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(5);
 
@@ -28,8 +29,10 @@ public class OnlineStatusMonitor : IDisposable
 
     public OnlineStatusMonitor(
         ILogger<OnlineStatusMonitor> logger,
-        ConnectionManager connectionManager)
+        ConnectionManager connectionManager,
+        IConfiguration configuration)
     {
+        _signalingServerUrl = SignalingUrl.HttpBaseFromConfig(configuration);
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _connectionManager = connectionManager ?? throw new ArgumentNullException(nameof(connectionManager));
 
@@ -139,7 +142,7 @@ public class OnlineStatusMonitor : IDisposable
         {
             _logger.LogDebug("Checking online status for server {ServerId}", serverId);
 
-            var response = await _httpClient.GetAsync($"{SignalingServerUrl}/servers/{serverId}/status");
+            var response = await _httpClient.GetAsync($"{_signalingServerUrl}/servers/{serverId}/status");
 
             if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
             {

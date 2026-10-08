@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Windows;
@@ -587,7 +587,7 @@ public partial class MainWindow : Window
         {
             // Authenticate with SignalingServer first
             using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-            var signalingUrl = "http://localhost:5151"; // TODO: Get from configuration
+            var signalingUrl = SignalingUrl.HttpBaseFromConfig(App.Configuration!);
 
             // Generate HMAC signature for secure authentication
             var clientId = DeskShare.Core.ServerIdGenerator.GenerateServerId(); // MAC-based static client ID

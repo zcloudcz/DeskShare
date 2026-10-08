@@ -452,3 +452,9 @@ async function updateStats() {
 // Initialize
 console.log('[Client] Ready');
 updateStatus('Ready to connect', 'info');
+
+// When served by the SignalingServer itself (not opened from disk), default to that host.
+if (location.protocol.startsWith('http')) {
+    const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
+    document.getElementById('signalingUrl').value = `${wsScheme}://${location.host}/signal`;
+}

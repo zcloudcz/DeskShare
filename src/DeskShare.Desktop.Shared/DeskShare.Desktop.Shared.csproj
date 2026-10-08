@@ -12,7 +12,6 @@
   <!-- References to shared project libraries -->
   <ItemGroup>
     <ProjectReference Include="..\Core\DeskShare.Core.csproj" />
-    <ProjectReference Include="..\SignalingServer\DeskShare.SignalingServer.csproj" />
   </ItemGroup>
 
   <!-- NuGet packages shared by both WPF and Avalonia desktop clients -->

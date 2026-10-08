@@ -636,3 +636,9 @@ document.addEventListener('fullscreenchange', () => {
         fullscreenBtn.textContent = 'Fullscreen';
     }
 });
+
+// When served by the SignalingServer itself (not opened from disk), default to that host.
+if (location.protocol.startsWith('http')) {
+    const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
+    document.getElementById('signalingUrl').value = `${wsScheme}://${location.host}/signal`;
+}

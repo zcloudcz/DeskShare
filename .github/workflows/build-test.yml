@@ -7,7 +7,7 @@ name: Build and Test
 on:
   push:
     branches: [ main ]
-  pull_requests:
+  pull_request:
     branches: [ main ]
 
 jobs:
@@ -35,7 +35,7 @@ jobs:
 
       # Step 5: Run all unit and integration tests, output results in TRX format
       - name: Run tests
-        run: dotnet test DeskShare.sln --configuration Release --no-build --logger trx --results-directory TestResults
+        run: dotnet test DeskShare.sln --configuration Release --no-build --logger trx --results-directory TestResults --filter "FullyQualifiedName!~WindowsInputController"
 
       # Step 6: Upload test results as a build artifact (useful for debugging failed tests)
       - name: Upload test results

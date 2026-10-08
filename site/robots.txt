@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://deskshare.zcloud.cz/sitemap.xml

@@ -1,6 +1,16 @@
-﻿# DeskShare
+# DeskShare
 
 Vysokovýkonná aplikace pro streamování pracovních ploch a oken na Windows pomocí WebRTC s důrazem na nízkou latenci, čistý kód a plné pokrytí testy.
+
+## ⬇️ Stažení
+
+- Web: **https://deskshare.zcloud.cz** (CZ/EN)
+- Windows instalátor: [DeskShare-win-Setup.exe](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Setup.exe) (Velopack, automatické aktualizace)
+- Přenosná verze: [DeskShare-win-Portable.zip](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Portable.zip)
+- Web viewer (bez instalace): https://app.deskshare.zcloud.cz/webclient/index-control.html
+
+Hostovaný signaling server běží na `app.deskshare.zcloud.cz` (Azure App Service, nasazení přes
+`.github/workflows/deploy-signaling.yml`). Vydání vzniká pushnutím tagu `vX.Y.Z` (`release.yml`).
 
 ## 🎯 Přehled
 
