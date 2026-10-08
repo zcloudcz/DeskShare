@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using DeskShare.Core.Interfaces;
 using DeskShare.Core.Models;
@@ -151,7 +151,10 @@ public sealed class CapturePipeline : IDisposable
                 // Try to acquire frame
                 if (_capturer.TryAcquireFrame(out var frame))
                 {
-                    Interlocked.Increment(ref _framesCaptured);
+                    if (Interlocked.Increment(ref _framesCaptured) % 100 == 0)
+                    {
+                        Log.Debug("Captured {Count} frames so far", _framesCaptured);
+                    }
 
                     // Try to add to queue (non-blocking)
                     if (!_captureQueue.TryAdd(frame!, 0, cancellationToken))

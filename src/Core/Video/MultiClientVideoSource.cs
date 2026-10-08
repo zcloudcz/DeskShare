@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using DeskShare.Core.Interfaces;
 using DeskShare.Core.Models;
@@ -145,7 +145,7 @@ public sealed class MultiClientVideoSource : IVideoSource, IDisposable
 
         // Add video track to peer connection (send-only, we don't receive)
         var videoTrack = new MediaStreamTrack(
-            videoEncoder.GetVideoSourceFormats(),
+            EncoderFormatShim.AdvertisedFormats(videoEncoder),
             MediaStreamStatusEnum.SendOnly);
 
         peerConnection.addTrack(videoTrack);
@@ -157,7 +157,7 @@ public sealed class MultiClientVideoSource : IVideoSource, IDisposable
         // Handle codec negotiation - when client chooses a codec, configure encoder
         peerConnection.OnVideoFormatsNegotiated += (formats) =>
         {
-            videoEncoder.SetVideoSourceFormat(formats.First());
+            videoEncoder.SetVideoSourceFormat(EncoderFormatShim.ToEncoder(formats.First()));
         };
 
         // Handle connection state changes for automatic cleanup

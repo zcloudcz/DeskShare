@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using DeskShare.Core.Interfaces;
 using DeskShare.Core.Models;
 using Serilog;
@@ -101,19 +101,19 @@ public sealed class SIPSorceryVideoSource : IVideoSource
 
         // Add video track to peer connection (send-only, we don't receive)
         var videoTrack = new MediaStreamTrack(
-            _videoEncoder!.GetVideoSourceFormats(),
+            EncoderFormatShim.AdvertisedFormats(_videoEncoder!),
             MediaStreamStatusEnum.SendOnly);
 
         _peerConnection.addTrack(videoTrack);
 
         // Connect encoder output to peer connection
         // When encoder produces VP8 frames, they'll be sent via WebRTC
-        _videoEncoder.OnVideoSourceEncodedSample += _peerConnection.SendVideo;
+        _videoEncoder!.OnVideoSourceEncodedSample += _peerConnection.SendVideo;
 
         // Handle codec negotiation - when client chooses a codec, configure encoder
         _peerConnection.OnVideoFormatsNegotiated += (formats) =>
         {
-            _videoEncoder.SetVideoSourceFormat(formats.First());
+            _videoEncoder!.SetVideoSourceFormat(EncoderFormatShim.ToEncoder(formats.First()));
         };
 
         Log.Information("Peer connection reset complete");
@@ -156,7 +156,7 @@ public sealed class SIPSorceryVideoSource : IVideoSource
 
         // Create video track with formats from encoder
         var videoTrack = new MediaStreamTrack(
-            _videoEncoder.GetVideoSourceFormats(),
+            EncoderFormatShim.AdvertisedFormats(_videoEncoder),
             MediaStreamStatusEnum.SendOnly);
 
         _peerConnection.addTrack(videoTrack);
@@ -167,7 +167,7 @@ public sealed class SIPSorceryVideoSource : IVideoSource
         // Handle format negotiation
         _peerConnection.OnVideoFormatsNegotiated += (formats) =>
         {
-            _videoEncoder.SetVideoSourceFormat(formats.First());
+            _videoEncoder.SetVideoSourceFormat(EncoderFormatShim.ToEncoder(formats.First()));
         };
 
         _initialized = true;
@@ -208,6 +208,8 @@ public sealed class SIPSorceryVideoSource : IVideoSource
             lock (_statsLock)
             {
                 _framesDropped++;
+                if (_framesDropped % 100 == 1)
+                    Log.Debug("PushFrame: dropping, peer connection state is {State}", state);
             }
             return false;
         }
@@ -224,6 +226,8 @@ public sealed class SIPSorceryVideoSource : IVideoSource
                 lock (_statsLock)
                 {
                     _framesDropped++;
+                    if (_framesDropped % 100 == 1)
+                        Log.Debug("PushFrame: dropping for backpressure ({SinceLast:F1} ms since last frame)", timeSinceLastFrame.TotalMilliseconds);
                 }
                 return false;
             }
@@ -390,7 +394,7 @@ public sealed class SIPSorceryVideoSource : IVideoSource
         }
 
         Log.Information("Video format set: {Codec}", format.Codec);
-        _videoEncoder.SetVideoSourceFormat(format);
+        _videoEncoder.SetVideoSourceFormat(EncoderFormatShim.ToEncoder(format));
     }
 
     /// <inheritdoc/>

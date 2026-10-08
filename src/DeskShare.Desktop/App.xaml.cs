@@ -12,6 +12,7 @@ using DeskShare.Desktop.Services;
 // Core interfaces for DI registration
 using DeskShare.Core.Interfaces;
 using Velopack;
+using Velopack.Sources;
 
 namespace DeskShare.Desktop;
 
@@ -122,8 +123,38 @@ public partial class App : Application
         // Build service provider
         ServiceProvider = services.BuildServiceProvider();
 
+        // Route SIPSorcery (WebRTC) library logs into the app log; otherwise negotiation problems are invisible.
+        SIPSorcery.LogFactory.Set(ServiceProvider.GetRequiredService<ILoggerFactory>());
+
         var logger = ServiceProvider.GetRequiredService<ILogger<App>>();
         logger.LogInformation("RemoteDesktop.NET Desktop application started");
+
+        _ = CheckForUpdatesAsync(logger);
+    }
+
+    /// <summary>
+    /// Downloads a newer release from GitHub in the background and installs it when the app exits,
+    /// so an update never interrupts a running session. Only active for installed (not portable/dev) builds.
+    /// </summary>
+    private static async Task CheckForUpdatesAsync(ILogger<App> logger)
+    {
+        try
+        {
+            var manager = new UpdateManager(new GithubSource("https://github.com/zcloudcz/DeskShare", null, false));
+            if (!manager.IsInstalled) return;
+
+            var update = await manager.CheckForUpdatesAsync();
+            if (update == null) return;
+
+            logger.LogInformation("Update {Version} available, downloading", update.TargetFullRelease.Version);
+            await manager.DownloadUpdatesAsync(update);
+            manager.WaitExitThenApplyUpdates(update);
+            logger.LogInformation("Update {Version} will be applied on exit", update.TargetFullRelease.Version);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Update check failed");
+        }
     }
 
     protected override void OnExit(ExitEventArgs e)

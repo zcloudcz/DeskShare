@@ -31,6 +31,8 @@ public sealed class DesktopDuplicator : IScreenCapturer
     private bool _initialized;
     private bool _disposed;
     private bool _frameAcquired;
+    private long _failedAcquires;
+    private DateTime _lastReinitialize = DateTime.MinValue;
 
     /// <inheritdoc/>
     public int Width { get; private set; }
@@ -171,17 +173,36 @@ public sealed class DesktopDuplicator : IScreenCapturer
         if (_frameAcquired)
             throw new InvalidOperationException("Previous frame has not been released.");
 
+        // After a failed Reinitialize() there is no duplication object yet; try again (throttled inside).
+        if (_duplication == null)
+        {
+            Reinitialize();
+            if (_duplication == null)
+                return false;
+        }
+
         try
         {
             // Try to acquire next frame with timeout
-            var result = _duplication!.AcquireNextFrame(
+            var result = _duplication.AcquireNextFrame(
                 AcquireTimeoutMs,
                 out var frameInfo,
                 out var desktopResource);
 
-            // No new frame available (no screen changes)
+            // No new frame available (no screen changes) — anything other than a timeout is a real problem
+            // (e.g. DXGI_ERROR_ACCESS_LOST after a display mode change) and must not be swallowed silently.
             if (result.Failure)
             {
+                if (result.Code == Vortice.DXGI.ResultCode.AccessLost.Code)
+                {
+                    // The duplication interface is dead for good (desktop switch, mode change, driver reset);
+                    // Windows requires a new IDXGIOutputDuplication. Without this the capture silently stops forever.
+                    Reinitialize();
+                }
+                else if (result.Code != Vortice.DXGI.ResultCode.WaitTimeout.Code && _failedAcquires++ % 100 == 0)
+                {
+                    Log.Warning("AcquireNextFrame failed: {Result} (occurrence {Count})", result, _failedAcquires);
+                }
                 return false;
             }
 
@@ -236,13 +257,48 @@ public sealed class DesktopDuplicator : IScreenCapturer
                 _deviceContext.Unmap(_stagingTexture!, 0u);
             }
         }
-        catch
+        catch (Exception ex)
         {
+            if (_failedAcquires++ % 100 == 0)
+            {
+                Log.Warning(ex, "Frame acquisition threw (occurrence {Count})", _failedAcquires);
+            }
             if (_frameAcquired)
             {
                 ReleaseFrame();
             }
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Recreates the device and duplication after DXGI_ERROR_ACCESS_LOST. Throttled to once per second:
+    /// while the secure desktop (UAC, lock screen) is up, every attempt fails again.
+    /// </summary>
+    private void Reinitialize()
+    {
+        var now = DateTime.UtcNow;
+        if (now - _lastReinitialize < TimeSpan.FromSeconds(1))
+            return;
+        _lastReinitialize = now;
+
+        Log.Warning("Desktop duplication access lost, reinitializing capture");
+        var (oldWidth, oldHeight) = (Width, Height);
+        CleanupResources();
+        _initialized = false;
+        _frameAcquired = false;
+
+        if (!Initialize())
+        {
+            Log.Error("Reinitialization failed; will retry on next frame");
+            _initialized = true; // keep the pipeline alive so it retries instead of throwing
+            return;
+        }
+
+        if (Width != oldWidth || Height != oldHeight)
+        {
+            // ponytail: the pipeline/encoder are sized at start; a resolution change needs a full restart.
+            Log.Warning("Display resolution changed {OldW}x{OldH} → {W}x{H}; restart sharing to apply", oldWidth, oldHeight, Width, Height);
         }
     }
 
