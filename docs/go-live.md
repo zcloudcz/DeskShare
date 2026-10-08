@@ -103,5 +103,6 @@ The workflow imports the certificate into a temporary keychain, derives the iden
 (`--signAppIdentity`, `--signInstallIdentity`, `--notaryProfile`). Without the Installer certificate only the
 portable `.app` zip is produced (`--noInst`).
 
-Linux (AppImage, x64) needs nothing extra. Both non-Windows builds are viewer-only betas built without a
+Release assets: `DeskShare-osx-Portable.zip` (+ `DeskShare-osx-Setup.pkg` once the Installer certificate is
+present), `DeskShare.AppImage`, `releases.osx.json`, `releases.linux.json`. Linux (AppImage, x64) needs nothing extra. Both non-Windows builds are viewer-only betas built without a
 test machine; `MainWindow` disables "Start Server" on macOS (no capture implementation yet).
