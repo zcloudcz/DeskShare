@@ -1,6 +1,8 @@
 # Deploys the SignalingServer (+ WebClient) to Azure App Service "deskshare-signaling"
 # (app.deskshare.zcloud.cz). Runs on every push to main that touches the server or its dependencies.
-# Secret AZURE_WEBAPP_PUBLISH_PROFILE = publish profile XML downloaded from the App Service.
+# Auth: GitHub OIDC → Entra app "deskshare-github-deploy" (federated credential for refs/heads/main,
+# role Website Contributor on the web app). Secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID.
+# SCM basic auth stays disabled on the App Service, so publish profiles are not used.
 
 name: Deploy signaling server
 
@@ -16,6 +18,10 @@ on:
       - 'src/WebClient/**'
       - '.github/workflows/deploy-signaling.yml'
   workflow_dispatch:
+
+permissions:
+  id-token: write   # OIDC token for azure/login
+  contents: read
 
 jobs:
   deploy:
@@ -37,9 +43,15 @@ jobs:
       - name: Add WebClient
         run: cp -r src/WebClient publish/WebClient
 
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
       - name: Deploy to Azure App Service
         uses: azure/webapps-deploy@v3
         with:
           app-name: deskshare-signaling
-          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
           package: publish

@@ -23,22 +23,24 @@ gh api -X POST repos/zcloudcz/DeskShare/pages -f build_type=workflow
 
 `build-test.yml` runs on push; `pages.yml` publishes `site/` to GitHub Pages.
 
-## 3. Azure App Service for the signaling server
+## 3. Azure App Service for the signaling server (done 2026-10-08)
 
-Reuses the existing Linux B1 plan `agentwall-plan` (no extra cost).
+Web app `deskshare-signaling` in the existing Linux B1 plan `agentwall-plan` (rg-agentwall).
+CI deploys with GitHub OIDC: Entra app `deskshare-github-deploy` has a federated credential for
+`repo:zcloudcz/DeskShare:ref:refs/heads/main` and the Website Contributor role on the web app;
+repo secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`. SCM basic auth is
+disabled (default), so publish profiles do not work and are not needed.
+
+Manual deploy without CI:
 
 ```powershell
-az webapp create -g rg-agentwall -p agentwall-plan -n deskshare-signaling --runtime "DOTNETCORE:8.0"
-az webapp config set -g rg-agentwall -n deskshare-signaling --web-sockets-enabled true --always-on true --http20-enabled true
-az webapp update -g rg-agentwall -n deskshare-signaling --https-only true
-az webapp config appsettings set -g rg-agentwall -n deskshare-signaling --settings ASPNETCORE_ENVIRONMENT=Production ASPNETCORE_FORWARDEDHEADERS_ENABLED=true
-az webapp deployment list-publishing-profiles -g rg-agentwall -n deskshare-signaling --xml | gh secret set AZURE_WEBAPP_PUBLISH_PROFILE -R zcloudcz/DeskShare
-gh workflow run deploy-signaling.yml -R zcloudcz/DeskShare
+dotnet publish src/SignalingServer/DeskShare.SignalingServer.csproj -c Release -o publish
+Copy-Item src/WebClient publish/WebClient -Recurse
+Compress-Archive publish/* sig.zip -Force
+az webapp deploy -g rg-agentwall -n deskshare-signaling --src-path sig.zip --type zip --clean true --restart true
 ```
 
-Check: `https://deskshare-signaling.azurewebsites.net/health` (returns 400 until the custom
-domain below is bound, because `AllowedHosts` in `appsettings.Production.json` lists only
-`app.deskshare.zcloud.cz` and `deskshare-signaling.azurewebsites.net`).
+Check: `https://deskshare-signaling.azurewebsites.net/health` → 200.
 
 ## 4. DNS (Wedos, zone zcloud.cz)
 
