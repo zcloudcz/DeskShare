@@ -45,7 +45,7 @@ public class ClientManager : IDisposable
     /// <summary>
     /// Fired when a decoded video frame is received (BGRA32 byte array).
     /// </summary>
-    public event EventHandler<byte[]>? FrameReceived;
+    public event EventHandler<VideoFrameReceivedEventArgs>? FrameReceived;
 
     /// <summary>
     /// Fired when connection statistics are updated.
@@ -296,7 +296,7 @@ public class ClientManager : IDisposable
         _videoSink.FrameReceived += (sender, args) =>
         {
             _logger.LogDebug("[ClientManager] VideoSink.FrameReceived event fired - frame size: {Size} bytes", args.FrameData.Length);
-            FrameReceived?.Invoke(this, args.FrameData);
+            FrameReceived?.Invoke(this, args);
 
             if (FrameReceived == null)
             {

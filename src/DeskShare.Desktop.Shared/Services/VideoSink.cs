@@ -103,7 +103,7 @@ public class VideoSink : IVideoSink, IDisposable
                     _frameQueue.TryDequeue(out _);
                 }
 
-                FrameReceived?.Invoke(this, new VideoFrameReceivedEventArgs(bgra32Data));
+                FrameReceived?.Invoke(this, new VideoFrameReceivedEventArgs(bgra32Data, rawImage.Width, rawImage.Height));
                 OnVideoSinkDecodedSampleFaster?.Invoke(rawImage);
             }
         }
@@ -292,10 +292,17 @@ public class VideoSink : IVideoSink, IDisposable
 /// </summary>
 public class VideoFrameReceivedEventArgs : EventArgs
 {
+    /// <summary>Tightly packed BGRA32 pixels (Width * 4 bytes per row).</summary>
     public byte[] FrameData { get; }
 
-    public VideoFrameReceivedEventArgs(byte[] frameData)
+    /// <summary>Frame size in pixels; the viewer sizes its bitmap from these (the sender's screen, not a fixed 1080p).</summary>
+    public int Width { get; }
+    public int Height { get; }
+
+    public VideoFrameReceivedEventArgs(byte[] frameData, int width, int height)
     {
         FrameData = frameData;
+        Width = width;
+        Height = height;
     }
 }

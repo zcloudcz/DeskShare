@@ -530,46 +530,56 @@ public partial class ProjectionWindow : Window
     /// - Avalonia: using (var fb = bitmap.Lock()) { Marshal.Copy(data, 0, fb.Address, size) }
     ///   The Lock() returns an ILockedFramebuffer that auto-unlocks on Dispose.
     /// </summary>
-    private void OnFrameReceived(object? sender, byte[] frameData)
+    private void OnFrameReceived(object? sender, VideoFrameReceivedEventArgs frame)
     {
-        _logger.LogDebug("[ProjectionWindow] OnFrameReceived called - frame size: {Size} bytes", frameData.Length);
+        _logger.LogDebug("[ProjectionWindow] Frame {Width}x{Height}, {Size} bytes", frame.Width, frame.Height, frame.FrameData.Length);
 
         Dispatcher.UIThread.Invoke(() =>
         {
             try
             {
-                if (_frameBuffer == null)
+                // The bitmap must match the sender's screen size. A fixed 1920x1080 buffer showed a sheared,
+                // cropped picture for every other resolution. Recreate it whenever the incoming size changes.
+                if (_frameBuffer == null ||
+                    _frameBuffer.PixelSize.Width != frame.Width ||
+                    _frameBuffer.PixelSize.Height != frame.Height)
                 {
-                    _logger.LogWarning("[ProjectionWindow] Frame buffer is null, cannot render frame");
-                    return;
+                    _frameBuffer?.Dispose();
+                    _frameBuffer = new WriteableBitmap(
+                        new PixelSize(frame.Width, frame.Height),
+                        new Vector(96, 96),
+                        Avalonia.Platform.PixelFormat.Bgra8888);
+                    VideoImage.Source = _frameBuffer;
+                    _logger.LogInformation("[ProjectionWindow] Video size {Width}x{Height}", frame.Width, frame.Height);
                 }
 
-                _logger.LogInformation("[ProjectionWindow] Locking frame buffer for rendering...");
-
-                // Avalonia uses ILockedFramebuffer (using pattern) instead of WPF's Lock/Unlock
                 using (var framebuffer = _frameBuffer.Lock())
                 {
-                    int expectedSize = framebuffer.RowBytes * framebuffer.Size.Height;
-
-                    _logger.LogInformation("[ProjectionWindow] Frame buffer: {Width}x{Height}, rowBytes: {RowBytes}, expected size: {ExpectedSize}, actual size: {ActualSize}",
-                        framebuffer.Size.Width, framebuffer.Size.Height, framebuffer.RowBytes, expectedSize, frameData.Length);
-
-                    if (frameData.Length >= expectedSize)
+                    int sourceRowBytes = frame.Width * 4;
+                    if (frame.FrameData.Length < sourceRowBytes * frame.Height)
                     {
-                        _logger.LogInformation("[ProjectionWindow] Copying frame data to framebuffer...");
-                        Marshal.Copy(frameData, 0, framebuffer.Address,
-                            Math.Min(frameData.Length, expectedSize));
-                        _logger.LogInformation("[ProjectionWindow] Frame data copied successfully");
+                        _logger.LogWarning("[ProjectionWindow] Frame data too small: {ActualSize} < {ExpectedSize}",
+                            frame.FrameData.Length, sourceRowBytes * frame.Height);
+                        return;
+                    }
+
+                    if (framebuffer.RowBytes == sourceRowBytes)
+                    {
+                        Marshal.Copy(frame.FrameData, 0, framebuffer.Address, sourceRowBytes * frame.Height);
                     }
                     else
                     {
-                        _logger.LogWarning("[ProjectionWindow] Frame data too small: {ActualSize} < {ExpectedSize}",
-                            frameData.Length, expectedSize);
+                        // Platform bitmaps may pad rows; copy line by line into the padded layout.
+                        for (int y = 0; y < frame.Height; y++)
+                        {
+                            Marshal.Copy(frame.FrameData, y * sourceRowBytes,
+                                framebuffer.Address + y * framebuffer.RowBytes, sourceRowBytes);
+                        }
                     }
                 }
-                // Lock is auto-released via Dispose (no manual Unlock needed)
 
-                _logger.LogInformation("[ProjectionWindow] Frame rendered successfully to VideoImage");
+                // Lock/Dispose updates the pixels, but Image only repaints when told to.
+                VideoImage.InvalidateVisual();
             }
             catch (Exception ex)
             {

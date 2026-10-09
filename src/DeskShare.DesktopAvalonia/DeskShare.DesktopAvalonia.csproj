@@ -33,6 +33,11 @@
     <PackageReference Include="Velopack" Version="1.2.161" />
   </ItemGroup>
 
+  <!-- Window/taskbar icon (Window.Icon="/deskshare.png"); the exe icon comes from ApplicationIcon -->
+  <ItemGroup>
+    <AvaloniaResource Include="deskshare.png" />
+  </ItemGroup>
+
   <!-- Copy appsettings.json to output directory -->
   <ItemGroup>
     <None Update="appsettings.json">
