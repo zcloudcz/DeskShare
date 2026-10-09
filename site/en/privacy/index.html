@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy – DeskShare</title>
+<meta name="description" content="How DeskShare processes personal data: website, app, signaling server and TURN relay.">
+<link rel="canonical" href="https://deskshare.zcloud.cz/en/privacy/">
+<link rel="alternate" hreflang="cs" href="https://deskshare.zcloud.cz/zasady-ochrany-osobnich-udaju/">
+<link rel="alternate" hreflang="en" href="https://deskshare.zcloud.cz/en/privacy/">
+<link rel="icon" href="/assets/icon.png" type="image/png">
+<link rel="stylesheet" href="/assets/fonts/fonts.css">
+<link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+<div class="wrap">
+<header class="site-header">
+  <a class="brand" href="/en/"><img src="/assets/icon.png" alt="">DeskShare</a>
+  <nav>
+    <a class="lang" href="/zasady-ochrany-osobnich-udaju/" lang="cs" hreflang="cs">CS</a>
+  </nav>
+</header>
+
+<main class="legal">
+<h1>Privacy</h1>
+<p>Effective 9 October 2026. This page describes which personal data we process when you use the deskshare.zcloud.cz website, the DeskShare app and the web viewer, in line with Regulation (EU) 2016/679 (GDPR) and Czech Act No. 110/2019.</p>
+
+<h2>1. Controller</h2>
+<p>Martin Zahálka, Havlíčkova 1550/54, 680 01 Boskovice, Czech Republic, company ID 07783809. Contact: <a href="mailto:martin@zcloud.cz">martin@zcloud.cz</a>. We have not appointed a data protection officer because we are not required to.</p>
+
+<h2>2. Data we process</h2>
+<h3>The deskshare.zcloud.cz website</h3>
+<ul>
+  <li>The site is static and hosted on GitHub Pages. GitHub processes visitors' IP addresses and technical browser data with every request.</li>
+  <li>The page loads the latest app version number from GitHub, which also sees your IP address.</li>
+  <li>The site uses no cookies and no analytics or advertising tools. Fonts are served from the site itself, so nothing is sent to Google.</li>
+</ul>
+<h3>Connections through the signaling server app.deskshare.zcloud.cz</h3>
+<ul>
+  <li><strong>Identifier of the shared computer (Server ID)</strong> and a random viewer identifier. They contain no name or other user details.</li>
+  <li><strong>IP address.</strong> We use it to limit the number of requests and to record failed sign-in attempts.</li>
+  <li><strong>Connection setup data.</strong> The IP addresses and ports both sides exchange to connect directly. The server only forwards them and does not store them.</li>
+  <li><strong>Connection times and sharing status</strong>, for example whether a computer is online.</li>
+</ul>
+<p>We never store passkeys or passwords. The server only verifies the signed connection request.</p>
+<h3>Screen image and remote control</h3>
+<p>The screen image, mouse movements and key presses travel directly between the computers and are encrypted (DTLS and SRTP). The server cannot see them. If a direct connection is not possible, the encrypted data is relayed by Cloudflare (TURN relay). Cloudflare cannot see the content; it only processes IP addresses and the amount of data transferred.</p>
+<h3>The app on your computer</h3>
+<p>The app stores an identifier, an installation key, saved connections and operational logs on your computer. It does not send them anywhere. On start it checks GitHub for new versions, which lets GitHub see your IP address.</p>
+
+<h2>3. Purpose and legal basis</h2>
+<p>We process the data to connect the computers and run the service (performance of a contract, Art. 6(1)(b) GDPR). IP addresses and records of failed sign-ins are processed for security and abuse prevention (legitimate interest, Art. 6(1)(f) GDPR).</p>
+
+<h2>4. Retention</h2>
+<ul>
+  <li>Computer registrations, tokens and connection data exist only in the server's memory. They are deleted at most 15 minutes after disconnecting, or when the server restarts.</li>
+  <li>Server operational logs are kept for at most 30 days.</li>
+</ul>
+
+<h2>5. Processors</h2>
+<ul>
+  <li><strong>Microsoft Ireland Operations Ltd.</strong>: runs the signaling server (Microsoft Azure, West Europe data centre, the Netherlands).</li>
+  <li><strong>Cloudflare, Inc.</strong>: relays the encrypted connection (TURN) when a direct connection is not possible.</li>
+  <li><strong>GitHub, Inc.</strong>: hosts the website and distributes installers and updates.</li>
+</ul>
+<p>We do not sell or share the data with other parties. Any transfer outside the EU/EEA by a processor happens only with appropriate safeguards (EU-U.S. Data Privacy Framework, standard contractual clauses).</p>
+
+<h2>6. Your rights</h2>
+<p>You have the right to access, rectify and erase your data, to restrict processing, to data portability and to object. Just write to <a href="mailto:martin@zcloud.cz">martin@zcloud.cz</a>. You can also lodge a complaint with the Czech Office for Personal Data Protection (<a href="https://uoou.gov.cz">uoou.gov.cz</a>).</p>
+</main>
+
+<footer>
+  <p>DeskShare is an open source project by Martin Zahálka · <a href="mailto:martin@zcloud.cz">martin@zcloud.cz</a></p>
+  <p><a href="/en/">Back to DeskShare</a> · <a href="/zasady-ochrany-osobnich-udaju/" lang="cs" hreflang="cs">Česky</a></p>
+</footer>
+</div>
+</body>
+</html>

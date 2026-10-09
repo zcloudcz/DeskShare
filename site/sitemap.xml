@@ -2,4 +2,6 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
   <url><loc>https://deskshare.zcloud.cz/</loc><xhtml:link rel="alternate" hreflang="cs" href="https://deskshare.zcloud.cz/"/><xhtml:link rel="alternate" hreflang="en" href="https://deskshare.zcloud.cz/en/"/></url>
   <url><loc>https://deskshare.zcloud.cz/en/</loc><xhtml:link rel="alternate" hreflang="cs" href="https://deskshare.zcloud.cz/"/><xhtml:link rel="alternate" hreflang="en" href="https://deskshare.zcloud.cz/en/"/></url>
+  <url><loc>https://deskshare.zcloud.cz/zasady-ochrany-osobnich-udaju/</loc><xhtml:link rel="alternate" hreflang="cs" href="https://deskshare.zcloud.cz/zasady-ochrany-osobnich-udaju/"/><xhtml:link rel="alternate" hreflang="en" href="https://deskshare.zcloud.cz/en/privacy/"/></url>
+  <url><loc>https://deskshare.zcloud.cz/en/privacy/</loc><xhtml:link rel="alternate" hreflang="cs" href="https://deskshare.zcloud.cz/zasady-ochrany-osobnich-udaju/"/><xhtml:link rel="alternate" hreflang="en" href="https://deskshare.zcloud.cz/en/privacy/"/></url>
 </urlset>
