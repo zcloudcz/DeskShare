@@ -170,7 +170,7 @@
             </div>
 
             <div class="control-group">
-                <button id="connectBtn" onclick="connect()">Connect</button>
+                <button id="connectBtn" onclick="userDisconnected = false; connect()">Connect</button>
                 <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
                 <button id="fullscreenBtn" onclick="toggleFullscreen()" disabled>Fullscreen</button>
                 <button id="controlBtn" onclick="toggleControl()" disabled title="Available when the host allowed remote control">Enable control</button>

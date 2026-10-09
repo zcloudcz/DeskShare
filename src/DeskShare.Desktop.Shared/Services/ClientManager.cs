@@ -482,7 +482,7 @@ public class ClientManager : IDisposable
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
                     _logger.LogInformation("Signaling server closed connection");
-                    await DisconnectAsync();
+                    await OnSignalingLostAsync();
                     break;
                 }
 
@@ -502,8 +502,24 @@ public class ClientManager : IDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error receiving signaling messages");
-            await DisconnectAsync();
+            await OnSignalingLostAsync();
         }
+    }
+
+    /// <summary>
+    /// Video and input run peer-to-peer (or via TURN), not through the signaling server, so losing the
+    /// signaling socket (e.g. during a server deployment) must not end a running session. If the peer
+    /// connection later fails, the existing TryReconnectAsync path resumes signaling.
+    /// </summary>
+    private async Task OnSignalingLostAsync()
+    {
+        if (_peerConnection?.connectionState == RTCPeerConnectionState.connected)
+        {
+            _logger.LogWarning("Signaling connection lost; peer-to-peer session continues");
+            return;
+        }
+
+        await DisconnectAsync();
     }
 
     private async Task HandleSignalingMessageAsync(SignalingMessage message)
@@ -526,6 +542,13 @@ public class ClientManager : IDisposable
 
             case SignalingMessageType.Error:
                 _logger.LogError("Signaling error: {Error}", message.ErrorMessage);
+                // "Client <sender> disconnected" also arrives when only the sender's signaling socket
+                // blipped (it reconnects by itself); keep a session whose media is still connected.
+                if (_peerConnection?.connectionState == RTCPeerConnectionState.connected &&
+                    message.ErrorMessage?.Contains("disconnected", StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    break;
+                }
                 await DisconnectAsync();
                 break;
 

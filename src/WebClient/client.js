@@ -12,6 +12,7 @@ let reconnectAttempts = 0; // Number of reconnection attempts
 let reconnectTimeout = null; // Timeout for reconnection delay
 let isReconnecting = false; // Flag to prevent multiple simultaneous reconnections
 let dataChannel = null; // Created by the sender when the host allowed remote control
+let userDisconnected = false; // Set by disconnect(); unexpected socket closes may reconnect
 let remoteControl = null; // RemoteControl (remote-control.js) bound to the video element
 
 const PING_INTERVAL_MS = 5000; // Send ping every 5 seconds
@@ -218,7 +219,9 @@ async function connect(tryResume = false) {
 
                     // If the error is about server disconnecting, clean up
                     if (message.ErrorMessage && message.ErrorMessage.includes('disconnected')) {
-                        if (message.SenderId === senderId) {
+                        // The sender's signaling socket can drop briefly (it reconnects by itself) while the
+                        // peer-to-peer video keeps running; only give up when the media is gone as well.
+                        if (message.SenderId === senderId && !isMediaConnected()) {
                             console.log('Screen sender disconnected, cleaning up...');
                             disconnect();
                         }
@@ -258,13 +261,25 @@ async function connect(tryResume = false) {
 
         ws.onclose = (event) => {
             console.log('WebSocket closed:', event.code, event.reason);
+            stopPingMonitoring();
+            ws = null;
+
+            // Media flows peer-to-peer (or via TURN), not through the signaling server. While it is up, a
+            // signaling outage (e.g. a server deployment) must not end the session; reconnect only when needed.
+            if (!userDisconnected && isMediaConnected()) {
+                updateConnectionState('Signaling offline');
+                updateStatus('Signaling server offline - video and control continue', 'info');
+                return;
+            }
+
             updateConnectionState('Disconnected');
             connectBtn.disabled = false;
             disconnectBtn.disabled = true;
             cleanup();
 
             // Attempt reconnection if it wasn't a manual disconnect
-            if (!event.wasClean && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+            // A server shutdown closes cleanly too, so only the user's own Disconnect stops reconnecting.
+            if (!userDisconnected && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
                 attemptReconnection();
             } else if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
                 updateStatus('Max reconnection attempts reached. Please reconnect manually.', 'error');
@@ -329,6 +344,10 @@ async function handleOffer(message) {
             } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
                 updateStatus('WebRTC connection failed', 'error');
                 stopStatsMonitoring(); // Stop collecting statistics
+                // Media lost while the signaling socket was already gone: start the normal reconnect path.
+                if (pc.connectionState === 'failed' && !ws && !userDisconnected) {
+                    attemptReconnection();
+                }
             }
         };
 
@@ -416,7 +435,12 @@ function sendConnectionRequest(serverId) {
     console.log(`Sent connection request to server: ${serverId}`);
 }
 
+function isMediaConnected() {
+    return pc !== null && pc.connectionState === 'connected';
+}
+
 function disconnect() {
+    userDisconnected = true; // explicit disconnect: do not auto-reconnect
     updateStatus('Disconnecting...', 'info');
 
     // Cancel any pending reconnection attempts
@@ -694,6 +718,12 @@ function startPingMonitoring(serverId) {
         if (timeSinceLastPong > PING_TIMEOUT_MS) {
             // Server is not responding - consider it dead
             console.error('Server ping timeout - no response');
+            if (isMediaConnected()) {
+                // Keep the running video; closing the dead socket lets ws.onclose take the signaling-offline path.
+                stopPingMonitoring();
+                if (ws) ws.close();
+                return;
+            }
             updateStatus('Server not responding - disconnecting', 'error');
             disconnect();
             return;
