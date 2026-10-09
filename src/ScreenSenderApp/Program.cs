@@ -23,7 +23,7 @@ try
     var config = new ScreenSenderConfiguration
     {
         ServerId = configuration["Signaling:ServerId"] ?? string.Empty,
-        SignalingServerUrl = configuration["Signaling:ServerUrl"] ?? "ws://localhost:5151/signal",
+        SignalingServerUrl = configuration["Signaling:ServerUrl"] ?? "wss://app.deskshare.zcloud.cz/signal",
         TargetFps = configuration.GetValue("Capture:TargetFps", 30),
         AdapterIndex = configuration.GetValue("Capture:AdapterIndex", 0),
         OutputIndex = configuration.GetValue("Capture:OutputIndex", 0),
