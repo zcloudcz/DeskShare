@@ -26,11 +26,8 @@ public static class VideoEncoderFactory
         if (Directory.Exists(folder))
             FFmpegInit.Initialise(FfmpegLogLevelEnum.AV_LOG_WARNING, folder);
 
-        var encoder = new FFmpegVideoEndPoint();
-        // FFmpegVideoEndPoint also offers VP9, H264, H265 and AV1. We only want VP8: the browser would otherwise
-        // be free to pick a codec the LGPL FFmpeg build cannot encode (no libx264/libx265).
-        encoder.RestrictFormats(f => f.Codec == VideoCodecsEnum.VP8);
-        return encoder;
+        // VP8 only: the browser must not pick a codec the LGPL FFmpeg build cannot encode (no libx264/libx265).
+        return new FfmpegVp8Encoder();
     }
 
     /// <summary>Formats to advertise in SDP, in the current <see cref="VideoCodecsEnum"/> numbering.</summary>

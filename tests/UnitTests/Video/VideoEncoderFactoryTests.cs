@@ -34,7 +34,7 @@ public sealed class VideoEncoderFactoryTests
     [RequiresFfmpegFact]
     public void FfmpegEncoder_AdvertisesOnlyVp8_AndEncodesI420Frames()
     {
-        using var encoder = (FFmpegVideoEndPoint)VideoEncoderFactory.Create(useFfmpeg: true, FindFfmpegFolder());
+        using var encoder = (FfmpegVp8Encoder)VideoEncoderFactory.Create(useFfmpeg: true, FindFfmpegFolder());
 
         // The advertised format must already be VP8 in the current enum numbering: no shim for this path.
         var formats = VideoEncoderFactory.AdvertisedFormats(encoder);
@@ -65,5 +65,54 @@ public sealed class VideoEncoderFactoryTests
         Assert.All(samples, s => Assert.NotEmpty(s));
         // VP8 key frame start code (bytes 3..5 = 9D 01 2A) proves this really is a VP8 bitstream.
         Assert.Equal(new byte[] { 0x9D, 0x01, 0x2A }, samples[0].Skip(3).Take(3));
+    }
+
+    [Theory]
+    [InlineData(1920, 1080, 4_000_000)]
+    [InlineData(3440, 1440, 9_600_000)]
+    [InlineData(320, 240, 1_000_000)] // clamped up
+    [InlineData(7680, 4320, 10_000_000)] // clamped down
+    public void TargetBitrate_ScalesWithFrameSizeWithinClamp(int width, int height, int expected) =>
+        Assert.InRange(FfmpegVp8Encoder.TargetBitrate(width, height), expected * 0.98, expected * 1.02);
+
+    [RequiresFfmpegFact]
+    public void FfmpegEncoder_EncodesHighDetailScreenContent_AtScreenSharingBitrate()
+    {
+        using var encoder = (FfmpegVp8Encoder)VideoEncoderFactory.Create(useFfmpeg: true, FindFfmpegFolder());
+        var samples = new List<byte[]>();
+        encoder.OnVideoSourceEncodedSample += (_, data) => samples.Add(data);
+
+        // Text-like content: a grid of 8x16 "glyph" cells, each a black/white stripe pattern, with ~5% of the
+        // cells changing per frame (typing). Rich in sharp edges; a 256 kbit/s budget (~1 KB per
+        // frame at 30 fps) would smear, while the ~4 Mbit/s target (~16 KB per frame) keeps them.
+        const int width = 1920, height = 1080, frames = 30, cellW = 8, cellH = 16;
+        var i420 = new byte[width * height * 3 / 2];
+        Array.Fill(i420, (byte)128, width * height, i420.Length - width * height);
+        var rnd = new Random(1);
+        var glyphs = new byte[(width / cellW) * (height / cellH)][];
+        for (var frame = 0; frame < frames; frame++)
+        {
+            for (var i = 0; i < glyphs.Length; i++)
+            {
+                if (glyphs[i] != null && rnd.Next(20) != 0)
+                    continue;
+                glyphs[i] = new byte[cellW * cellH];
+                // Stripes of random orientation and width: sharp edges like strokes of text, but not pure noise.
+                var vertical = rnd.Next(2) == 0;
+                var stripe = rnd.Next(1, 4);
+                for (var p = 0; p < glyphs[i].Length; p++)
+                    glyphs[i][p] = (byte)((((vertical ? p % cellW : p / cellW) / stripe) & 1) == 0 ? 16 : 235);
+                var cx = i % (width / cellW) * cellW;
+                var cy = i / (width / cellW) * cellH;
+                for (var y = 0; y < cellH; y++)
+                    Array.Copy(glyphs[i], y * cellW, i420, (cy + y) * width + cx, cellW);
+            }
+            encoder.ExternalVideoSourceRawSample(33, width, height, i420, VideoPixelFormatsEnum.I420);
+        }
+
+        Assert.Equal(frames, samples.Count);
+        Assert.Equal(new byte[] { 0x9D, 0x01, 0x2A }, samples[0].Skip(3).Take(3));
+        var averageBytes = samples.Average(s => s.Length);
+        Assert.True(averageBytes > 1100, $"Average frame was only {averageBytes:F0} bytes; bitrate looks like the 256 kbit/s default.");
     }
 }
