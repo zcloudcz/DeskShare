@@ -89,7 +89,7 @@ public class VideoSink : IVideoSink, IDisposable
     {
         try
         {
-            _logger.LogInformation("Decoded video sample (faster): {Width}x{Height}, format: {Format}, stride: {Stride}",
+            _logger.LogDebug("Decoded video sample (faster): {Width}x{Height}, format: {Format}, stride: {Stride}",
                 rawImage.Width, rawImage.Height, rawImage.PixelFormat, rawImage.Stride);
 
             var bgra32Data = ConvertRawImageToBGRA32(rawImage);

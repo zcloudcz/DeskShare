@@ -37,7 +37,7 @@ try
 
     // Subscribe before StartAsync, otherwise the first passkey would be missed.
     service.PasskeyChanged += (_, e) =>
-        Console.WriteLine($"Passkey: {e.Passkey} (valid until {e.ValidTo.ToLocalTime():HH:mm:ss})");
+        Console.WriteLine($"Passkey: {DeskShare.Core.Auth.AuthenticationService.FormatPasskeyForDisplay(e.Passkey)} (valid until {e.ValidTo.ToLocalTime():HH:mm:ss})");
     Console.WriteLine($"Server ID: {service.ServerId}");
 
     // Cancel the default kill for Ctrl+C / SIGTERM so the service can tear down gracefully

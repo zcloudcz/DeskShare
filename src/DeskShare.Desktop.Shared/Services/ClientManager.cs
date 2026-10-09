@@ -295,7 +295,7 @@ public class ClientManager : IDisposable
         _videoSink = new VideoSink(_videoSinkLogger);
         _videoSink.FrameReceived += (sender, args) =>
         {
-            _logger.LogInformation("[ClientManager] VideoSink.FrameReceived event fired - frame size: {Size} bytes", args.FrameData.Length);
+            _logger.LogDebug("[ClientManager] VideoSink.FrameReceived event fired - frame size: {Size} bytes", args.FrameData.Length);
             FrameReceived?.Invoke(this, args.FrameData);
 
             if (FrameReceived == null)

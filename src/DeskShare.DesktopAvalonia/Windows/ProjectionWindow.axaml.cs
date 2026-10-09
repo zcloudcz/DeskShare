@@ -532,7 +532,7 @@ public partial class ProjectionWindow : Window
     /// </summary>
     private void OnFrameReceived(object? sender, byte[] frameData)
     {
-        _logger.LogInformation("[ProjectionWindow] OnFrameReceived called - frame size: {Size} bytes", frameData.Length);
+        _logger.LogDebug("[ProjectionWindow] OnFrameReceived called - frame size: {Size} bytes", frameData.Length);
 
         Dispatcher.UIThread.Invoke(() =>
         {

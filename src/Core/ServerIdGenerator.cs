@@ -19,12 +19,45 @@ public static class ServerIdGenerator
     /// </summary>
     public static string GenerateClientId() => "client-" + GenerateServerId()[ServerIdPrefix.Length..];
 
+    /// <summary>Where the Server ID is persisted after it is first derived.</summary>
+    public static string DefaultIdPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DeskShare", "server-id");
+
     /// <summary>
-    /// Generates a unique Server ID based on the first available MAC address.
-    /// The ID is deterministic - the same machine will always generate the same ID.
+    /// Returns this machine's Server ID. It is derived from a MAC address once and then persisted, because the
+    /// "first active physical adapter" changes with docks, Wi-Fi vs. cable or USB adapters; a changing ID would
+    /// break saved and trusted connections and the server-side ownership claim.
     /// </summary>
-    /// <returns>A persistent Server ID string</returns>
-    public static string GenerateServerId()
+    public static string GenerateServerId() => GetOrCreateServerId(DefaultIdPath);
+
+    /// <summary>Reads the persisted ID from <paramref name="path"/>, or derives and saves a new one.</summary>
+    public static string GetOrCreateServerId(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                var stored = File.ReadAllText(path).Trim();
+                if (stored.StartsWith(ServerIdPrefix, StringComparison.Ordinal) && stored.Length > ServerIdPrefix.Length)
+                    return stored;
+            }
+        }
+        catch (IOException) { /* unreadable file: derive a new ID below */ }
+        catch (UnauthorizedAccessException) { }
+
+        var id = DeriveServerIdFromMac();
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, id);
+        }
+        catch (IOException) { /* read-only profile: still usable, just not persisted */ }
+        catch (UnauthorizedAccessException) { }
+        return id;
+    }
+
+    /// <summary>Derives an ID from the first physical MAC address (machine name as fallback).</summary>
+    private static string DeriveServerIdFromMac()
     {
         var macAddress = GetFirstPhysicalMacAddress();
 

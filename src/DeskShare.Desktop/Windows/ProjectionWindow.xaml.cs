@@ -1,4 +1,4 @@
-﻿using System.Windows;
+using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -472,7 +472,7 @@ public partial class ProjectionWindow : Window
 
     private void OnFrameReceived(object? sender, byte[] frameData)
     {
-        _logger.LogInformation("[ProjectionWindow] OnFrameReceived called - frame size: {Size} bytes", frameData.Length);
+        _logger.LogDebug("[ProjectionWindow] OnFrameReceived called - frame size: {Size} bytes", frameData.Length);
 
         // Update VideoImage with received frame
         Dispatcher.Invoke(() =>
