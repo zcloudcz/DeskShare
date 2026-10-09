@@ -1,7 +1,7 @@
 # Release: build the desktop apps, package them with Velopack and publish a GitHub Release.
 # Triggered by pushing a version tag (v1.2.3; a tag containing '-' such as v1.2.3-beta.1 becomes a pre-release).
 # Windows, macOS (Apple Silicon) and Linux (AppImage) all ship the same Avalonia app (src/DeskShare.DesktopAvalonia).
-# are viewer-only betas built on GitHub runners; they are added to the same release after the Windows job.
+# are betas built on GitHub runners; they are added to the same release after the Windows job.
 #
 # The landing page links to https://github.com/zcloudcz/DeskShare/releases/latest/download/<asset>,
 # so every tag automatically becomes the download offered on deskshare.zcloud.cz.
@@ -101,7 +101,7 @@ jobs:
           ${{ steps.version.outputs.prerelease == 'True' && '--pre' || '' }}
 
   release-linux:
-    name: Linux (beta, viewer)
+    name: Linux (beta)
     runs-on: ubuntu-latest
     needs: release
 
@@ -158,7 +158,7 @@ jobs:
           ${{ needs.release.outputs.prerelease == 'True' && '--pre' || '' }}
 
   release-macos:
-    name: macOS ${{ matrix.title }} (beta, viewer)
+    name: macOS ${{ matrix.title }} (beta)
     runs-on: ${{ matrix.runner }}
     needs: release
     # Apple Silicon keeps the default "osx" channel so existing installs keep auto-updating; Intel gets its own

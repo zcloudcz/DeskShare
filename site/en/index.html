@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DeskShare – Windows screen sharing over WebRTC</title>
-<meta name="description" content="DeskShare streams your Windows desktop to a browser or app over WebRTC with under 150 ms latency. Access is protected by a passkey that changes every 45 seconds. Open source, free.">
+<title>DeskShare – screen sharing over WebRTC for Windows, macOS and Linux</title>
+<meta name="description" content="DeskShare streams your Windows, macOS or Linux desktop to a browser or app over WebRTC with under 150 ms latency. Access is protected by a passkey that changes every 45 seconds. Open source, free.">
 <link rel="canonical" href="https://deskshare.zcloud.cz/en/">
 <link rel="alternate" hreflang="cs" href="https://deskshare.zcloud.cz/">
 <link rel="alternate" hreflang="en" href="https://deskshare.zcloud.cz/en/">
 <link rel="alternate" hreflang="x-default" href="https://deskshare.zcloud.cz/en/">
 <link rel="icon" href="/assets/icon.png" type="image/png">
-<meta property="og:title" content="DeskShare – Windows screen sharing over WebRTC">
+<meta property="og:title" content="DeskShare – screen sharing over WebRTC for Windows, macOS and Linux">
 <meta property="og:description" content="Share your Windows desktop and watch it from any browser. Passkey, encryption, open source.">
 <meta property="og:image" content="https://deskshare.zcloud.cz/assets/icon.png">
 <meta property="og:url" content="https://deskshare.zcloud.cz/en/">
@@ -18,7 +18,7 @@
 <link rel="stylesheet" href="/assets/fonts/fonts.css">
 <link rel="stylesheet" href="/assets/site.css">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DeskShare","operatingSystem":"Windows 10, Windows 11","applicationCategory":"UtilitiesApplication","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"downloadUrl":"https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Setup.exe","license":"https://opensource.org/licenses/MIT","author":{"@type":"Person","name":"Martin Zahálka"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DeskShare","operatingSystem":"Windows 10, Windows 11, macOS, Linux","applicationCategory":"UtilitiesApplication","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"downloadUrl":"https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Setup.exe","license":"https://opensource.org/licenses/MIT","author":{"@type":"Person","name":"Martin Zahálka"}}
 </script>
 </head>
 <body>
@@ -45,7 +45,7 @@
       </a>
       <a class="btn secondary" href="https://app.deskshare.zcloud.cz/webclient/index.html">Open the web viewer</a>
     </div>
-    <p class="meta" id="release-meta" data-label="Latest version">Windows 10/11, 64-bit · free · MIT license</p>
+    <p class="meta" id="release-meta" data-label="Latest version">Windows 10/11 · macOS · Linux · free · MIT license</p>
   </div>
 
   <div class="viewer" aria-hidden="true">
@@ -106,15 +106,15 @@
     </div>
     <div class="dl">
       <div>
-        <h3>macOS (Apple Silicon) – beta</h3>
-        <p>Viewing only for now; sharing a Mac screen is not available yet. The installer is signed and notarized by Apple.</p>
+        <h3>macOS – beta</h3>
+        <p>Share and view. The first time you share, macOS asks for Screen Recording permission, and for Accessibility if you allow remote control. The installer is signed and notarized by Apple.</p>
       </div>
-      <a class="btn secondary" href="https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-osx-Setup.pkg">Download DeskShare-osx-Setup.pkg</a>
+      <span class="dl-actions"><a class="btn secondary" href="https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-osx-Setup.pkg">Apple Silicon (M1 or newer)</a> <a class="btn secondary" href="https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-osx-x64-Setup.pkg">Intel</a></span>
     </div>
     <div class="dl">
       <div>
         <h3>Linux (x64) – beta</h3>
-        <p>AppImage, viewing only for now. After downloading, make it executable: chmod +x DeskShare.AppImage.</p>
+        <p>AppImage, share and view. Sharing works in an X11 session, not on Wayland yet. After downloading, make it executable: chmod +x DeskShare.AppImage.</p>
       </div>
       <a class="btn secondary" href="https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare.AppImage">Download DeskShare.AppImage</a>
     </div>

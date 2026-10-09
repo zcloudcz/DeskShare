@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DeskShare – sdílení obrazovky Windows přes WebRTC</title>
-<meta name="description" content="DeskShare streamuje plochu Windows do prohlížeče nebo aplikace přes WebRTC s latencí pod 150 ms. Přístup chrání passkey měnící se každých 45 sekund. Open source, zdarma.">
+<title>DeskShare – sdílení obrazovky přes WebRTC pro Windows, macOS a Linux</title>
+<meta name="description" content="DeskShare streamuje plochu Windows, macOS i Linuxu do prohlížeče nebo aplikace přes WebRTC s latencí pod 150 ms. Přístup chrání passkey měnící se každých 45 sekund. Open source, zdarma.">
 <link rel="canonical" href="https://deskshare.zcloud.cz/">
 <link rel="alternate" hreflang="cs" href="https://deskshare.zcloud.cz/">
 <link rel="alternate" hreflang="en" href="https://deskshare.zcloud.cz/en/">
 <link rel="alternate" hreflang="x-default" href="https://deskshare.zcloud.cz/en/">
 <link rel="icon" href="/assets/icon.png" type="image/png">
-<meta property="og:title" content="DeskShare – sdílení obrazovky Windows přes WebRTC">
+<meta property="og:title" content="DeskShare – sdílení obrazovky přes WebRTC pro Windows, macOS a Linux">
 <meta property="og:description" content="Sdílejte plochu Windows, sledujte ji z prohlížeče odkudkoli. Passkey, šifrování, open source.">
 <meta property="og:image" content="https://deskshare.zcloud.cz/assets/icon.png">
 <meta property="og:url" content="https://deskshare.zcloud.cz/">
@@ -18,7 +18,7 @@
 <link rel="stylesheet" href="/assets/fonts/fonts.css">
 <link rel="stylesheet" href="/assets/site.css">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DeskShare","operatingSystem":"Windows 10, Windows 11","applicationCategory":"UtilitiesApplication","offers":{"@type":"Offer","price":"0","priceCurrency":"CZK"},"downloadUrl":"https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Setup.exe","license":"https://opensource.org/licenses/MIT","author":{"@type":"Person","name":"Martin Zahálka"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DeskShare","operatingSystem":"Windows 10, Windows 11, macOS, Linux","applicationCategory":"UtilitiesApplication","offers":{"@type":"Offer","price":"0","priceCurrency":"CZK"},"downloadUrl":"https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Setup.exe","license":"https://opensource.org/licenses/MIT","author":{"@type":"Person","name":"Martin Zahálka"}}
 </script>
 </head>
 <body>
@@ -45,7 +45,7 @@
       </a>
       <a class="btn secondary" href="https://app.deskshare.zcloud.cz/webclient/index.html">Otevřít prohlížeč obrazovky</a>
     </div>
-    <p class="meta" id="release-meta" data-label="Aktuální verze">Windows 10/11, 64bit · zdarma · MIT licence</p>
+    <p class="meta" id="release-meta" data-label="Aktuální verze">Windows 10/11 · macOS · Linux · zdarma · MIT licence</p>
   </div>
 
   <div class="viewer" aria-hidden="true">
@@ -106,15 +106,15 @@
     </div>
     <div class="dl">
       <div>
-        <h3>macOS (Apple Silicon) – beta</h3>
-        <p>Zatím jen prohlížení, sdílet obrazovku z Macu nejde. Instalátor je podepsaný a notarizovaný Apple.</p>
+        <h3>macOS – beta</h3>
+        <p>Sdílení i prohlížení. Při prvním sdílení macOS požádá o povolení Nahrávání obrazovky, pro vzdálené ovládání o Zpřístupnění. Instalátor je podepsaný a notarizovaný Apple.</p>
       </div>
-      <a class="btn secondary" href="https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-osx-Setup.pkg">Stáhnout DeskShare-osx-Setup.pkg</a>
+      <span class="dl-actions"><a class="btn secondary" href="https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-osx-Setup.pkg">Apple Silicon (M1 a novější)</a> <a class="btn secondary" href="https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-osx-x64-Setup.pkg">Intel</a></span>
     </div>
     <div class="dl">
       <div>
         <h3>Linux (x64) – beta</h3>
-        <p>AppImage, zatím jen prohlížení. Po stažení povolte spuštění: chmod +x DeskShare.AppImage.</p>
+        <p>AppImage, sdílení i prohlížení. Sdílet obrazovku jde v sezení X11, na Waylandu zatím ne. Po stažení povolte spuštění: chmod +x DeskShare.AppImage.</p>
       </div>
       <a class="btn secondary" href="https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare.AppImage">Stáhnout DeskShare.AppImage</a>
     </div>
