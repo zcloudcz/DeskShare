@@ -71,10 +71,7 @@ Release. The landing page links to `releases/latest/download/...`, so nothing el
 
 ## Known gaps after go-live
 
-- No TURN server (App Service has no UDP): peers behind symmetric NAT cannot connect.
-  Fix later with coturn on a small VM or Azure Container Instance and `Turn:*` / `IceServers` config.
 - Installer is not code-signed → SmartScreen warning (the landing page explains it).
-- `/register` is unauthenticated (anyone can overwrite a ServerId registration) — see MEMORY.md audit list.
 
 ## 7. macOS signing + notarization (Apple Developer account)
 
@@ -106,3 +103,29 @@ portable `.app` zip is produced (`--noInst`).
 Release assets: `DeskShare-osx-Portable.zip` (+ `DeskShare-osx-Setup.pkg` once the Installer certificate is
 present), `DeskShare.AppImage`, `releases.osx.json`, `releases.linux.json`. Linux (AppImage, x64) needs nothing extra. Both non-Windows builds are viewer-only betas built without a
 test machine; `MainWindow` disables "Start Server" on macOS (no capture implementation yet).
+
+## 8. TURN (Cloudflare Realtime TURN, shared with Jay)
+
+All our WebRTC apps use one Cloudflare TURN key; each backend mints short-lived credentials from it, so no
+relay server of our own is needed. DeskShare's signaling server returns TURN credentials in the `/register`
+(sender) and `/authenticate` (viewer) responses when these App Service settings are present:
+
+| Setting | Value |
+|---|---|
+| `Turn__Cloudflare__KeyId` | Cloudflare TURN key id (same as `calltype-beta-zahy`) |
+| `Turn__Cloudflare__ApiToken` | Cloudflare TURN API token (same as `calltype-beta-zahy`) |
+| `Turn__Cloudflare__TtlSeconds` | optional, default 86400 |
+
+Copy them from Jay without printing the values (PowerShell):
+
+```powershell
+$s = az webapp config appsettings list -g rg-calltype-beta -n calltype-beta-zahy -o json | ConvertFrom-Json
+az webapp config appsettings set -g rg-agentwall -n deskshare-signaling -o none --settings "Turn__Cloudflare__KeyId=$(($s | ? name -eq 'Turn__Cloudflare__KeyId').value)" "Turn__Cloudflare__ApiToken=$(($s | ? name -eq 'Turn__Cloudflare__ApiToken').value)"
+```
+
+Without them the server falls back to STUN only (Google). Credentials are cached for half their TTL; if
+Cloudflare is unreachable the server logs a warning and returns STUN only.
+
+Server identity: `/register` uses trust-on-first-use ownership. Each installation keeps
+`%AppData%/DeskShare/server-owner.key` and `server-id`; deleting them gives the machine a fresh owner secret,
+and the old ServerId can be reclaimed 10 minutes after its last registration.
