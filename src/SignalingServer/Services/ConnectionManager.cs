@@ -1,6 +1,7 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net.WebSockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using DeskShare.Core.Models;
@@ -27,6 +28,11 @@ public sealed class ConnectionManager : IDisposable
     // Tokens are single-use and expire after a configurable number of seconds.
     private readonly ConcurrentDictionary<string, (string ClientId, DateTime CreatedAt)> _wsTokens = new();
     private int _tokenExpirationSeconds = 30;
+
+    // ServerId ownership claims (trust on first use): ServerId -> (SHA256 of owner secret, last successful registration).
+    // Only the hash is kept so the secret itself never sits in memory/logs longer than the request.
+    private readonly ConcurrentDictionary<string, (byte[] SecretHash, DateTime LastSeen)> _ownerClaims = new();
+    private static readonly TimeSpan OwnerClaimLifetime = TimeSpan.FromMinutes(10);
 
     // Connection limits
     private int _maxConnections = 100;
@@ -313,6 +319,69 @@ public sealed class ConnectionManager : IDisposable
     #region Server Session Management
 
     /// <summary>
+    /// Decides whether a registration for <paramref name="serverId"/> may proceed, so one client cannot
+    /// overwrite another one's registration (ServerId is guessable: it is derived from a MAC address).
+    /// </summary>
+    /// <remarks>
+    /// Rules: unclaimed + secret = claim it; claimed + same secret = ok; claimed + missing/different secret = reject;
+    /// unclaimed + no secret = ok (old senders that predate OwnerSecret). A claim lapses 10 minutes after the
+    /// last successful registration so a reinstall that lost its key file can reclaim the ServerId later.
+    /// </remarks>
+    /// <param name="serverId">The ServerId the registration is for.</param>
+    /// <param name="ownerSecret">Secret sent by the sender; never logged.</param>
+    /// <param name="remoteIp">Caller IP, for logging only.</param>
+    /// <param name="now">Injectable clock for tests; defaults to UtcNow.</param>
+    public bool AuthorizeServerOwner(string serverId, string? ownerSecret, string remoteIp, DateTime? now = null)
+    {
+        var time = now ?? DateTime.UtcNow;
+
+        if (string.IsNullOrEmpty(ownerSecret))
+        {
+            if (_ownerClaims.ContainsKey(serverId))
+            {
+                _logger.LogWarning(
+                    "Registration rejected, ServerId is claimed but no owner secret was sent | ServerId: {ServerId} | IP: {IP}",
+                    serverId, remoteIp);
+                return false;
+            }
+
+            _logger.LogInformation(
+                "Registration without owner secret (legacy sender) | ServerId: {ServerId} | IP: {IP}", serverId, remoteIp);
+            return true;
+        }
+
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(ownerSecret));
+        var claim = _ownerClaims.GetOrAdd(serverId, _ => (hash, time));
+
+        // Fixed-time compare so response timing cannot be used to guess the secret byte by byte.
+        if (!CryptographicOperations.FixedTimeEquals(claim.SecretHash, hash))
+        {
+            _logger.LogWarning(
+                "Registration rejected, owner secret mismatch | ServerId: {ServerId} | IP: {IP}", serverId, remoteIp);
+            return false;
+        }
+
+        _ownerClaims[serverId] = (hash, time);
+        return true;
+    }
+
+    /// <summary>True when the ID belongs to a registered or claimed server (used to keep viewers off server identities).</summary>
+    public bool IsKnownServerId(string id) => _serverSessions.ContainsKey(id) || _ownerClaims.ContainsKey(id);
+
+    /// <summary>
+    /// Drops ownership claims that have not been refreshed within the claim lifetime.
+    /// Called from the periodic cleanup timer; public so tests can drive it with a fake clock.
+    /// </summary>
+    public void ExpireOwnerClaims(DateTime now)
+    {
+        foreach (var kvp in _ownerClaims)
+        {
+            if (now - kvp.Value.LastSeen > OwnerClaimLifetime)
+                _ownerClaims.TryRemove(kvp);
+        }
+    }
+
+    /// <summary>
     /// Registers a server with authentication details.
     /// Called when server starts and wants to accept client connections.
     /// </summary>
@@ -537,6 +606,7 @@ public sealed class ConnectionManager : IDisposable
         try
         {
             var now = DateTime.UtcNow;
+            ExpireOwnerClaims(now);
             var sessionsToRemove = new List<string>();
 
             foreach (var kvp in _serverSessions)

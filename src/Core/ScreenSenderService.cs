@@ -9,6 +9,7 @@ using DeskShare.Core.Auth;
 using DeskShare.Core.Platform;
 using Serilog;
 using System.Net.Http.Json;
+using SIPSorcery.Net;
 
 namespace DeskShare.Core;
 
@@ -30,6 +31,13 @@ public class ScreenSenderService : IHostedService, IDisposable
 
     // One-time WebSocket upgrade token received from /register (see ServerRegistrationResponse)
     private string? _webSocketToken;
+
+    // Proves to the SignalingServer that we own our ServerId (see ServerRegistrationMessage.OwnerSecret)
+    private readonly ServerOwnerSecretStore _ownerSecretStore = new();
+
+    // Latest STUN/TURN servers from /register. The first registration happens before the WebRTC session exists,
+    // so we keep them here and apply them when the session is created and again after every re-registration.
+    private volatile List<RTCIceServer>? _iceServers;
 
     // Passkey rotation fields
     private string? _currentPasskey;
@@ -159,6 +167,7 @@ public class ScreenSenderService : IHostedService, IDisposable
                 // Create session with input support
                 var serilogSessionLogger = Serilog.Log.ForContext<WebRTCSessionWithInput>();
                 _webrtcSessionWithInput = new WebRTCSessionWithInput(serilogSessionLogger, inputController, clipboardManager: null);
+                ApplyIceServers(_webrtcSessionWithInput.VideoSource);
 
                 // Subscribe to events
                 _webrtcSessionWithInput.ConnectionStateChanged += (sender, state) =>
@@ -203,6 +212,7 @@ public class ScreenSenderService : IHostedService, IDisposable
 
                 // Create basic session (view-only)
                 _webrtcSession = new WebRTCSession();
+                ApplyIceServers(_webrtcSession.VideoSource);
 
                 // Subscribe to events
                 _webrtcSession.ConnectionStateChanged += (sender, state) =>
@@ -325,6 +335,32 @@ public class ScreenSenderService : IHostedService, IDisposable
     }
 
     /// <summary>
+    /// Hands the latest ICE servers to the video source; it uses them for peer connections created from now on.
+    /// </summary>
+    private void ApplyIceServers(IVideoSource? videoSource)
+    {
+        if (_iceServers != null && videoSource is SIPSorceryVideoSource sipSource)
+            sipSource.IceServers = _iceServers;
+    }
+
+    /// <summary>
+    /// Returns the installation's owner secret, or null if the key file cannot be read/written
+    /// (registration then still works against a server that has not claimed our ServerId yet).
+    /// </summary>
+    private string? GetOwnerSecret()
+    {
+        try
+        {
+            return _ownerSecretStore.GetOrCreate();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not load or create the server owner secret");
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Registers this server with the SignalingServer so clients can discover and authenticate.
     /// </summary>
     private async Task RegisterWithSignalingServerAsync()
@@ -350,7 +386,8 @@ public class ScreenSenderService : IHostedService, IDisposable
                 Passkey = _currentPasskey,
                 ValidTo = _passkeyValidTo,
                 RemoteControlEnabled = _configuration.EnableRemoteControl,
-                TrustClientPermanent = _configuration.TrustClientPermanent
+                TrustClientPermanent = _configuration.TrustClientPermanent,
+                OwnerSecret = GetOwnerSecret()
             };
 
             var registerUrl = $"{signalingHttpUrl}/register";
@@ -365,6 +402,17 @@ public class ScreenSenderService : IHostedService, IDisposable
                 if (result?.Success == true)
                 {
                     _webSocketToken = result.WebSocketToken;
+
+                    // New peer connections (one per viewer) pick up the fresh TURN credentials.
+                    if (result.IceServers is { Count: > 0 })
+                    {
+                        var mapped = IceServerMapper.ToRtcIceServers(result.IceServers);
+                        if (mapped.Count > 0)
+                        {
+                            _iceServers = mapped;
+                            ApplyIceServers(_webrtcSession?.VideoSource ?? _webrtcSessionWithInput?.VideoSource);
+                        }
+                    }
                     _logger.LogInformation("Successfully registered with SignalingServer | ServerId: {ServerId}", ServerId);
                 }
                 else

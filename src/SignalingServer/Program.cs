@@ -24,6 +24,17 @@ builder.Host.UseSerilog();
 
 builder.Services.AddSingleton<ConnectionManager>();
 
+// Builds the ICE server list for /authenticate and /register. Cloudflare TURN is added only when configured.
+builder.Services.AddSingleton<IceServerProvider>();
+if (!string.IsNullOrWhiteSpace(builder.Configuration["Turn:Cloudflare:KeyId"]) &&
+    !string.IsNullOrWhiteSpace(builder.Configuration["Turn:Cloudflare:ApiToken"]))
+{
+    // Short timeout: /register and /authenticate wait for this call, and the sender's own HTTP timeout is 5 s.
+    builder.Services.AddHttpClient(CloudflareTurnCredentialService.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(3));
+    builder.Services.AddSingleton<CloudflareTurnCredentialService>();
+    Log.Information("Cloudflare TURN credentials are ENABLED");
+}
+
 // Configure storage backend (InMemory or Azure Table Storage)
 var storageType = builder.Configuration.GetValue<string>("Storage:Type", "InMemory");
 Log.Information("Storage backend: {StorageType}", storageType);
@@ -534,7 +545,7 @@ app.MapGet("/", async (HttpContext context) =>
 // ============================================================
 // REGISTER ENDPOINT — rate limited
 // ============================================================
-app.MapPost("/register", async (HttpContext context, IServerSessionStorage sessionStorage, ConnectionManager cm) =>
+app.MapPost("/register", async (HttpContext context, IServerSessionStorage sessionStorage, ConnectionManager cm, IceServerProvider iceServers) =>
 {
     try
     {
@@ -545,6 +556,20 @@ app.MapPost("/register", async (HttpContext context, IServerSessionStorage sessi
             return Results.BadRequest(new { Error = "Invalid registration data" });
         }
 
+        // Ownership check BEFORE storing anything, so a stranger cannot overwrite someone else's registration
+        // (and the passkey in it) or obtain a WebSocket token bound to their ServerId.
+        var remoteIp = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        if (!cm.AuthorizeServerOwner(registration.ServerId, registration.OwnerSecret, remoteIp))
+        {
+            return Results.Json(
+                new DeskShare.Core.Auth.ServerRegistrationResponse
+                {
+                    Success = false,
+                    ErrorMessage = "ServerId is already registered by another installation (owner secret missing or invalid)."
+                },
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+
         var response = await sessionStorage.RegisterServerAsync(registration);
 
         if (response.Success)
@@ -552,6 +577,7 @@ app.MapPost("/register", async (HttpContext context, IServerSessionStorage sessi
             // The sender connects to /signal right after registering. Without a token it would need
             // AllowLegacyConnections, which is off by default, so hand it one here.
             response.WebSocketToken = cm.IssueWebSocketToken(registration.ServerId);
+            response.IceServers = await iceServers.GetIceServersAsync(context.RequestAborted);
             return Results.Ok(response);
         }
         else
@@ -569,7 +595,7 @@ app.MapPost("/register", async (HttpContext context, IServerSessionStorage sessi
 // ============================================================
 // AUTHENTICATE ENDPOINT — rate limited, issues WebSocket token
 // ============================================================
-app.MapPost("/authenticate", async (HttpContext context, IServerSessionStorage sessionStorage, ConnectionManager cm) =>
+app.MapPost("/authenticate", async (HttpContext context, IServerSessionStorage sessionStorage, ConnectionManager cm, IceServerProvider iceServers) =>
 {
     try
     {
@@ -580,6 +606,17 @@ app.MapPost("/authenticate", async (HttpContext context, IServerSessionStorage s
             return Results.BadRequest(new { Error = "Invalid authentication data" });
         }
 
+        // The WebSocket token is bound to ClientId. If a viewer could pick a server's ID here, it would get a
+        // socket under that identity and receive the server's signaling traffic, bypassing the /register
+        // ownership check. Server IDs (prefix "server-", or any currently known server) are therefore refused.
+        if (string.IsNullOrWhiteSpace(authRequest.ClientId) ||
+            authRequest.ClientId.StartsWith(DeskShare.Core.ServerIdGenerator.ServerIdPrefix, StringComparison.Ordinal) ||
+            cm.IsKnownServerId(authRequest.ClientId))
+        {
+            Log.Warning("Authentication rejected, ClientId collides with a server identity | ClientId: {ClientId}", authRequest.ClientId);
+            return Results.BadRequest(new { Error = "Invalid ClientId" });
+        }
+
         var response = await sessionStorage.AuthenticateClientAsync(authRequest);
 
         if (response.Success)
@@ -588,26 +625,12 @@ app.MapPost("/authenticate", async (HttpContext context, IServerSessionStorage s
 
             var token = cm.IssueWebSocketToken(authRequest.ClientId);
 
-            var iceServers = builder.Configuration.GetSection("IceServers")
-                .GetChildren()
-                .Select(s => new
-                {
-                    urls = s["Urls"],
-                    username = s["Username"],
-                    credential = s["Credential"]
-                })
-                .Where(s => !string.IsNullOrEmpty(s.urls))
-                .Select(s => string.IsNullOrEmpty(s.username)
-                    ? (object)new { urls = s.urls }
-                    : new { urls = s.urls, username = s.username, credential = s.credential })
-                .ToArray();
-
             return Results.Ok(new
             {
                 response.Success,
                 response.RemoteControlEnabled,
                 WebSocketToken = token,
-                IceServers = iceServers
+                IceServers = await iceServers.GetIceServersAsync(context.RequestAborted)
             });
         }
         else
@@ -753,3 +776,6 @@ app.MapGet("/turn/statistics", (IEnumerable<IHostedService> hostedServices, ICon
 });
 
 app.Run();
+
+/// <summary>Makes the top-level Program visible to WebApplicationFactory in the integration tests.</summary>
+public partial class Program { }

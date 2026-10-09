@@ -201,6 +201,11 @@ public partial class MainWindow : Window
 
             _serverManager.PasskeyChanged += OnPasskeyChanged;
 
+            // The first passkey was raised during StartAsync, before we subscribed above; show it now
+            // instead of waiting for the next 45 s rotation.
+            if (_serverManager.CurrentPasskey is { } initialPasskey)
+                OnPasskeyChanged(_serverManager, initialPasskey);
+
             _isServerRunning = true;
             _serverStartTime = DateTime.Now;
 
@@ -629,7 +634,7 @@ public partial class MainWindow : Window
             using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
             var signalingUrl = SignalingUrl.HttpBaseFromConfig(App.Configuration!);
 
-            var clientId = DeskShare.Core.ServerIdGenerator.GenerateServerId();
+            var clientId = DeskShare.Core.ServerIdGenerator.GenerateClientId();
             var nonce = Guid.NewGuid().ToString();
             var timestamp = DateTime.UtcNow;
 
@@ -677,7 +682,8 @@ public partial class MainWindow : Window
             var clientManager = App.ServiceProvider?.GetService<ClientManager>()
                 ?? throw new InvalidOperationException("ClientManager not available");
 
-            var projectionWindow = new ProjectionWindow(serverId, password, clientManager);
+            var projectionWindow = new ProjectionWindow(
+                serverId, password, clientManager, authResult.WebSocketToken, clientId, authResult.IceServers);
 
             _activeClientConnections++;
             UpdateTabAvailability();

@@ -167,6 +167,11 @@ public partial class MainWindow : Window
 
             _serverManager.PasskeyChanged += OnPasskeyChanged;
 
+            // The first passkey was raised during StartAsync, before we subscribed above; show it now
+            // instead of waiting for the next 45 s rotation.
+            if (_serverManager.CurrentPasskey is { } initialPasskey)
+                OnPasskeyChanged(_serverManager, initialPasskey);
+
             // Update UI to running state
             _isServerRunning = true;
             _serverStartTime = DateTime.Now;
@@ -590,7 +595,7 @@ public partial class MainWindow : Window
             var signalingUrl = SignalingUrl.HttpBaseFromConfig(App.Configuration!);
 
             // Generate HMAC signature for secure authentication
-            var clientId = DeskShare.Core.ServerIdGenerator.GenerateServerId(); // MAC-based static client ID
+            var clientId = DeskShare.Core.ServerIdGenerator.GenerateClientId(); // MAC-based static client ID
             var nonce = Guid.NewGuid().ToString(); // Unique request ID
             var timestamp = DateTime.UtcNow;
 
@@ -645,7 +650,8 @@ public partial class MainWindow : Window
                 ?? throw new InvalidOperationException("ClientManager not available");
 
             // Open projection window and pass the client manager
-            var projectionWindow = new ProjectionWindow(serverId, password, clientManager);
+            var projectionWindow = new ProjectionWindow(
+                serverId, password, clientManager, authResult.WebSocketToken, clientId, authResult.IceServers);
 
             // Track connection lifecycle
             _activeClientConnections++;

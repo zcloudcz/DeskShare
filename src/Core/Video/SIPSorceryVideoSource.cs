@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using DeskShare.Core.Interfaces;
 using DeskShare.Core.Models;
+using DeskShare.Core.WebRTC;
 using Serilog;
 using SIPSorcery.Net;
 using SIPSorceryMedia.Abstractions;
@@ -46,6 +47,12 @@ public sealed class SIPSorceryVideoSource : IVideoSource
     public bool IsInitialized => _initialized;
 
     /// <summary>
+    /// ICE servers used for peer connections created from now on (Initialize and ResetPeerConnection).
+    /// Updated after each registration so every new viewer gets fresh TURN credentials; defaults to public STUN.
+    /// </summary>
+    public IReadOnlyList<RTCIceServer> IceServers { get; set; } = IceServerMapper.DefaultIceServers();
+
+    /// <summary>
     /// Gets the underlying peer connection for signaling integration.
     /// </summary>
     public RTCPeerConnection? PeerConnection => _peerConnection;
@@ -88,14 +95,7 @@ public sealed class SIPSorceryVideoSource : IVideoSource
         _peerConnection?.Dispose();
 
         // Create new peer connection with STUN servers for NAT traversal
-        var config = new RTCConfiguration
-        {
-            iceServers = new List<RTCIceServer>
-            {
-                new RTCIceServer { urls = "stun:stun.l.google.com:19302" },
-                new RTCIceServer { urls = "stun:stun1.l.google.com:19302" }
-            }
-        };
+        var config = new RTCConfiguration { iceServers = new List<RTCIceServer>(IceServers) };
 
         _peerConnection = new RTCPeerConnection(config);
 
@@ -143,14 +143,7 @@ public sealed class SIPSorceryVideoSource : IVideoSource
         _videoEncoder = new VideoEncoderEndPoint();
 
         // Create peer connection with configuration
-        var config = new RTCConfiguration
-        {
-            iceServers = new List<RTCIceServer>
-            {
-                new RTCIceServer { urls = "stun:stun.l.google.com:19302" },
-                new RTCIceServer { urls = "stun:stun1.l.google.com:19302" }
-            }
-        };
+        var config = new RTCConfiguration { iceServers = new List<RTCIceServer>(IceServers) };
 
         _peerConnection = new RTCPeerConnection(config);
 

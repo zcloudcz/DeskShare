@@ -21,6 +21,9 @@ public partial class ProjectionWindow : Window
     private readonly ClientManager _clientManager;
     private readonly string _serverId;
     private readonly string? _password;
+    private readonly string? _webSocketToken;
+    private readonly string? _clientId;
+    private readonly IReadOnlyList<DeskShare.Core.Auth.IceServerInfo>? _iceServers;
     private bool _isFullscreen;
     private bool _isConnected;
     private WindowState _previousWindowState;
@@ -29,7 +32,13 @@ public partial class ProjectionWindow : Window
     private bool _isInputEnabled = true;  // Enable remote control by default
     private Point _lastMousePosition;
 
-    public ProjectionWindow(string serverId, string? password, ClientManager clientManager)
+    public ProjectionWindow(
+        string serverId,
+        string? password,
+        ClientManager clientManager,
+        string? webSocketToken = null,
+        string? clientId = null,
+        IReadOnlyList<DeskShare.Core.Auth.IceServerInfo>? iceServers = null)
     {
         InitializeComponent();
 
@@ -39,6 +48,9 @@ public partial class ProjectionWindow : Window
         _clientManager = clientManager;
         _serverId = serverId;
         _password = password;
+        _webSocketToken = webSocketToken;
+        _clientId = clientId;
+        _iceServers = iceServers;
 
         ServerIdText.Text = $"Server ID: {serverId}";
         ConnectedServerIdText.Text = serverId;
@@ -75,7 +87,7 @@ public partial class ProjectionWindow : Window
             _clientManager.Disconnected += OnDisconnected;
 
             // Connect to server via WebRTC
-            await _clientManager.ConnectAsync(_serverId, _password);
+            await _clientManager.ConnectAsync(_serverId, _password, null, _webSocketToken, _clientId, _iceServers);
 
             _logger.LogInformation("Successfully connected to server {ServerId}", _serverId);
         }

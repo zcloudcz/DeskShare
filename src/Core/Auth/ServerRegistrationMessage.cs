@@ -40,6 +40,13 @@ public sealed class ServerRegistrationMessage
     /// Whether to trust the connected client permanently (no passkey required for reconnection).
     /// </summary>
     public required bool TrustClientPermanent { get; set; }
+
+    /// <summary>
+    /// Per-installation secret that proves ownership of <see cref="ServerId"/>. The SignalingServer
+    /// binds the first secret it sees (trust on first use) and rejects registrations with a different one.
+    /// Null for older senders that predate this field.
+    /// </summary>
+    public string? OwnerSecret { get; set; }
 }
 
 /// <summary>
@@ -67,6 +74,11 @@ public sealed class ServerRegistrationResponse
     /// (query parameter <c>token</c>). Issued only on successful registration.
     /// </summary>
     public string? WebSocketToken { get; set; }
+
+    /// <summary>
+    /// STUN/TURN servers (including fresh TURN credentials) the sender should use for new peer connections.
+    /// </summary>
+    public List<IceServerInfo>? IceServers { get; set; }
 }
 
 /// <summary>
@@ -188,4 +200,15 @@ public sealed class ClientAuthenticationResponse
     /// Whether remote control is enabled (if authentication succeeded).
     /// </summary>
     public bool RemoteControlEnabled { get; set; }
+
+    /// <summary>
+    /// One-time token the client must present on the /signal WebSocket upgrade (query parameter <c>token</c>).
+    /// It is bound to the ClientId used in the authentication request.
+    /// </summary>
+    public string? WebSocketToken { get; set; }
+
+    /// <summary>
+    /// STUN/TURN servers (including fresh TURN credentials) the client should use for its peer connection.
+    /// </summary>
+    public List<IceServerInfo>? IceServers { get; set; }
 }

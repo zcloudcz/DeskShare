@@ -23,6 +23,12 @@ public class ServerManager : IDisposable
     public string? ServerId => _serverId;
     public int ActiveConnections => _activeConnections;
 
+    /// <summary>
+    /// Last passkey announced by the sender. The first passkey is generated inside <see cref="StartAsync"/>,
+    /// i.e. before the UI can subscribe to <see cref="PasskeyChanged"/>, so the UI reads this after starting.
+    /// </summary>
+    public PasskeyChangedEventArgs? CurrentPasskey { get; private set; }
+
     // Events for UI updates
     public event EventHandler<int>? ConnectionCountChanged;
     public event EventHandler<ServerStats>? StatsUpdated;
@@ -89,6 +95,7 @@ public class ServerManager : IDisposable
             // Subscribe to passkey changes
             _screenSenderService.PasskeyChanged += (sender, args) =>
             {
+                CurrentPasskey = args;
                 PasskeyChanged?.Invoke(this, args);
             };
 
@@ -129,6 +136,7 @@ public class ServerManager : IDisposable
 
             _isRunning = false;
             _serverId = null;
+            CurrentPasskey = null;
             _activeConnections = 0;
 
             _logger.LogInformation("Server stopped successfully");

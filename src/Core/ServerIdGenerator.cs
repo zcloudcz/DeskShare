@@ -1,4 +1,4 @@
-﻿using System.Net.NetworkInformation;
+using System.Net.NetworkInformation;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -10,6 +10,15 @@ namespace DeskShare.Core;
 /// </summary>
 public static class ServerIdGenerator
 {
+    /// <summary>Prefix of every server identity; the signaling server refuses it as a viewer ClientId.</summary>
+    public const string ServerIdPrefix = "server-";
+
+    /// <summary>
+    /// Stable viewer identity for this machine. Same hash as the Server ID but a different prefix, so a machine
+    /// that both shares and views never uses one identity for both roles (the signaling server rejects that).
+    /// </summary>
+    public static string GenerateClientId() => "client-" + GenerateServerId()[ServerIdPrefix.Length..];
+
     /// <summary>
     /// Generates a unique Server ID based on the first available MAC address.
     /// The ID is deterministic - the same machine will always generate the same ID.

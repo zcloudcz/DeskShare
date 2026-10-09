@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using DeskShare.Core.Interfaces;
 using DeskShare.Core.Models;
+using DeskShare.Core.WebRTC;
 using Serilog;
 using SIPSorcery.Net;
 using SIPSorceryMedia.Abstractions;
@@ -42,6 +43,11 @@ public sealed class MultiClientVideoSource : IVideoSource, IDisposable
 
     /// <inheritdoc/>
     public bool IsInitialized => _initialized;
+
+    /// <summary>
+    /// ICE servers used for peer connections created from now on (AddClient). Defaults to public STUN.
+    /// </summary>
+    public IReadOnlyList<RTCIceServer> IceServers { get; set; } = IceServerMapper.DefaultIceServers();
 
     /// <summary>
     /// Gets the number of currently connected clients.
@@ -132,14 +138,7 @@ public sealed class MultiClientVideoSource : IVideoSource, IDisposable
         var videoEncoder = new VideoEncoderEndPoint();
 
         // Create peer connection with STUN servers for NAT traversal
-        var config = new RTCConfiguration
-        {
-            iceServers = new List<RTCIceServer>
-            {
-                new RTCIceServer { urls = "stun:stun.l.google.com:19302" },
-                new RTCIceServer { urls = "stun:stun1.l.google.com:19302" }
-            }
-        };
+        var config = new RTCConfiguration { iceServers = new List<RTCIceServer>(IceServers) };
 
         var peerConnection = new RTCPeerConnection(config);
 

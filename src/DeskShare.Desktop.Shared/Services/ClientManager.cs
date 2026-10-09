@@ -3,7 +3,9 @@ using Microsoft.Extensions.Logging;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using DeskShare.Core.Auth;
 using DeskShare.Core.Models;
+using DeskShare.Core.WebRTC;
 using DeskShare.Core.Interfaces;
 using DeskShare.Desktop.Shared.Models;
 using SIPSorcery.Net;
@@ -31,6 +33,7 @@ public class ClientManager : IDisposable
     private string? _clientId;
     private string? _password;
     private string? _signalingUrl;
+    private IReadOnlyList<IceServerInfo>? _iceServers;
     private CancellationTokenSource? _receiveCts;
     private int _reconnectAttempts;
     private const int MaxReconnectAttempts = 5;
@@ -144,7 +147,16 @@ public class ClientManager : IDisposable
     /// <summary>
     /// Connects to a remote server via signaling WebSocket and WebRTC.
     /// </summary>
-    public async Task ConnectAsync(string serverId, string? password, string? signalingUrl = null)
+    /// <param name="webSocketToken">One-time token from /authenticate. Hosted servers reject WebSockets without it.</param>
+    /// <param name="clientId">The ClientId sent to /authenticate; the token is bound to it, so we must use the same one.</param>
+    /// <param name="iceServers">STUN/TURN servers from /authenticate; falls back to public STUN when null.</param>
+    public async Task ConnectAsync(
+        string serverId,
+        string? password,
+        string? signalingUrl = null,
+        string? webSocketToken = null,
+        string? clientId = null,
+        IReadOnlyList<IceServerInfo>? iceServers = null)
     {
         if (_isConnected)
         {
@@ -163,6 +175,7 @@ public class ClientManager : IDisposable
         _serverId = serverId;
         _password = password;
         _signalingUrl = signalingUrl;
+        _iceServers = iceServers;
 
         try
         {
@@ -172,7 +185,11 @@ public class ClientManager : IDisposable
 
             try
             {
-                await _signalingWebSocket.ConnectAsync(new Uri(signalingUrl), connectCts.Token);
+                // The token is single-use, so it is only appended for this first connect.
+                var connectUrl = string.IsNullOrEmpty(webSocketToken)
+                    ? signalingUrl
+                    : $"{signalingUrl}{(signalingUrl.Contains('?') ? "&" : "?")}token={Uri.EscapeDataString(webSocketToken)}";
+                await _signalingWebSocket.ConnectAsync(new Uri(connectUrl), connectCts.Token);
             }
             catch (OperationCanceledException)
             {
@@ -181,7 +198,7 @@ public class ClientManager : IDisposable
 
             _logger.LogInformation("Connected to signaling server");
 
-            _clientId = Guid.NewGuid().ToString();
+            _clientId = clientId ?? Guid.NewGuid().ToString();
 
             // Send connection request
             var joinMessage = new SignalingMessage
@@ -217,12 +234,10 @@ public class ClientManager : IDisposable
     {
         _logger.LogInformation("Setting up WebRTC peer connection...");
 
+        var mappedIceServers = IceServerMapper.ToRtcIceServers(_iceServers);
         var config = new RTCConfiguration
         {
-            iceServers = new List<RTCIceServer>
-            {
-                new RTCIceServer { urls = "stun:stun.l.google.com:19302" }
-            }
+            iceServers = mappedIceServers.Count > 0 ? mappedIceServers : IceServerMapper.DefaultIceServers()
         };
 
         _peerConnection = new RTCPeerConnection(config);
