@@ -6,7 +6,8 @@
 set -euo pipefail
 
 DEST="$1"
-PREFIX="$(brew --prefix ffmpeg@8)"
+# FFMPEG_FORMULA: ffmpeg@8 where available, otherwise the plain ffmpeg formula (must still be FFmpeg 8).
+PREFIX="$(brew --prefix "${FFMPEG_FORMULA:-ffmpeg@8}")"
 LIBS="avcodec avdevice avfilter avformat avutil swresample swscale postproc"
 mkdir -p "$DEST"
 
@@ -20,6 +21,12 @@ for lib in $LIBS; do
   [ -n "$major" ] || { echo "skip $lib (not found)"; continue; }
   cp -L "$PREFIX/lib/$major" "$DEST/$major"
 done
+
+# FFmpeg.AutoGen 8.1 (used by SIPSorceryMedia.FFmpeg) loads libavcodec.62; any other major version would
+# build fine but fail at runtime on the user's Mac, so stop here instead.
+if [ ! -f "$DEST/libavcodec.62.dylib" ]; then
+  echo "ERROR: FFmpeg 8 required (libavcodec.62.dylib); got: $(ls "$DEST")" >&2; exit 1
+fi
 
 # 2. Breadth-first: for every library in DEST, copy its Homebrew dependencies in (by major name) and
 #    rewrite the reference to @loader_path. System libraries (/usr/lib, /System) stay as they are.

@@ -191,10 +191,14 @@ jobs:
 
       # No prebuilt FFmpeg 8 shared libs for macOS exist as a download; scripts/bundle-ffmpeg-macos.sh takes
       # Homebrew's ffmpeg@8 and makes the dylibs relocatable (major-version names, @loader_path install names).
-      - name: Add FFmpeg (Homebrew ffmpeg@8)
+      # Not every runner image's Homebrew has the versioned ffmpeg@8 formula (the Intel image did not), so fall
+      # back to the plain formula; the bundle script refuses anything that is not FFmpeg 8 (libavcodec 62).
+      - name: Add FFmpeg 8 (Homebrew)
         run: |
-          brew install ffmpeg@8
-          bash scripts/bundle-ffmpeg-macos.sh publish/ffmpeg
+          if brew info ffmpeg@8 >/dev/null 2>&1; then FORMULA=ffmpeg@8; else FORMULA=ffmpeg; fi
+          echo "Using Homebrew formula: $FORMULA"
+          brew install "$FORMULA"
+          FFMPEG_FORMULA="$FORMULA" bash scripts/bundle-ffmpeg-macos.sh publish/ffmpeg
 
       - name: Create .icns icon
         run: |
