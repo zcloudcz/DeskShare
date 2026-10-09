@@ -194,8 +194,13 @@ public class ScreenSenderService : IHostedService, IDisposable
                     throw new InvalidOperationException("Failed to initialize WebRTC session with input");
                 }
 
-                // Auto-authorize remote control since user explicitly enabled it via checkbox
+                // Auto-authorize remote control since user explicitly enabled it via checkbox. The controller
+                // asks AuthorizationRequested for consent; the checkbox is that consent, so answer yes.
                 _logger.LogInformation("Auto-authorizing remote control (user enabled via checkbox)");
+                if (inputController is Platforms.Windows.WindowsInputController windowsInput)
+                {
+                    windowsInput.AuthorizationRequested = _ => true;
+                }
                 await inputController.RequestAuthorizationAsync("auto-authorized", stoppingToken);
 
                 videoSource = _webrtcSessionWithInput.VideoSource;

@@ -52,6 +52,12 @@ public sealed class WebRTCSession : IDisposable
     public event EventHandler<RTCPeerConnectionState>? ConnectionStateChanged;
 
     /// <summary>
+    /// Runs after the peer connection was recreated for a new viewer and before the offer is created.
+    /// Lets wrappers add things to the new connection that must appear in the offer (e.g. a data channel).
+    /// </summary>
+    public Func<Task>? BeforeOfferAsync { get; set; }
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="WebRTCSession"/> class.
     /// </summary>
     public WebRTCSession()
@@ -348,7 +354,17 @@ public sealed class WebRTCSession : IDisposable
         WirePeerConnectionEvents();
 
         // Create and send offer to initiate WebRTC connection
-        _ = CreateOfferAsync(message.SenderId);
+        _ = PrepareAndSendOfferAsync(message.SenderId);
+    }
+
+    private async Task PrepareAndSendOfferAsync(string targetId)
+    {
+        if (BeforeOfferAsync != null)
+        {
+            await BeforeOfferAsync();
+        }
+
+        await CreateOfferAsync(targetId);
     }
 
     /// <summary>

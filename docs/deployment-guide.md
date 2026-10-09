@@ -38,7 +38,6 @@ DeskShare-1.0.0/
 ├── WebClient/                # Browser-based viewer
 │   ├── index-control.html
 │   ├── remote-control.js
-│   ├── remote-control.js
 │   └── [web assets]
 ├── docs/                     # Documentation
 ├── Start-All.ps1             # One-click launcher

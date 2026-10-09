@@ -1,5 +1,6 @@
 ﻿using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using DeskShare.Core.Interfaces;
 using DeskShare.Core.Models;
 using Serilog;
@@ -25,6 +26,13 @@ public sealed class DataChannelManager : IDisposable
 {
     private readonly ILogger _logger;
     private readonly IInputController? _inputController;
+
+    // The browser sends enum names ("MouseMove", "Left"), the desktop viewer sends numbers.
+    // JsonStringEnumConverter accepts both; without it every browser input failed to deserialize.
+    private static readonly JsonSerializerOptions InputJsonOptions = new()
+    {
+        Converters = { new JsonStringEnumConverter() }
+    };
     private RTCDataChannel? _dataChannel;
     private bool _disposed;
 
@@ -324,7 +332,7 @@ public sealed class DataChannelManager : IDisposable
             }
 
             // Fall back to treating as InputMessage
-            var inputMessage = JsonSerializer.Deserialize<InputMessage>(message);
+            var inputMessage = JsonSerializer.Deserialize<InputMessage>(message, InputJsonOptions);
 
             if (inputMessage == null)
             {

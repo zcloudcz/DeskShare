@@ -119,6 +119,10 @@ public sealed class WebRTCSessionWithInput : IDisposable
         _clipboardManager = clipboardManager;
 
         _baseSession = new WebRTCSession();
+
+        // Every new viewer gets a new peer connection (SIPSorceryVideoSource.ResetPeerConnection); the
+        // input channel created at startup died with the old one, so create it again for each offer.
+        _baseSession.BeforeOfferAsync = () => CreateDataChannelAsync();
         _dataChannelManager = new DataChannelManager(logger, inputController);
 
         // Subscribe to clipboard changes to forward to remote peer
