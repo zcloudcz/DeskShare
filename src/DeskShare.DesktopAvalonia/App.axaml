@@ -1,6 +1,13 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             x:Class="DeskShare.DesktopAvalonia.App">
+             x:Class="DeskShare.DesktopAvalonia.App"
+             RequestedThemeVariant="Light">
+    <!--
+        Light theme on purpose: windows and dialogs use a light palette (white cards, dark accents).
+        With the default (follow the OS), a dark-mode OS switches FluentTheme text to white on those
+        white backgrounds and the UI becomes unreadable.
+        ponytail: fixed light theme; proper dark mode needs theme resources instead of hardcoded colors.
+    -->
     <!--
         Avalonia Application definition.
         WPF equivalent: App.xaml

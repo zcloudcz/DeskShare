@@ -336,7 +336,10 @@
 
             <!-- CLIENT MODE TAB -->
             <TabItem x:Name="ClientTab" Header="Client Mode">
-                <Grid Margin="20" RowDefinitions="Auto,*,Auto,Auto">
+                <!-- Scrollable page: with a fixed window height the '*' row for saved connections collapsed
+                     and the card slid under 'Manual Connection'. -->
+                <ScrollViewer>
+                <Grid Margin="20" RowDefinitions="Auto,Auto,Auto,Auto">
 
                     <!-- Header -->
                     <StackPanel Margin="0,0,0,20">
@@ -358,7 +361,7 @@
                                      FontWeight="SemiBold"
                                      Margin="0,0,0,15"/>
 
-                            <ScrollViewer Grid.Row="1">
+                            <ScrollViewer Grid.Row="1" MaxHeight="260">
                                 <StackPanel>
                                     <!-- ListBox replaces WPF's ListView -->
                                     <ListBox x:Name="ConnectionsListBox"
@@ -633,6 +636,7 @@
                         </Grid>
                     </Border>
                 </Grid>
+                </ScrollViewer>
             </TabItem>
 
             <!-- LOG TAB -->
