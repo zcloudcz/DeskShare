@@ -16,10 +16,11 @@ public static class PlatformServiceFactory
     /// </summary>
     /// <param name="adapterIndex">Graphics adapter index (0 = primary GPU).</param>
     /// <param name="outputIndex">Output/monitor index (0 = primary monitor).</param>
+    /// <param name="targetFps">Capture frame rate (used by the FFmpeg-based capturer on macOS and Linux).</param>
     /// <returns>Platform-specific screen capturer implementation.</returns>
     /// <exception cref="PlatformNotSupportedException">Thrown when current platform is not supported.</exception>
     #pragma warning disable CA1416 // Validate platform compatibility
-    public static IScreenCapturer CreateScreenCapturer(int adapterIndex = 0, int outputIndex = 0)
+    public static IScreenCapturer CreateScreenCapturer(int adapterIndex = 0, int outputIndex = 0, int targetFps = 30)
     {
         if (OperatingSystem.IsWindows())
         {
@@ -28,23 +29,14 @@ public static class PlatformServiceFactory
         }
         else if (OperatingSystem.IsLinux())
         {
-            // Linux: Use X11 screen capture
+            // Linux: FFmpeg x11grab (on Wayland only X11/XWayland content is captured)
             // TODO: Detect Wayland and use PipeWire ScreenCast instead
-            return new Platforms.Linux.X11ScreenCapturer();
+            return new Platforms.FfmpegScreenCapturer(outputIndex, targetFps);
         }
         else if (OperatingSystem.IsMacOS())
         {
-            // macOS: Use appropriate capturer based on version
-            if (OperatingSystem.IsMacOSVersionAtLeast(12, 3))
-            {
-                // macOS 12.3+: Use modern ScreenCaptureKit
-                return new Platforms.macOS.ScreenCaptureKitCapturer();
-            }
-            else
-            {
-                // macOS < 12.3: Use legacy CGDisplayStream
-                return new Platforms.macOS.CGDisplayStreamCapturer();
-            }
+            // macOS: FFmpeg avfoundation (triggers the system Screen Recording prompt)
+            return new Platforms.FfmpegScreenCapturer(outputIndex, targetFps);
         }
         else
         {

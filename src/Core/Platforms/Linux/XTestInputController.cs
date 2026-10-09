@@ -77,6 +77,9 @@ public sealed class XTestInputController : IInputController
 
     public event EventHandler<InputAuthorizationState>? AuthorizationStateChanged;
 
+    /// <inheritdoc />
+    public Func<string, bool>? AuthorizationRequested { get; set; }
+
     public bool IsEnabled => _authorizationState == InputAuthorizationState.Authorized;
 
     public InputAuthorizationState AuthorizationState => _authorizationState;
@@ -101,6 +104,14 @@ public sealed class XTestInputController : IInputController
         {
             // Change to pending state
             ChangeAuthorizationState(InputAuthorizationState.Pending);
+
+            // Ask the host for consent first (the "Allow remote control" checkbox); no callback means deny
+            if (!(AuthorizationRequested?.Invoke(clientId) ?? false))
+            {
+                _logger.Information("[XTestInputController] Remote control denied for client: {ClientId}", clientId);
+                ChangeAuthorizationState(InputAuthorizationState.Denied);
+                return false;
+            }
 
             // Open X display connection
             _display = XOpenDisplay(IntPtr.Zero);

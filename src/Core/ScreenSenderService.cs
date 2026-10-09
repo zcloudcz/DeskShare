@@ -142,7 +142,7 @@ public class ScreenSenderService : IHostedService, IDisposable
         {
             // Get screen resolution
             int width, height;
-            using (var tempCapturer = PlatformServiceFactory.CreateScreenCapturer(_configuration.AdapterIndex, _configuration.OutputIndex))
+            using (var tempCapturer = PlatformServiceFactory.CreateScreenCapturer(_configuration.AdapterIndex, _configuration.OutputIndex, _configuration.TargetFps))
             {
                 if (!tempCapturer.Initialize())
                 {
@@ -160,9 +160,15 @@ public class ScreenSenderService : IHostedService, IDisposable
             IVideoSource videoSource;
             bool initialized;
 
-            if (_configuration.EnableRemoteControl && OperatingSystem.IsWindows())
+            if (_configuration.EnableRemoteControl)
             {
                 _logger.LogInformation("Creating WebRTC session WITH remote control support");
+
+                // macOS ignores injected input until Accessibility is granted; asking now shows the system prompt.
+                if (OperatingSystem.IsMacOS() && !Platforms.macOS.MacAccessibility.IsTrustedPromptingUser())
+                {
+                    _logger.LogWarning("Accessibility permission is not granted yet: remote control will not work until the app is enabled in System Settings > Privacy & Security > Accessibility, then restart sharing.");
+                }
 
                 // Create input controller for remote control
                 var serilogLogger = Serilog.Log.ForContext<IInputController>();
@@ -202,10 +208,7 @@ public class ScreenSenderService : IHostedService, IDisposable
                 // Auto-authorize remote control since user explicitly enabled it via checkbox. The controller
                 // asks AuthorizationRequested for consent; the checkbox is that consent, so answer yes.
                 _logger.LogInformation("Auto-authorizing remote control (user enabled via checkbox)");
-                if (inputController is Platforms.Windows.WindowsInputController windowsInput)
-                {
-                    windowsInput.AuthorizationRequested = _ => true;
-                }
+                inputController.AuthorizationRequested = _ => true;
                 await inputController.RequestAuthorizationAsync("auto-authorized", stoppingToken);
 
                 videoSource = _webrtcSessionWithInput.VideoSource;
@@ -217,11 +220,6 @@ public class ScreenSenderService : IHostedService, IDisposable
             }
             else
             {
-                if (_configuration.EnableRemoteControl && !OperatingSystem.IsWindows())
-                {
-                    _logger.LogWarning("Remote control is only supported on Windows. Falling back to view-only mode.");
-                }
-
                 _logger.LogInformation("Creating WebRTC session WITHOUT remote control (view-only mode)");
 
                 // Create basic session (view-only)
@@ -263,7 +261,7 @@ public class ScreenSenderService : IHostedService, IDisposable
             }
 
             // Start capture pipeline with WebRTC video source
-            var capturer = PlatformServiceFactory.CreateScreenCapturer(_configuration.AdapterIndex, _configuration.OutputIndex);
+            var capturer = PlatformServiceFactory.CreateScreenCapturer(_configuration.AdapterIndex, _configuration.OutputIndex, _configuration.TargetFps);
             var converter = new SimdPixelConverter(); // Use SIMD-optimized converter
 
             _pipeline = new CapturePipeline(capturer, converter, videoSource);

@@ -75,7 +75,7 @@ public sealed class CGEventInputController : IInputController
     [DllImport("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")]
     private static extern int CGDisplayPixelsHigh(IntPtr display);
 
-    [DllImport("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")]
+    [DllImport("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")]
     private static extern bool AXIsProcessTrusted();
 
     // CoreGraphics structures and enums
@@ -133,6 +133,9 @@ public sealed class CGEventInputController : IInputController
 
     public event EventHandler<InputAuthorizationState>? AuthorizationStateChanged;
 
+    /// <inheritdoc />
+    public Func<string, bool>? AuthorizationRequested { get; set; }
+
     public bool IsEnabled => _authorizationState == InputAuthorizationState.Authorized;
 
     public InputAuthorizationState AuthorizationState => _authorizationState;
@@ -157,6 +160,14 @@ public sealed class CGEventInputController : IInputController
         {
             // Change to pending state
             ChangeAuthorizationState(InputAuthorizationState.Pending);
+
+            // Ask the host for consent first (the "Allow remote control" checkbox); no callback means deny
+            if (!(AuthorizationRequested?.Invoke(clientId) ?? false))
+            {
+                _logger.Information("[CGEventInputController] Remote control denied for client: {ClientId}", clientId);
+                ChangeAuthorizationState(InputAuthorizationState.Denied);
+                return false;
+            }
 
             // Check for Accessibility permissions
             bool isTrusted = AXIsProcessTrusted();

@@ -25,6 +25,12 @@ public interface IInputController : IDisposable
     event EventHandler<InputAuthorizationState>? AuthorizationStateChanged;
 
     /// <summary>
+    /// Consent callback consulted by <see cref="RequestAuthorizationAsync"/>: receives the client id and
+    /// returns true to allow. If not set, every request is denied.
+    /// </summary>
+    Func<string, bool>? AuthorizationRequested { get; set; }
+
+    /// <summary>
     /// Requests authorization to control input from a specific client.
     /// </summary>
     /// <param name="clientId">The client requesting authorization.</param>
