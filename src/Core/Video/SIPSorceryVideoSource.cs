@@ -5,7 +5,6 @@ using DeskShare.Core.WebRTC;
 using Serilog;
 using SIPSorcery.Net;
 using SIPSorceryMedia.Abstractions;
-using SIPSorceryMedia.Encoders;
 using IVideoSource = DeskShare.Core.Interfaces.IVideoSource;
 using System.Collections.Generic;
 
@@ -14,7 +13,7 @@ namespace DeskShare.Core.Video;
 /// <summary>
 /// WebRTC video source implementation using SIPSorcery library.
 /// Provides real peer-to-peer video streaming over WebRTC.
-/// Uses VideoEncoderEndPoint for VP8 encoding.
+/// Uses VideoEncoderFactory for VP8 encoding (SIPSorcery encoder on Windows, FFmpeg elsewhere).
 /// </summary>
 public sealed class SIPSorceryVideoSource : IVideoSource
 {
@@ -26,7 +25,7 @@ public sealed class SIPSorceryVideoSource : IVideoSource
     private int _height;
     private int _targetFrameRate;
     private RTCPeerConnection? _peerConnection;
-    private VideoEncoderEndPoint? _videoEncoder;
+    private SIPSorceryMedia.Abstractions.IVideoSource? _videoEncoder;
 
     private int _framesSinceKeyframe = 0;
     private const int KeyframeInterval = 90;
@@ -101,7 +100,7 @@ public sealed class SIPSorceryVideoSource : IVideoSource
 
         // Add video track to peer connection (send-only, we don't receive)
         var videoTrack = new MediaStreamTrack(
-            EncoderFormatShim.AdvertisedFormats(_videoEncoder!),
+            VideoEncoderFactory.AdvertisedFormats(_videoEncoder!),
             MediaStreamStatusEnum.SendOnly);
 
         _peerConnection.addTrack(videoTrack);
@@ -113,7 +112,7 @@ public sealed class SIPSorceryVideoSource : IVideoSource
         // Handle codec negotiation - when client chooses a codec, configure encoder
         _peerConnection.OnVideoFormatsNegotiated += (formats) =>
         {
-            _videoEncoder!.SetVideoSourceFormat(EncoderFormatShim.ToEncoder(formats.First()));
+            _videoEncoder!.SetVideoSourceFormat(VideoEncoderFactory.ToEncoder(_videoEncoder!, formats.First()));
         };
 
         Log.Information("Peer connection reset complete");
@@ -140,7 +139,7 @@ public sealed class SIPSorceryVideoSource : IVideoSource
 
         // Create video encoder endpoint
         // Note: We'll force keyframes every 2 frames in PushFrame for low latency
-        _videoEncoder = new VideoEncoderEndPoint();
+        _videoEncoder = VideoEncoderFactory.Create();
 
         // Create peer connection with configuration
         var config = new RTCConfiguration { iceServers = new List<RTCIceServer>(IceServers) };
@@ -149,7 +148,7 @@ public sealed class SIPSorceryVideoSource : IVideoSource
 
         // Create video track with formats from encoder
         var videoTrack = new MediaStreamTrack(
-            EncoderFormatShim.AdvertisedFormats(_videoEncoder),
+            VideoEncoderFactory.AdvertisedFormats(_videoEncoder),
             MediaStreamStatusEnum.SendOnly);
 
         _peerConnection.addTrack(videoTrack);
@@ -160,7 +159,7 @@ public sealed class SIPSorceryVideoSource : IVideoSource
         // Handle format negotiation
         _peerConnection.OnVideoFormatsNegotiated += (formats) =>
         {
-            _videoEncoder.SetVideoSourceFormat(EncoderFormatShim.ToEncoder(formats.First()));
+            _videoEncoder.SetVideoSourceFormat(VideoEncoderFactory.ToEncoder(_videoEncoder, formats.First()));
         };
 
         _initialized = true;
@@ -387,7 +386,7 @@ public sealed class SIPSorceryVideoSource : IVideoSource
         }
 
         Log.Information("Video format set: {Codec}", format.Codec);
-        _videoEncoder.SetVideoSourceFormat(EncoderFormatShim.ToEncoder(format));
+        _videoEncoder.SetVideoSourceFormat(VideoEncoderFactory.ToEncoder(_videoEncoder, format));
     }
 
     /// <inheritdoc/>
@@ -403,7 +402,7 @@ public sealed class SIPSorceryVideoSource : IVideoSource
         if (_videoEncoder != null)
         {
             _videoEncoder.OnVideoSourceEncodedSample -= _peerConnection!.SendVideo;
-            _videoEncoder.Dispose();
+            (_videoEncoder as IDisposable)?.Dispose();
             _videoEncoder = null;
         }
 

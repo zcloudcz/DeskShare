@@ -6,7 +6,6 @@ using DeskShare.Core.WebRTC;
 using Serilog;
 using SIPSorcery.Net;
 using SIPSorceryMedia.Abstractions;
-using SIPSorceryMedia.Encoders;
 using IVideoSource = DeskShare.Core.Interfaces.IVideoSource;
 
 namespace DeskShare.Core.Video;
@@ -19,7 +18,7 @@ namespace DeskShare.Core.Video;
 /// This class manages multiple WebRTC connections simultaneously, allowing
 /// multiple users to view the same screen at the same time. Each client has:
 /// - Dedicated RTCPeerConnection for isolated connection state
-/// - Dedicated VideoEncoderEndPoint for independent encoding
+/// - Dedicated VP8 encoder (see VideoEncoderFactory) for independent encoding
 /// - Automatic cleanup when clients disconnect
 /// </remarks>
 public sealed class MultiClientVideoSource : IVideoSource, IDisposable
@@ -62,13 +61,13 @@ public sealed class MultiClientVideoSource : IVideoSource, IDisposable
     {
         public string ClientId { get; }
         public RTCPeerConnection PeerConnection { get; }
-        public VideoEncoderEndPoint VideoEncoder { get; }
+        public SIPSorceryMedia.Abstractions.IVideoSource VideoEncoder { get; }
         public DateTime LastFrameTime { get; set; } = DateTime.MinValue;
         public long FramesPushed { get; set; }
         public long FramesDropped { get; set; }
         private bool _disposed;
 
-        public ClientConnection(string clientId, RTCPeerConnection peerConnection, VideoEncoderEndPoint videoEncoder)
+        public ClientConnection(string clientId, RTCPeerConnection peerConnection, SIPSorceryMedia.Abstractions.IVideoSource videoEncoder)
         {
             ClientId = clientId;
             PeerConnection = peerConnection;
@@ -84,7 +83,7 @@ public sealed class MultiClientVideoSource : IVideoSource, IDisposable
             VideoEncoder.OnVideoSourceEncodedSample -= PeerConnection.SendVideo;
 
             // Close and dispose resources
-            VideoEncoder.Dispose();
+            (VideoEncoder as IDisposable)?.Dispose();
             PeerConnection.close();
             PeerConnection.Dispose();
 
@@ -135,7 +134,7 @@ public sealed class MultiClientVideoSource : IVideoSource, IDisposable
         Log.Information("Adding new client: {ClientId}", clientId);
 
         // Create dedicated encoder for this client
-        var videoEncoder = new VideoEncoderEndPoint();
+        var videoEncoder = VideoEncoderFactory.Create();
 
         // Create peer connection with STUN servers for NAT traversal
         var config = new RTCConfiguration { iceServers = new List<RTCIceServer>(IceServers) };
@@ -144,7 +143,7 @@ public sealed class MultiClientVideoSource : IVideoSource, IDisposable
 
         // Add video track to peer connection (send-only, we don't receive)
         var videoTrack = new MediaStreamTrack(
-            EncoderFormatShim.AdvertisedFormats(videoEncoder),
+            VideoEncoderFactory.AdvertisedFormats(videoEncoder),
             MediaStreamStatusEnum.SendOnly);
 
         peerConnection.addTrack(videoTrack);
@@ -156,7 +155,7 @@ public sealed class MultiClientVideoSource : IVideoSource, IDisposable
         // Handle codec negotiation - when client chooses a codec, configure encoder
         peerConnection.OnVideoFormatsNegotiated += (formats) =>
         {
-            videoEncoder.SetVideoSourceFormat(EncoderFormatShim.ToEncoder(formats.First()));
+            videoEncoder.SetVideoSourceFormat(VideoEncoderFactory.ToEncoder(videoEncoder, formats.First()));
         };
 
         // Handle connection state changes for automatic cleanup
