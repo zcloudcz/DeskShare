@@ -12,13 +12,14 @@ namespace DeskShare.Core.Signaling;
 public sealed class WebSocketSignaler : ISignaler
 {
     private const int ReceiveBufferSize = 4096;
-    private const int ReconnectDelayMs = 5000;
 
     private ClientWebSocket? _webSocket;
     private CancellationTokenSource? _receiveCts;
     private Task? _receiveTask;
     private bool _disposed;
-    private readonly TaskCompletionSource<bool> _identifyReceived = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    // Replaced on every ConnectAsync: a completed TCS from the first connection would make a reconnect
+    // "receive" its Identify instantly, before the server confirmed anything.
+    private TaskCompletionSource<bool> _identifyReceived = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <inheritdoc/>
     public bool IsConnected => _webSocket?.State == WebSocketState.Open;
@@ -35,6 +36,13 @@ public sealed class WebSocketSignaler : ISignaler
     /// <inheritdoc/>
     public event EventHandler<SignalingErrorEventArgs>? ErrorOccurred;
 
+    /// <summary>
+    /// Raised when an established connection ends without us asking for it (server closed it, network error).
+    /// Not raised after <see cref="DisconnectAsync"/>, <see cref="Dispose"/> or a failed <see cref="ConnectAsync"/>.
+    /// Handlers must not block: it runs on the receive loop's thread. Reconnect by calling <see cref="ConnectAsync"/> again.
+    /// </summary>
+    public event EventHandler? ConnectionLost;
+
     /// <inheritdoc/>
     public async Task ConnectAsync(string serverUrl, string? clientId = null, CancellationToken cancellationToken = default)
     {
@@ -46,6 +54,13 @@ public sealed class WebSocketSignaler : ISignaler
 
         try
         {
+            // After a lost connection the dead socket is still held here; release it before replacing it.
+            // Cancelling its receive loop first keeps that loop from reporting a second "lost" event.
+            _receiveCts?.Cancel();
+            _receiveCts?.Dispose();
+            _webSocket?.Dispose();
+            _identifyReceived = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
             // Create new WebSocket client with keep-alive to maintain connection
             _webSocket = new ClientWebSocket();
             _webSocket.Options.KeepAliveInterval = TimeSpan.FromSeconds(30);
@@ -63,7 +78,7 @@ public sealed class WebSocketSignaler : ISignaler
 
             // Start background task to continuously receive messages from server
             _receiveCts = new CancellationTokenSource();
-            _receiveTask = ReceiveLoopAsync(_receiveCts.Token);
+            _receiveTask = ReceiveLoopAsync(_webSocket, _receiveCts.Token);
 
             // Wait for server to send us our assigned client ID (Identify message)
             // Server always assigns a GUID in Phase 1 (custom IDs not yet supported)
@@ -173,19 +188,21 @@ public sealed class WebSocketSignaler : ISignaler
     /// Runs continuously in the background until cancelled or connection closes.
     /// </summary>
     /// <param name="cancellationToken">Token to signal loop cancellation.</param>
-    private async Task ReceiveLoopAsync(CancellationToken cancellationToken)
+    private async Task ReceiveLoopAsync(ClientWebSocket webSocket, CancellationToken cancellationToken)
     {
+        // Works on its own socket (not the _webSocket field) so a loop that is still winding down
+        // never reads from the replacement socket created by a reconnect.
         var buffer = new byte[ReceiveBufferSize];
         var messageBuffer = new MemoryStream();
 
         try
         {
-            while (!cancellationToken.IsCancellationRequested && _webSocket != null)
+            while (!cancellationToken.IsCancellationRequested)
             {
-                if (_webSocket.State != WebSocketState.Open)
+                if (webSocket.State != WebSocketState.Open)
                     break;
 
-                var result = await _webSocket.ReceiveAsync(
+                var result = await webSocket.ReceiveAsync(
                     new ArraySegment<byte>(buffer),
                     cancellationToken);
 
@@ -218,6 +235,10 @@ public sealed class WebSocketSignaler : ISignaler
         {
             // Always notify that connection is now closed
             ConnectionStateChanged?.Invoke(this, false);
+
+            // A cancelled token means we closed it ourselves (Disconnect/Dispose/failed Connect); anything else is a loss.
+            if (!cancellationToken.IsCancellationRequested)
+                ConnectionLost?.Invoke(this, EventArgs.Empty);
         }
     }
 

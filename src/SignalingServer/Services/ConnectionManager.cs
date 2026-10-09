@@ -29,6 +29,12 @@ public sealed class ConnectionManager : IDisposable
     private readonly ConcurrentDictionary<string, (string ClientId, DateTime CreatedAt)> _wsTokens = new();
     private int _tokenExpirationSeconds = 30;
 
+    // Resume tokens: maps token -> (clientId, serverId, expiresAt). A viewer that lost its WebSocket (e.g. during a
+    // server deployment) presents one to POST /resume instead of the passkey, which has rotated since it was typed.
+    // Single use: consuming one issues the next (rotation), so a leaked old token is worthless.
+    private readonly ConcurrentDictionary<string, (string ClientId, string ServerId, DateTime ExpiresAt)> _resumeTokens = new();
+    private static readonly TimeSpan ResumeTokenLifetime = TimeSpan.FromMinutes(15);
+
     // ServerId ownership claims (trust on first use): ServerId -> (SHA256 of owner secret, last successful registration).
     // Only the hash is kept so the secret itself never sits in memory/logs longer than the request.
     private readonly ConcurrentDictionary<string, (byte[] SecretHash, DateTime LastSeen)> _ownerClaims = new();
@@ -607,6 +613,7 @@ public sealed class ConnectionManager : IDisposable
         {
             var now = DateTime.UtcNow;
             ExpireOwnerClaims(now);
+            ExpireResumeTokens(now);
             var sessionsToRemove = new List<string>();
 
             foreach (var kvp in _serverSessions)
@@ -770,6 +777,67 @@ public sealed class ConnectionManager : IDisposable
         clientId = tokenData.ClientId;
         return true;
     }
+
+    /// <summary>
+    /// Issues a single-use resume token that lets this viewer reconnect to <paramref name="serverId"/> without the passkey.
+    /// </summary>
+    /// <param name="clientId">The authenticated viewer.</param>
+    /// <param name="serverId">The server the viewer authenticated against.</param>
+    /// <param name="now">Injectable clock for tests; defaults to UtcNow.</param>
+    /// <returns>32 random bytes, base64url encoded (URL and JSON safe).</returns>
+    public string IssueResumeToken(string clientId, string serverId, DateTime? now = null)
+    {
+        var token = Base64UrlEncode(RandomNumberGenerator.GetBytes(32));
+        _resumeTokens[token] = (clientId, serverId, (now ?? DateTime.UtcNow) + ResumeTokenLifetime);
+
+        _logger.LogDebug("Resume token issued | ClientId: {ClientId} | ServerId: {ServerId} | Token: {Token}",
+            clientId, serverId, token[..8]);
+        return token;
+    }
+
+    /// <summary>
+    /// Validates and consumes a resume token. The token is removed even when it turns out to be expired,
+    /// so it can never be tried twice.
+    /// </summary>
+    /// <returns>True if the token existed and had not expired.</returns>
+    public bool TryConsumeResumeToken(string token, out string clientId, out string serverId, DateTime? now = null)
+    {
+        clientId = serverId = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(token) || !_resumeTokens.TryRemove(token, out var data))
+        {
+            _logger.LogWarning("Resume token validation failed - token not found or already used");
+            return false;
+        }
+
+        if ((now ?? DateTime.UtcNow) > data.ExpiresAt)
+        {
+            _logger.LogWarning("Resume token expired | ClientId: {ClientId} | Token: {Token}", data.ClientId, token[..Math.Min(8, token.Length)]);
+            return false;
+        }
+
+        clientId = data.ClientId;
+        serverId = data.ServerId;
+        return true;
+    }
+
+    /// <summary>
+    /// Drops resume tokens past their lifetime. Called from the cleanup timer; public so tests can use a fake clock.
+    /// </summary>
+    public void ExpireResumeTokens(DateTime now)
+    {
+        foreach (var kvp in _resumeTokens)
+        {
+            if (now > kvp.Value.ExpiresAt)
+                _resumeTokens.TryRemove(kvp);
+        }
+    }
+
+    /// <summary>Number of resume tokens currently stored (for tests and diagnostics).</summary>
+    public int ResumeTokenCount => _resumeTokens.Count;
+
+    private static string Base64UrlEncode(byte[] bytes) =>
+        Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
     /// <summary>
     /// Checks whether the server can accept another connection.

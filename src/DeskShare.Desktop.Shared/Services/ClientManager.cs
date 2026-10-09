@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System.Net;
+using System.Net.Http.Json;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -34,6 +36,11 @@ public class ClientManager : IDisposable
     private string? _password;
     private string? _signalingUrl;
     private IReadOnlyList<IceServerInfo>? _iceServers;
+
+    // Single-use token for POST /resume; each response carries the next one. Lets a reconnect skip the passkey,
+    // which rotates every 45 s and is long stale by the time we need to reconnect.
+    private string? _resumeToken;
+    private static readonly HttpClient ResumeHttpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
     private CancellationTokenSource? _receiveCts;
     private int _reconnectAttempts;
     private const int MaxReconnectAttempts = 5;
@@ -150,13 +157,15 @@ public class ClientManager : IDisposable
     /// <param name="webSocketToken">One-time token from /authenticate. Hosted servers reject WebSockets without it.</param>
     /// <param name="clientId">The ClientId sent to /authenticate; the token is bound to it, so we must use the same one.</param>
     /// <param name="iceServers">STUN/TURN servers from /authenticate; falls back to public STUN when null.</param>
+    /// <param name="resumeToken">Resume token from /authenticate; used by reconnects instead of the passkey.</param>
     public async Task ConnectAsync(
         string serverId,
         string? password,
         string? signalingUrl = null,
         string? webSocketToken = null,
         string? clientId = null,
-        IReadOnlyList<IceServerInfo>? iceServers = null)
+        IReadOnlyList<IceServerInfo>? iceServers = null,
+        string? resumeToken = null)
     {
         if (_isConnected)
         {
@@ -176,6 +185,7 @@ public class ClientManager : IDisposable
         _password = password;
         _signalingUrl = signalingUrl;
         _iceServers = iceServers;
+        _resumeToken = resumeToken;
 
         try
         {
@@ -657,7 +667,24 @@ public class ClientManager : IDisposable
 
             if (!string.IsNullOrEmpty(_serverId) && !string.IsNullOrEmpty(_signalingUrl))
             {
+                // The WebSocket token from the first connect is spent, so signaling can only be reopened
+                // with a fresh one from /resume. Without a resume token we keep the old signaling socket.
+                var signalingResumed = await ResumeSignalingAsync();
+
                 await SetupWebRtcConnectionAsync();
+
+                if (signalingResumed)
+                {
+                    // Same order as ConnectAsync: listen first, then ask the sender for a new offer.
+                    _receiveCts = new CancellationTokenSource();
+                    _ = ReceiveSignalingMessagesAsync(_receiveCts.Token);
+                    await SendSignalingMessageAsync(new SignalingMessage
+                    {
+                        Type = SignalingMessageType.ConnectionRequest,
+                        SenderId = _clientId,
+                        TargetId = _serverId
+                    });
+                }
                 _logger.LogInformation("Reconnect successful");
             }
         }
@@ -678,6 +705,83 @@ public class ClientManager : IDisposable
         {
             _isReconnecting = false;
         }
+    }
+
+    /// <summary>
+    /// Trades the resume token for a new WebSocket token (POST /resume) and reopens the signaling socket with it.
+    /// </summary>
+    /// <returns>True when signaling was reopened; false when there is no resume token or the server refused it
+    /// (expired, already used, sender gone), in which case the existing signaling socket is left untouched.</returns>
+    /// <exception cref="HttpRequestException">The server could not be reached or answered with an error other than 401.</exception>
+    private async Task<bool> ResumeSignalingAsync()
+    {
+        if (string.IsNullOrEmpty(_resumeToken) || string.IsNullOrEmpty(_signalingUrl))
+            return false;
+
+        var response = await ResumeHttpClient.PostAsJsonAsync(
+            $"{SignalingUrl.ToHttpBase(_signalingUrl)}/resume",
+            new ClientResumeMessage { ResumeToken = _resumeToken });
+
+        if (response.StatusCode == HttpStatusCode.Unauthorized)
+        {
+            // The server burns a token on first use, so a refused one is worthless.
+            _logger.LogWarning("Resume token was refused by the server");
+            _resumeToken = null;
+            return false;
+        }
+
+        // Other failures (server down, 5xx) keep the token: the server may not have consumed it.
+        response.EnsureSuccessStatusCode();
+
+        var result = await response.Content.ReadFromJsonAsync<ClientAuthenticationResponse>();
+        if (result is not { Success: true } || string.IsNullOrEmpty(result.WebSocketToken))
+            throw new InvalidOperationException("Resume response did not contain a WebSocket token");
+
+        // Rotation: the token we just used is spent, the response carries the next one.
+        _resumeToken = result.ResumeToken;
+        if (result.IceServers is { Count: > 0 })
+            _iceServers = result.IceServers;
+
+        // Stop the old receive loop first: it would treat the old socket closing as "server went away"
+        // and tear the whole session down.
+        _receiveCts?.Cancel();
+        _receiveCts?.Dispose();
+        _receiveCts = null;
+
+        var oldSocket = _signalingWebSocket;
+        var newSocket = new ClientWebSocket();
+        using var connectCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        try
+        {
+            var separator = _signalingUrl.Contains('?') ? "&" : "?";
+            await newSocket.ConnectAsync(
+                new Uri($"{_signalingUrl}{separator}token={Uri.EscapeDataString(result.WebSocketToken)}"),
+                connectCts.Token);
+        }
+        catch
+        {
+            newSocket.Dispose();
+            throw;
+        }
+
+        _signalingWebSocket = newSocket;
+        if (oldSocket != null)
+        {
+            // Closing it lets the server free our ClientId; otherwise the new socket would be rejected as a duplicate.
+            try
+            {
+                if (oldSocket.State == WebSocketState.Open)
+                    await oldSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Resuming", CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Old signaling socket could not be closed cleanly");
+            }
+            oldSocket.Dispose();
+        }
+
+        _logger.LogInformation("Signaling reopened with resume token");
+        return true;
     }
 
     /// <summary>
@@ -766,6 +870,7 @@ public class ClientManager : IDisposable
 
         _isConnected = false;
         _serverId = null;
+        _resumeToken = null;
 
         Disconnected?.Invoke(this, "User disconnected");
         _logger.LogInformation("Disconnected successfully");

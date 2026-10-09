@@ -52,6 +52,12 @@ public sealed class WebRTCSession : IDisposable
     public event EventHandler<RTCPeerConnectionState>? ConnectionStateChanged;
 
     /// <summary>
+    /// Event raised when the signaling connection drops unexpectedly (not on Dispose).
+    /// The peer connection and video source are untouched; call <see cref="ReconnectSignalingAsync"/> with a fresh URL.
+    /// </summary>
+    public event EventHandler? SignalingConnectionLost;
+
+    /// <summary>
     /// Runs after the peer connection was recreated for a new viewer and before the offer is created.
     /// Lets wrappers add things to the new connection that must appear in the offer (e.g. a data channel).
     /// </summary>
@@ -64,7 +70,19 @@ public sealed class WebRTCSession : IDisposable
     {
         _videoSource = new SIPSorceryVideoSource();
         _signaler = new WebSocketSignaler();
+        _signaler.ConnectionLost += (_, _) => SignalingConnectionLost?.Invoke(this, EventArgs.Empty);
     }
+
+    /// <summary>
+    /// Re-opens only the signaling WebSocket after it was lost. The capture pipeline, video source and any
+    /// running peer connection are left alone, so viewers that are already streaming do not notice.
+    /// </summary>
+    /// <param name="signalingServerUrl">Signaling URL with a NEW one-time token (the old one was consumed).</param>
+    /// <param name="serverId">Same client id as in <see cref="InitializeAsync"/>.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <exception cref="SignalingException">Thrown when the connection attempt fails.</exception>
+    public Task ReconnectSignalingAsync(string signalingServerUrl, string? serverId = null, CancellationToken cancellationToken = default)
+        => _signaler.ConnectAsync(signalingServerUrl, serverId, cancellationToken);
 
     /// <summary>
     /// Initializes the session with video parameters and connects to signaling server.

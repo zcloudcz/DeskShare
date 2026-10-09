@@ -630,6 +630,7 @@ app.MapPost("/authenticate", async (HttpContext context, IServerSessionStorage s
                 response.Success,
                 response.RemoteControlEnabled,
                 WebSocketToken = token,
+                ResumeToken = cm.IssueResumeToken(authRequest.ClientId, authRequest.ServerId),
                 IceServers = await iceServers.GetIceServersAsync(context.RequestAborted)
             });
         }
@@ -646,6 +647,50 @@ app.MapPost("/authenticate", async (HttpContext context, IServerSessionStorage s
     {
         Log.Error(ex, "Error processing client authentication");
         return Results.Problem("Failed to process authentication");
+    }
+}).RequireRateLimiting("authenticate");
+
+// ============================================================
+// RESUME ENDPOINT — rate limited, lets a viewer reconnect with a resume token instead of the (rotated) passkey
+// ============================================================
+app.MapPost("/resume", async (HttpContext context, IServerSessionStorage sessionStorage, ConnectionManager cm, IceServerProvider iceServers) =>
+{
+    try
+    {
+        var request = await context.Request.ReadFromJsonAsync<DeskShare.Core.Auth.ClientResumeMessage>();
+
+        // Consumed first: whatever happens next, this token can never be replayed.
+        if (request == null || !cm.TryConsumeResumeToken(request.ResumeToken, out var clientId, out var serverId))
+        {
+            cm.RecordAuthFailure();
+            return Results.Unauthorized();
+        }
+
+        // The sender must still be registered (it re-registers every 45 s while it is alive), and another viewer
+        // must not have taken the session over in the meantime (same rule as /authenticate).
+        var status = await sessionStorage.GetServerStatusAsync(serverId);
+        if (status is not { IsOnline: true } ||
+            (status.Status == DeskShare.Core.Auth.SessionStatus.Connected && status.ConnectedClientId != clientId))
+        {
+            cm.RecordAuthFailure();
+            Log.Warning("Resume rejected, server unavailable or taken over | ServerId: {ServerId} | ClientId: {ClientId}", serverId, clientId);
+            return Results.Unauthorized();
+        }
+
+        cm.RecordAuthSuccess();
+        return Results.Ok(new
+        {
+            Success = true,
+            status.RemoteControlEnabled,
+            WebSocketToken = cm.IssueWebSocketToken(clientId),
+            ResumeToken = cm.IssueResumeToken(clientId, serverId),
+            IceServers = await iceServers.GetIceServersAsync(context.RequestAborted)
+        });
+    }
+    catch (Exception ex)
+    {
+        Log.Error(ex, "Error processing resume request");
+        return Results.Problem("Failed to process resume request");
     }
 }).RequireRateLimiting("authenticate");
 

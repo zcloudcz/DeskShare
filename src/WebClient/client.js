@@ -3,6 +3,7 @@ let ws = null;
 let pc = null;
 let clientId = null;
 let senderId = null;
+let resumeToken = null; // Single-use token from /authenticate or /resume; lets a reconnect skip the (rotated) passkey
 let pendingIceCandidates = []; // Queue for ICE candidates that arrive before offer
 let statsInterval = null; // Interval for polling WebRTC stats
 let pingInterval = null; // Interval for sending ping messages
@@ -108,13 +109,52 @@ async function authenticate() {
         return null;
     }
 
-    return await response.json();
+    const result = await response.json();
+    resumeToken = result.resumeToken || null;
+    return result;
 }
 
-async function connect() {
+/**
+ * Trades the stored resume token for a new WebSocket token (POST /resume), so a reconnect works
+ * even though the passkey the user typed has long since rotated.
+ * Returns null when the server refuses the token (expired, used, sender gone); the caller then falls back to /authenticate.
+ */
+async function resume() {
+    const response = await fetch(`${getBaseUrl()}/resume`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ResumeToken: resumeToken })
+    });
+
+    if (response.status === 401) {
+        // The server burns a token on first use, so a refused one is worthless.
+        resumeToken = null;
+        return null;
+    }
+    if (!response.ok) {
+        // Network/server trouble: keep the token (the server may not have consumed it) and let the retry loop try again.
+        throw new Error(`Resume failed (${response.status})`);
+    }
+
+    const result = await response.json();
+    resumeToken = result.resumeToken || null; // rotated: the old token is spent
+    return result;
+}
+
+/**
+ * Opens the signaling WebSocket. With tryResume (reconnects only) it uses the resume token first;
+ * a manual connect always authenticates with the typed passkey.
+ * Returns true when a WebSocket was created, false when authentication or setup failed.
+ */
+async function connect(tryResume = false) {
     try {
-        const authResult = await authenticate();
-        if (!authResult) return;
+        let authResult = null;
+        if (tryResume && resumeToken) {
+            updateStatus('Resuming session...', 'info');
+            authResult = await resume();
+        }
+        if (!authResult) authResult = await authenticate();
+        if (!authResult) return false;
 
         // HTTP JSON from the minimal API is camelCase (WebSocket signaling messages stay PascalCase).
         if (authResult.iceServers && authResult.iceServers.length > 0) {
@@ -233,10 +273,12 @@ async function connect() {
             }
         };
 
+        return true;
     } catch (error) {
         console.error('Connection error:', error);
         updateStatus(`Connection failed: ${error.message}`, 'error');
         updateConnectionState('Error');
+        return false;
     }
 }
 
@@ -384,6 +426,7 @@ function disconnect() {
     }
     reconnectAttempts = 0;
     isReconnecting = false;
+    resumeToken = null; // a manual disconnect ends the session; the next Connect must use the passkey
 
     if (ws) {
         ws.close();
@@ -417,7 +460,16 @@ function attemptReconnection() {
         try {
             isReconnecting = false;
             console.log(`Reconnection attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}`);
-            await connect();
+            // connect() reports failures (server still down, token refused) by returning false instead of throwing.
+            // No WebSocket exists then, so ws.onclose will never fire; schedule the next attempt here.
+            if (!await connect(true)) {
+                if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                    attemptReconnection();
+                } else {
+                    updateStatus('Max reconnection attempts reached. Please reconnect manually.', 'error');
+                }
+                return;
+            }
             // Success - reset reconnect attempts
             reconnectAttempts = 0;
             updateStatus('Reconnected successfully!', 'success');

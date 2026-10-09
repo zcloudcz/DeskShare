@@ -683,7 +683,7 @@ public partial class MainWindow : Window
                 ?? throw new InvalidOperationException("ClientManager not available");
 
             var projectionWindow = new ProjectionWindow(
-                serverId, password, clientManager, authResult.WebSocketToken, clientId, authResult.IceServers);
+                serverId, password, clientManager, authResult.WebSocketToken, clientId, authResult.IceServers, authResult.ResumeToken);
 
             _activeClientConnections++;
             UpdateTabAvailability();

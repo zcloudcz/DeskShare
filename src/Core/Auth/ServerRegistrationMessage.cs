@@ -208,7 +208,24 @@ public sealed class ClientAuthenticationResponse
     public string? WebSocketToken { get; set; }
 
     /// <summary>
+    /// Single-use token the client can POST to /resume to reconnect without the passkey (which rotates every 45 s).
+    /// Every /resume response carries the next one.
+    /// </summary>
+    public string? ResumeToken { get; set; }
+
+    /// <summary>
     /// STUN/TURN servers (including fresh TURN credentials) the client should use for its peer connection.
     /// </summary>
     public List<IceServerInfo>? IceServers { get; set; }
+}
+
+/// <summary>
+/// Body of POST /resume: a viewer that lost its WebSocket trades its resume token for a new WebSocket token.
+/// </summary>
+public sealed class ClientResumeMessage
+{
+    /// <summary>
+    /// The resume token from the last /authenticate or /resume response.
+    /// </summary>
+    public string ResumeToken { get; set; } = string.Empty;
 }

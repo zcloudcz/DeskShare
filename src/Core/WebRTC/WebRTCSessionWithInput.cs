@@ -89,6 +89,21 @@ public sealed class WebRTCSessionWithInput : IDisposable
     }
 
     /// <summary>
+    /// Event raised when the signaling connection drops unexpectedly.
+    /// </summary>
+    public event EventHandler? SignalingConnectionLost
+    {
+        add => _baseSession.SignalingConnectionLost += value;
+        remove => _baseSession.SignalingConnectionLost -= value;
+    }
+
+    /// <summary>
+    /// Re-opens only the signaling WebSocket (see <see cref="WebRTCSession.ReconnectSignalingAsync"/>).
+    /// </summary>
+    public Task ReconnectSignalingAsync(string signalingServerUrl, string? serverId = null, CancellationToken cancellationToken = default)
+        => _baseSession.ReconnectSignalingAsync(signalingServerUrl, serverId, cancellationToken);
+
+    /// <summary>
     /// Event raised when the data channel opens.
     /// </summary>
     public event EventHandler? DataChannelOpened

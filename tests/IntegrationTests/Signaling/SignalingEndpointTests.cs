@@ -149,4 +149,73 @@ public class SignalingEndpointTests : IClassFixture<SignalingEndpointTests.Serve
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.DoesNotContain("webSocketToken", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
     }
+
+    private static Task<HttpResponseMessage> ResumeAsync(HttpClient http, string resumeToken) =>
+        http.PostAsJsonAsync("/resume", new ClientResumeMessage { ResumeToken = resumeToken });
+
+    [Fact]
+    public async Task Resume_AfterAuthenticate_ReturnsNewWebSocketToken_ThatOpensSignal()
+    {
+        var http = _factory.CreateClient();
+        var serverId = "server-it-resume";
+        var clientId = "client-it-resume";
+
+        Assert.Equal(HttpStatusCode.OK, (await RegisterAsync(http, serverId, "secret-resume")).StatusCode);
+        var auth = await AuthenticateAsync(http, serverId, clientId);
+        Assert.False(string.IsNullOrEmpty(auth.ResumeToken));
+
+        // The first socket token is burned by a normal connect, exactly like the viewer's initial connection.
+        var wsClient = _factory.Server.CreateWebSocketClient();
+        using (await wsClient.ConnectAsync(
+            new Uri($"ws://localhost/signal?token={Uri.EscapeDataString(auth.WebSocketToken!)}"), CancellationToken.None))
+        {
+        }
+
+        // Reconnect without the passkey: /resume hands out a fresh socket token, the next resume token and ICE servers.
+        var response = await ResumeAsync(http, auth.ResumeToken!);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var resumed = (await response.Content.ReadFromJsonAsync<ClientAuthenticationResponse>())!;
+
+        Assert.True(resumed.Success);
+        Assert.False(string.IsNullOrEmpty(resumed.WebSocketToken));
+        Assert.NotEqual(auth.WebSocketToken, resumed.WebSocketToken);
+        Assert.False(string.IsNullOrEmpty(resumed.ResumeToken));
+        Assert.NotEqual(auth.ResumeToken, resumed.ResumeToken);
+        Assert.NotEmpty(resumed.IceServers!);
+
+        using var socket = await wsClient.ConnectAsync(
+            new Uri($"ws://localhost/signal?token={Uri.EscapeDataString(resumed.WebSocketToken!)}"), CancellationToken.None);
+        var buffer = new byte[4096];
+        var received = await socket.ReceiveAsync(buffer, CancellationToken.None);
+
+        // Same ClientId as before the drop, so the sender sees the same viewer.
+        Assert.Contains(clientId, Encoding.UTF8.GetString(buffer, 0, received.Count));
+
+        // Rotation: the new resume token works once more.
+        Assert.Equal(HttpStatusCode.OK, (await ResumeAsync(http, resumed.ResumeToken!)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Resume_SameTokenTwice_SecondIsUnauthorized()
+    {
+        var http = _factory.CreateClient();
+        Assert.Equal(HttpStatusCode.OK, (await RegisterAsync(http, "server-it-resume-twice", "secret-twice")).StatusCode);
+        var auth = await AuthenticateAsync(http, "server-it-resume-twice", "client-it-resume-twice");
+
+        Assert.Equal(HttpStatusCode.OK, (await ResumeAsync(http, auth.ResumeToken!)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await ResumeAsync(http, auth.ResumeToken!)).StatusCode);
+    }
+
+    [Theory]
+    [InlineData("garbage-token")]
+    [InlineData("")]
+    public async Task Resume_WithInvalidToken_IsUnauthorized(string token)
+    {
+        var http = _factory.CreateClient();
+
+        var response = await ResumeAsync(http, token);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.DoesNotContain("webSocketToken", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+    }
 }

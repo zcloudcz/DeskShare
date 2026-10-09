@@ -7,6 +7,7 @@ using DeskShare.Core.Video;
 using DeskShare.Core.Interfaces;
 using DeskShare.Core.Auth;
 using DeskShare.Core.Platform;
+using DeskShare.Core.Signaling;
 using Serilog;
 using System.Net.Http.Json;
 using SIPSorcery.Net;
@@ -38,6 +39,9 @@ public class ScreenSenderService : IHostedService, IDisposable
     // Latest STUN/TURN servers from /register. The first registration happens before the WebRTC session exists,
     // so we keep them here and apply them when the session is created and again after every re-registration.
     private volatile List<RTCIceServer>? _iceServers;
+
+    // 1 while a signaling reconnect loop is running, so a burst of "connection lost" events starts only one loop.
+    private int _reconnecting;
 
     // Passkey rotation fields
     private string? _currentPasskey;
@@ -179,6 +183,7 @@ public class ScreenSenderService : IHostedService, IDisposable
                 {
                     _logger.LogError("WebRTC error: {Error}", error);
                 };
+                _webrtcSessionWithInput.SignalingConnectionLost += (sender, args) => OnSignalingConnectionLost();
 
                 // Initialize
                 initialized = await _webrtcSessionWithInput.InitializeAsync(
@@ -229,6 +234,7 @@ public class ScreenSenderService : IHostedService, IDisposable
                 {
                     _logger.LogError("WebRTC error: {Error}", error);
                 };
+                _webrtcSession.SignalingConnectionLost += (sender, args) => OnSignalingConnectionLost();
 
                 // Initialize with configured ServerId
                 initialized = await _webrtcSession.InitializeAsync(
@@ -337,6 +343,84 @@ public class ScreenSenderService : IHostedService, IDisposable
 
         var separator = _configuration.SignalingServerUrl.Contains('?') ? "&" : "?";
         return $"{_configuration.SignalingServerUrl}{separator}token={Uri.EscapeDataString(_webSocketToken)}";
+    }
+
+    /// <summary>
+    /// The signaling socket dropped (server restart, network blip). Peer connections that are already
+    /// streaming keep working, but without signaling no new viewer can reach us, so reconnect in the background.
+    /// </summary>
+    private void OnSignalingConnectionLost()
+    {
+        var stoppingToken = _stoppingCts?.Token ?? CancellationToken.None;
+        if (stoppingToken.IsCancellationRequested)
+            return;
+
+        // Only one loop at a time; the running loop re-checks the connection when it finishes.
+        if (Interlocked.Exchange(ref _reconnecting, 1) == 1)
+            return;
+
+        _logger.LogWarning("Signaling connection lost, reconnecting in the background");
+        _ = Task.Run(() => ReconnectSignalingLoopAsync(stoppingToken));
+    }
+
+    /// <summary>
+    /// Retries "re-register for a fresh one-time token, then reopen the WebSocket" with growing delays
+    /// until it works or the service stops. The capture pipeline and video source are not touched.
+    /// </summary>
+    private async Task ReconnectSignalingLoopAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            for (var attempt = 0; !stoppingToken.IsCancellationRequested; attempt++)
+            {
+                var delay = ReconnectBackoff.GetDelay(attempt);
+                _logger.LogInformation("Signaling reconnect attempt {Attempt} in {Delay} s", attempt + 1, delay.TotalSeconds);
+                await Task.Delay(delay, stoppingToken);
+
+                // The token from the last registration was consumed by the first connection. Clear it so a failed
+                // registration (server still down) is detected instead of retrying with the dead token.
+                _webSocketToken = null;
+                await RegisterWithSignalingServerAsync();
+                if (string.IsNullOrEmpty(_webSocketToken))
+                    continue;
+
+                try
+                {
+                    var url = BuildSignalingUrl();
+                    if (_webrtcSessionWithInput != null)
+                        await _webrtcSessionWithInput.ReconnectSignalingAsync(url, ServerId, stoppingToken);
+                    else if (_webrtcSession != null)
+                        await _webrtcSession.ReconnectSignalingAsync(url, ServerId, stoppingToken);
+                    else
+                        return; // service is shutting down, sessions are gone
+
+                    _logger.LogInformation("Signaling reconnected after {Attempts} attempt(s)", attempt + 1);
+                    return;
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Signaling reconnect attempt {Attempt} failed", attempt + 1);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Service is stopping
+        }
+        finally
+        {
+            Volatile.Write(ref _reconnecting, 0);
+
+            // The socket may have dropped again after we connected but before the flag was cleared;
+            // that event was ignored, so check once more.
+            var stillConnected = _webrtcSessionWithInput?.IsSignalingConnected ?? _webrtcSession?.IsSignalingConnected ?? true;
+            if (!stillConnected)
+                OnSignalingConnectionLost();
+        }
     }
 
     /// <summary>

@@ -44,6 +44,7 @@ public partial class ProjectionWindow : Window
     private readonly string? _password;
     private readonly string? _webSocketToken;
     private readonly string? _clientId;
+    private readonly string? _resumeToken;
     private readonly IReadOnlyList<DeskShare.Core.Auth.IceServerInfo>? _iceServers;
     private bool _isFullscreen;
     private bool _isConnected;
@@ -59,7 +60,8 @@ public partial class ProjectionWindow : Window
         ClientManager clientManager,
         string? webSocketToken = null,
         string? clientId = null,
-        IReadOnlyList<DeskShare.Core.Auth.IceServerInfo>? iceServers = null)
+        IReadOnlyList<DeskShare.Core.Auth.IceServerInfo>? iceServers = null,
+        string? resumeToken = null)
     {
         InitializeComponent();
 
@@ -72,6 +74,7 @@ public partial class ProjectionWindow : Window
         _webSocketToken = webSocketToken;
         _clientId = clientId;
         _iceServers = iceServers;
+        _resumeToken = resumeToken;
 
         ServerIdText.Text = $"Server ID: {serverId}";
         ConnectedServerIdText.Text = serverId;
@@ -118,7 +121,7 @@ public partial class ProjectionWindow : Window
             _clientManager.Connected += OnConnected;
             _clientManager.Disconnected += OnDisconnected;
 
-            await _clientManager.ConnectAsync(_serverId, _password, null, _webSocketToken, _clientId, _iceServers);
+            await _clientManager.ConnectAsync(_serverId, _password, null, _webSocketToken, _clientId, _iceServers, _resumeToken);
 
             _logger.LogInformation("Successfully connected to server {ServerId}", _serverId);
         }
