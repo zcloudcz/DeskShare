@@ -77,4 +77,4 @@ certs/
 *.pfx
 .env
 # FFmpeg native DLLs (downloaded, ~140 MB)
-src/DeskShare.Desktop/ffmpeg/
+src/DeskShare.DesktopAvalonia/ffmpeg/

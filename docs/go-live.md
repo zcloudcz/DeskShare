@@ -65,7 +65,7 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-`release.yml` builds the WPF app, packs it with Velopack and publishes
+`release.yml` builds the Avalonia app, packs it with Velopack and publishes
 `DeskShare-win-Setup.exe`, `DeskShare-win-Portable.zip` and `releases.win.json` to the GitHub
 Release. The landing page links to `releases/latest/download/...`, so nothing else to update.
 

@@ -30,7 +30,7 @@ network observer on the same LAN can capture everything.
 | File | Line | Current value |
 |------|------|---------------|
 | `src/ScreenSenderApp/appsettings.json` | Signaling.ServerUrl | `ws://localhost:5151/signal` |
-| `src/DeskShare.Desktop/appsettings.json` | SignalingUrl | `ws://localhost:5151/signal` |
+| `src/DeskShare.DesktopAvalonia/appsettings.json` | SignalingUrl | `ws://localhost:5151/signal` |
 | `src/DeskShare.DesktopAvalonia/appsettings.json` | SignalingUrl | `ws://localhost:5151/signal` |
 | `src/WebClient/index.html` | input default | `ws://localhost:5151/signal` |
 | `src/WebClient/index-control.html` | input default | `ws://localhost:5000/signal` |
@@ -89,7 +89,7 @@ The security-best-practices.md explicitly marks this as "NOT SAFE FOR PRODUCTION
    - Show a modal window with: requesting client ID, IP address, timestamp.
    - Two buttons: "Allow" and "Deny".
    - Auto-deny after 30-second timeout (no silent approval).
-   - Must work in both WPF (`DeskShare.Desktop`) and Avalonia
+   - Must work in the Avalonia desktop app (`DeskShare.DesktopAvalonia`)
      (`DeskShare.DesktopAvalonia`) via `DeskShare.Desktop.Shared` abstraction.
 
 2. **Update `WindowsInputController.RequestAuthorizationAsync`**

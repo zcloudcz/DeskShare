@@ -1,6 +1,6 @@
 # Release: build the desktop apps, package them with Velopack and publish a GitHub Release.
 # Triggered by pushing a version tag (v1.2.3; a tag containing '-' such as v1.2.3-beta.1 becomes a pre-release).
-# Windows (WPF) is the primary, tested build. macOS (Avalonia, Apple Silicon) and Linux (Avalonia, AppImage)
+# Windows, macOS (Apple Silicon) and Linux (AppImage) all ship the same Avalonia app (src/DeskShare.DesktopAvalonia).
 # are viewer-only betas built on GitHub runners; they are added to the same release after the Windows job.
 #
 # The landing page links to https://github.com/zcloudcz/DeskShare/releases/latest/download/<asset>,
@@ -64,16 +64,12 @@ jobs:
       # FFmpeg 8.1 LGPL shared DLLs (video decoding in the viewer); not in git because of size.
       - name: Download FFmpeg
         shell: pwsh
-        run: ./src/DeskShare.Desktop/download-ffmpeg.ps1
+        run: ./src/DeskShare.DesktopAvalonia/download-ffmpeg.ps1
 
-      # Framework-dependent publish; Velopack's Setup.exe installs the .NET 8 desktop runtime if missing
-      # (see --framework below). Keeps the installer ~90 MB instead of ~170 MB.
+      # Framework-dependent publish; Velopack's Setup.exe installs the .NET 8 runtime if missing
+      # (see --framework below). Keeps the installer small. The csproj copies ./ffmpeg into publish/ffmpeg.
       - name: Publish desktop app
-        run: dotnet publish src/DeskShare.Desktop/DeskShare.Desktop.csproj -c Release -r win-x64 --self-contained false -o publish -p:Version=${{ steps.version.outputs.version }}
-
-      - name: Add FFmpeg to publish output
-        shell: pwsh
-        run: Copy-Item -Path src/DeskShare.Desktop/ffmpeg -Destination publish/ffmpeg -Recurse
+        run: dotnet publish src/DeskShare.DesktopAvalonia/DeskShare.DesktopAvalonia.csproj -c Release -r win-x64 --self-contained false -o publish -p:Version=${{ steps.version.outputs.version }}
 
       - name: Install Velopack CLI
         run: dotnet tool install -g vpk --version ${{ env.VPK_VERSION }}
@@ -87,8 +83,8 @@ jobs:
           --mainExe DeskShare.exe
           --packTitle DeskShare
           --packAuthors "Martin Zahálka"
-          --icon src/DeskShare.Desktop/deskshare.ico
-          --framework net8.0-x64-desktop
+          --icon src/DeskShare.DesktopAvalonia/deskshare.ico
+          --framework net8.0-x64-runtime
           --outputDir Releases
 
       # Produces DeskShare-win-Setup.exe, DeskShare-win-Portable.zip, the .nupkg and releases.win.json

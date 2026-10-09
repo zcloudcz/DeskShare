@@ -49,6 +49,8 @@
     <!-- Required for unsafe memory operations in VideoSink frame rendering -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>DeskShare</AssemblyName>
+    <!-- Windows exe icon (ignored on Linux/macOS, which use deskshare.png via Velopack) -->
+    <ApplicationIcon>deskshare.ico</ApplicationIcon>
   </PropertyGroup>
 
   <!-- FFmpeg native libraries: ./ffmpeg holds the platform's shared libs (dll / so / dylib), filled by CI
