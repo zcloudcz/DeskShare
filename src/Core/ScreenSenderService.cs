@@ -210,6 +210,10 @@ public class ScreenSenderService : IHostedService, IDisposable
 
                 videoSource = _webrtcSessionWithInput.VideoSource;
                 _logger.LogInformation("WebRTC session with input initialized. Client ID: {ClientId}", _webrtcSessionWithInput.ClientId);
+                if (!_webrtcSessionWithInput.IsSignalingConnected)
+                {
+                    OnSignalingConnectionLost(); // server was unreachable at startup: retry in the background
+                }
             }
             else
             {
@@ -252,6 +256,10 @@ public class ScreenSenderService : IHostedService, IDisposable
 
                 videoSource = _webrtcSession.VideoSource;
                 _logger.LogInformation("WebRTC session initialized (view-only). Client ID: {ClientId}", _webrtcSession.ClientId);
+                if (!_webrtcSession.IsSignalingConnected)
+                {
+                    OnSignalingConnectionLost(); // server was unreachable at startup: retry in the background
+                }
             }
 
             // Start capture pipeline with WebRTC video source

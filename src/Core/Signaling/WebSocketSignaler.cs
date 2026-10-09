@@ -13,6 +13,13 @@ public sealed class WebSocketSignaler : ISignaler
 {
     private const int ReceiveBufferSize = 4096;
 
+    // A socket can die without any close frame (e.g. App Service swaps the container during a deployment), and
+    // .NET 8 ClientWebSocket keep-alives never detect that. So we ping ourselves through the server and treat
+    // the connection as lost when nothing at all arrives for DeadAfter.
+    internal static TimeSpan KeepAliveInterval { get; set; } = TimeSpan.FromSeconds(15);
+    internal static TimeSpan DeadAfter { get; set; } = TimeSpan.FromSeconds(45);
+    private long _lastReceivedTicks;
+
     private ClientWebSocket? _webSocket;
     private CancellationTokenSource? _receiveCts;
     private Task? _receiveTask;
@@ -78,7 +85,9 @@ public sealed class WebSocketSignaler : ISignaler
 
             // Start background task to continuously receive messages from server
             _receiveCts = new CancellationTokenSource();
+            Interlocked.Exchange(ref _lastReceivedTicks, DateTime.UtcNow.Ticks);
             _receiveTask = ReceiveLoopAsync(_webSocket, _receiveCts.Token);
+            _ = KeepAliveLoopAsync(_webSocket, _receiveCts.Token);
 
             // Wait for server to send us our assigned client ID (Identify message)
             // Server always assigns a GUID in Phase 1 (custom IDs not yet supported)
@@ -102,6 +111,44 @@ public sealed class WebSocketSignaler : ISignaler
         {
             CleanupConnection();
             throw new SignalingException("Failed to connect to signaling server.", ex);
+        }
+    }
+
+    /// <summary>
+    /// Sends a Ping addressed to ourselves every <see cref="KeepAliveInterval"/>; the server routes it back, so a
+    /// healthy connection always receives something. If nothing arrives for <see cref="DeadAfter"/>, the socket is
+    /// aborted, which ends the receive loop with an error and raises <see cref="ConnectionLost"/>.
+    /// </summary>
+    private async Task KeepAliveLoopAsync(ClientWebSocket socket, CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested && socket.State == WebSocketState.Open)
+            {
+                await Task.Delay(KeepAliveInterval, cancellationToken);
+
+                var silentFor = DateTime.UtcNow - new DateTime(Interlocked.Read(ref _lastReceivedTicks), DateTimeKind.Utc);
+                if (silentFor > DeadAfter)
+                {
+                    socket.Abort();
+                    return;
+                }
+
+                if (!string.IsNullOrEmpty(ClientId))
+                {
+                    await SendAsync(new SignalingMessage { Type = SignalingMessageType.Ping, SenderId = ClientId, TargetId = ClientId },
+                        cancellationToken);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Disconnect or reconnect: the loop for this socket is no longer needed.
+        }
+        catch (Exception)
+        {
+            // A failed ping send means the socket is broken; the receive loop reports the loss.
+            socket.Abort();
         }
     }
 
@@ -205,6 +252,7 @@ public sealed class WebSocketSignaler : ISignaler
                 var result = await webSocket.ReceiveAsync(
                     new ArraySegment<byte>(buffer),
                     cancellationToken);
+                Interlocked.Exchange(ref _lastReceivedTicks, DateTime.UtcNow.Ticks);
 
                 if (result.MessageType == WebSocketMessageType.Close)
                     break;
@@ -257,6 +305,12 @@ public sealed class WebSocketSignaler : ISignaler
             if (message == null)
             {
                 ErrorOccurred?.Invoke(this, new SignalingErrorEventArgs("Received null message"));
+                return;
+            }
+
+            // Our own keep-alive ping coming back: it only proves the connection is alive, nobody else needs it.
+            if (message.Type == SignalingMessageType.Ping && message.SenderId != null && message.SenderId == ClientId)
+            {
                 return;
             }
 

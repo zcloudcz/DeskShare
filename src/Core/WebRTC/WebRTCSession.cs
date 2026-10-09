@@ -107,7 +107,15 @@ public sealed class WebRTCSession : IDisposable
             Log.Debug("Subscribing to MessageReceived event");
             _signaler.MessageReceived += OnSignalingMessageReceived;
             Log.Debug("Connecting to signaling server");
-            await _signaler.ConnectAsync(signalingServerUrl, serverId, cancellationToken);
+            try
+            {
+                await _signaler.ConnectAsync(signalingServerUrl, serverId, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Not fatal: the caller sees IsSignalingConnected == false and retries with a fresh token.
+                Log.Warning("Signaling server unreachable at startup ({Error}); will retry", ex.Message);
+            }
             // IMPORTANT: Connect to signaling server FIRST, before initializing VideoSource
             // Otherwise ICE candidates will be generated before signaling connection is ready
             // Subscribe to events BEFORE connecting so we don't miss any messages

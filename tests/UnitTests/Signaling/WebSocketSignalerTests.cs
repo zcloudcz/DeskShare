@@ -124,6 +124,31 @@ public class WebSocketSignalerTests
     }
 
     [Fact]
+    public async Task ConnectionLost_IsRaised_WhenTheServerGoesSilentWithoutClosing()
+    {
+        // A half-open socket: the server neither answers nor closes (what a swapped App Service container
+        // looks like). Only the keep-alive can notice; shorten its timings for the test.
+        using var server = new FakeServer(_ => Task.Delay(Timeout.Infinite));
+        var (interval, deadAfter) = (WebSocketSignaler.KeepAliveInterval, WebSocketSignaler.DeadAfter);
+        WebSocketSignaler.KeepAliveInterval = TimeSpan.FromMilliseconds(100);
+        WebSocketSignaler.DeadAfter = TimeSpan.FromMilliseconds(500);
+        try
+        {
+            using var signaler = new WebSocketSignaler();
+            var lost = new TaskCompletionSource();
+            signaler.ConnectionLost += (_, _) => lost.TrySetResult();
+
+            await signaler.ConnectAsync(server.Url, "server-test");
+
+            Assert.True(await WaitAsync(lost.Task), "ConnectionLost was not raised for a silent server");
+        }
+        finally
+        {
+            (WebSocketSignaler.KeepAliveInterval, WebSocketSignaler.DeadAfter) = (interval, deadAfter);
+        }
+    }
+
+    [Fact]
     public async Task Signaler_CanReconnect_AfterConnectionLost_AndKeepsItsClientId()
     {
         FakeServer? server = null;
