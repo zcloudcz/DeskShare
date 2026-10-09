@@ -136,7 +136,7 @@ These credentials are committed to version control and documented in
    - Set `no-cli` in `turnserver.conf` (or bind CLI only to 127.0.0.1).
 
 3. **Generate strong credentials in deployment script**
-   - Add a helper script or note in `build-release.ps1` that generates
+   - Add a helper script or note in the release setup that generates
      random TURN credentials on first deployment.
 
 **Acceptance criteria:**
@@ -389,7 +389,7 @@ permissive even when origins are restricted.
 
 **Problem:**
 No automated build/test/deploy pipeline. Only a manual PowerShell script
-(`build-release.ps1`).
+(superseded by `.github/workflows/release.yml`).
 
 **Tasks:**
 

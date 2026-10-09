@@ -163,9 +163,7 @@ DeskShare/
 │   ├── Common/                      # Sdílené modely a rozhraní
 │   │   ├── Models/                  # Datové modely (Frame, VideoFrame, SignalingMessage)
 │   │   └── Interfaces/              # Abstrakce (ICapturer, IFrameConverter, IVideoSource)
-│   ├── ScreenSenderApp/             # Desktop aplikace pro capture & WebRTC streaming
-│   │   ├── Capture/                 # DesktopDuplicator implementace
-│   │   └── Conversion/              # PixelConverter (BGRA->I420)
+│   ├── ScreenSenderApp/             # Headless CLI sender nad DeskShare.Core.ScreenSenderService
 │   ├── SignalingServer/             # ASP.NET Core WebSocket signaling server
 │   │   └── Services/                # ConnectionManager pro routing zpráv
 │   └── WebClient/                   # HTML/JS klient pro příjem streamu
@@ -252,8 +250,7 @@ Upravte `src/ScreenSenderApp/appsettings.json`:
   "Capture": {
     "AdapterIndex": 0,
     "OutputIndex": 0,
-    "TargetFps": 30,
-    "UseSimdOptimization": true
+    "TargetFps": 30
   },
   "Signaling": {
     "ServerUrl": "ws://localhost:5000/signal"
@@ -271,7 +268,7 @@ dotnet run
 Nebo s parametry z příkazové řádky:
 
 ```bash
-dotnet run -- --adapter 0 --output 0 --fps 30
+dotnet run -- --Capture:AdapterIndex=0 --Capture:OutputIndex=0 --Capture:TargetFps=30
 ```
 
 Použití WebRTCSession:

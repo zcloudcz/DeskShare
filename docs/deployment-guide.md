@@ -53,6 +53,8 @@ DeskShare-1.0.0/
 
 ## Building Release
 
+> **Superseded:** releases are built by `.github/workflows/release.yml` (Velopack). `build-release.ps1` was removed; the portable-ZIP steps below are historical.
+
 ### Prerequisites
 
 - .NET 8 SDK
