@@ -158,9 +158,24 @@ jobs:
           ${{ needs.release.outputs.prerelease == 'True' && '--pre' || '' }}
 
   release-macos:
-    name: macOS (beta, viewer, Apple Silicon)
-    runs-on: macos-latest
+    name: macOS ${{ matrix.title }} (beta, viewer)
+    runs-on: ${{ matrix.runner }}
     needs: release
+    # Apple Silicon keeps the default "osx" channel so existing installs keep auto-updating; Intel gets its own
+    # channel (assets DeskShare-osx-x64-*) because Velopack keys update feeds and asset names by channel.
+    # macos-15-intel is GitHub's last Intel image; Homebrew there provides x86_64 ffmpeg@8 dylibs.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - title: Apple Silicon
+            runner: macos-latest
+            rid: osx-arm64
+            channel: osx
+          - title: Intel
+            runner: macos-15-intel
+            rid: osx-x64
+            channel: osx-x64
 
     steps:
       - name: Checkout repository
@@ -171,8 +186,8 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Publish Avalonia app (osx-arm64)
-        run: dotnet publish src/DeskShare.DesktopAvalonia/DeskShare.DesktopAvalonia.csproj -c Release -r osx-arm64 --self-contained true -o publish -p:Version=${{ needs.release.outputs.version }}
+      - name: Publish Avalonia app (${{ matrix.rid }})
+        run: dotnet publish src/DeskShare.DesktopAvalonia/DeskShare.DesktopAvalonia.csproj -c Release -r ${{ matrix.rid }} --self-contained true -o publish -p:Version=${{ needs.release.outputs.version }}
 
       # No prebuilt FFmpeg 8 shared libs for macOS exist as a download; scripts/bundle-ffmpeg-macos.sh takes
       # Homebrew's ffmpeg@8 and makes the dylibs relocatable (major-version names, @loader_path install names).
@@ -238,7 +253,8 @@ jobs:
           --packAuthors "Martin Zahálka"
           --bundleId cz.zcloud.deskshare
           --icon deskshare.icns
-          --runtime osx-arm64
+          --runtime ${{ matrix.rid }}
+          --channel ${{ matrix.channel }}
           --outputDir Releases
           ${{ steps.sign.outputs.app_identity != '' && format('--signAppIdentity "{0}" --signEntitlements src/DeskShare.DesktopAvalonia/DeskShare.entitlements --notaryProfile deskshare --keychain "{1}"', steps.sign.outputs.app_identity, steps.sign.outputs.keychain) || '' }}
           ${{ steps.sign.outputs.inst_identity != '' && format('--signInstallIdentity "{0}"', steps.sign.outputs.inst_identity) || '--noInst' }}
@@ -250,6 +266,7 @@ jobs:
         run: >
           vpk upload github
           --outputDir Releases
+          --channel ${{ matrix.channel }}
           --repoUrl https://github.com/${{ github.repository }}
           --token ${{ secrets.GITHUB_TOKEN }}
           --tag ${{ github.ref_name }}
