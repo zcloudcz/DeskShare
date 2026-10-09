@@ -298,6 +298,17 @@ public sealed class DataChannelManager : IDisposable
             {
                 var messageType = typeElement.GetString();
 
+                if (messageType == "authorization_request")
+                {
+                    // The host decides with the "Allow remote control" checkbox, which authorizes the input
+                    // controller when sharing starts. Report that state; the browser only sends input once
+                    // it got authorized = true.
+                    bool authorized = _inputController?.IsEnabled ?? false;
+                    _logger.Information("Remote control requested by viewer, authorized: {Authorized}", authorized);
+                    SendJson(new { type = "authorization_response", authorized, timestamp = DateTime.UtcNow });
+                    return;
+                }
+
                 if (messageType == "clipboard" && doc.RootElement.TryGetProperty("data", out var dataElement))
                 {
                     // This is a clipboard message

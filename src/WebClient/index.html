@@ -159,13 +159,13 @@
 
             <div class="control-group">
                 <label for="serverId">Server ID:</label>
-                <input type="text" id="serverId" value="" placeholder="Paste Server ID from ScreenSenderApp console" />
+                <input type="text" id="serverId" value="" placeholder="server-..." />
             </div>
             <div class="control-group">
                 <label for="passkey">Passkey:</label>
                 <input type="text" id="passkey" value="" placeholder="XXX-XXX-XXX" />
-                <small style="display: block; margin-left: 150px; color: #ff9800;">
-                    <strong>⚠️ IMPORTANT:</strong> Copy the full Server ID GUID from the ScreenSenderApp console window and paste it here before connecting.
+                <small style="display: block; margin-left: 150px; color: #666;">
+                    Server ID and passkey are shown in the DeskShare app on the shared computer.
                 </small>
             </div>
 
@@ -173,6 +173,7 @@
                 <button id="connectBtn" onclick="connect()">Connect</button>
                 <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
                 <button id="fullscreenBtn" onclick="toggleFullscreen()" disabled>Fullscreen</button>
+                <button id="controlBtn" onclick="toggleControl()" disabled title="Available when the host allowed remote control">Enable control</button>
             </div>
 
             <div id="status" class="status info" style="display: none;">
@@ -217,6 +218,7 @@
         </div>
     </div>
 
+    <script src="remote-control.js"></script>
     <script src="client.js"></script>
     <script>
         // Register service worker for PWA offline support

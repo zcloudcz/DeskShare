@@ -37,7 +37,7 @@ DeskShare-1.0.0/
 │   └── [dependencies]
 ├── WebClient/                # Browser-based viewer
 │   ├── index-control.html
-│   ├── client-with-control.js
+│   ├── remote-control.js
 │   ├── remote-control.js
 │   └── [web assets]
 ├── docs/                     # Documentation

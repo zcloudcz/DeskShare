@@ -228,7 +228,7 @@ console.log('RemoteControl:', remoteControl);
    - Open browser DevTools (F12)
    - Check Console tab for errors
    - Common: `RemoteControl is not defined`
-   - Fix: Ensure remote-control.js loads before client-with-control.js
+   - Fix: Ensure remote-control.js loads before client.js
 
 3. **Button disabled**
    - Button should be enabled after video connects

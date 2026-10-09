@@ -10,6 +10,8 @@ let lastPongTime = Date.now(); // Timestamp of last received pong
 let reconnectAttempts = 0; // Number of reconnection attempts
 let reconnectTimeout = null; // Timeout for reconnection delay
 let isReconnecting = false; // Flag to prevent multiple simultaneous reconnections
+let dataChannel = null; // Created by the sender when the host allowed remote control
+let remoteControl = null; // RemoteControl (remote-control.js) bound to the video element
 
 const PING_INTERVAL_MS = 5000; // Send ping every 5 seconds
 const PING_TIMEOUT_MS = 15000; // Consider server dead after 15 seconds without pong
@@ -33,6 +35,7 @@ const videoContainer = document.getElementById('videoContainer');
 const placeholder = document.getElementById('placeholder');
 const statusDiv = document.getElementById('status');
 const statusText = document.getElementById('statusText');
+const controlBtn = document.getElementById('controlBtn');
 
 function updateStatus(message, type = 'info') {
     statusDiv.style.display = 'block';
@@ -244,6 +247,9 @@ async function handleOffer(message) {
         // Create peer connection
         pc = new RTCPeerConnection(config);
 
+        // The sender opens an "input" data channel only when the host allowed remote control.
+        pc.ondatachannel = (event) => setupDataChannel(event.channel);
+
         // Handle incoming tracks
         pc.ontrack = (event) => {
             console.log('Received remote track:', event.track.kind);
@@ -428,6 +434,16 @@ function cleanup() {
     stopStatsMonitoring();
     stopPingMonitoring();
 
+    if (remoteControl) {
+        remoteControl.disable();
+        remoteControl = null;
+    }
+    if (dataChannel) {
+        dataChannel.close();
+        dataChannel = null;
+    }
+    updateControlButton();
+
     if (pc) {
         pc.close();
         pc = null;
@@ -447,6 +463,55 @@ function cleanup() {
     pendingIceCandidates = [];
     document.getElementById('clientId').textContent = '-';
     updateWebRtcState('Closed');
+}
+
+// ---- Remote control (mouse, keyboard, touch) over the WebRTC data channel ----
+
+function setupDataChannel(channel) {
+    dataChannel = channel;
+    dataChannel.onopen = () => {
+        remoteControl = new RemoteControl(remoteVideo, dataChannel);
+        updateControlButton();
+        updateStatus('Remote control is available. Click "Enable control".', 'success');
+    };
+    dataChannel.onclose = () => {
+        if (remoteControl) remoteControl.disable();
+        remoteControl = null;
+        dataChannel = null;
+        updateControlButton();
+    };
+    dataChannel.onmessage = (event) => {
+        let message;
+        try { message = JSON.parse(event.data); } catch { return; }
+        if (message.type === 'authorization_response' && remoteControl) {
+            remoteControl.handleAuthorizationResponse(message);
+            updateStatus(message.authorized ? 'Remote control active' : 'The host did not allow remote control',
+                message.authorized ? 'success' : 'error');
+            updateControlButton();
+        } else if (message.type === 'authorization_revoked' && remoteControl) {
+            remoteControl.disable();
+            updateStatus('The host revoked remote control', 'error');
+            updateControlButton();
+        }
+    };
+}
+
+function toggleControl() {
+    if (!remoteControl) return;
+    if (remoteControl.enabled) {
+        remoteControl.disable();
+        updateStatus('Remote control disabled', 'info');
+    } else {
+        remoteControl.enable(); // sends authorization_request; input flows after authorization_response
+        updateStatus('Requesting remote control...', 'info');
+    }
+    updateControlButton();
+}
+
+function updateControlButton() {
+    if (!controlBtn) return;
+    controlBtn.disabled = !remoteControl;
+    controlBtn.textContent = remoteControl && remoteControl.enabled ? 'Disable control' : 'Enable control';
 }
 
 // Handle page unload

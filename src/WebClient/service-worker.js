@@ -13,14 +13,12 @@
  * - The "fetch" event fires for every network request the page makes.
  */
 
-const CACHE_NAME = 'deskshare-v1';
+const CACHE_NAME = 'deskshare-v2';
 
 // Files to cache during install (the "app shell")
 const APP_SHELL_FILES = [
     '/webclient/index.html',
-    '/webclient/index-control.html',
     '/webclient/client.js',
-    '/webclient/client-with-control.js',
     '/webclient/remote-control.js',
     '/webclient/mobile.css',
     '/webclient/manifest.json'
@@ -99,32 +97,20 @@ self.addEventListener('fetch', (event) => {
     }
 
     // Cache-first strategy for static assets
+    // Network first: a cache-first strategy kept serving old client code after every deployment.
+    // The cache is only an offline fallback.
     event.respondWith(
-        caches.match(event.request)
-            .then((cachedResponse) => {
-                if (cachedResponse) {
-                    // Found in cache - return cached version
-                    return cachedResponse;
+        fetch(event.request)
+            .then((networkResponse) => {
+                if (networkResponse && networkResponse.status === 200) {
+                    const responseClone = networkResponse.clone();
+                    caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
                 }
-
-                // Not in cache - fetch from network and cache the response
-                return fetch(event.request)
-                    .then((networkResponse) => {
-                        // Only cache successful responses
-                        if (networkResponse && networkResponse.status === 200) {
-                            const responseClone = networkResponse.clone();
-                            caches.open(CACHE_NAME)
-                                .then((cache) => cache.put(event.request, responseClone));
-                        }
-                        return networkResponse;
-                    })
-                    .catch(() => {
-                        // Network failed and not in cache - return offline page
-                        // For HTML requests, return the cached index page
-                        if (event.request.headers.get('Accept')?.includes('text/html')) {
-                            return caches.match('/webclient/index.html');
-                        }
-                    });
+                return networkResponse;
             })
+            .catch(() => caches.match(event.request).then((cached) =>
+                cached || (event.request.headers.get('Accept')?.includes('text/html')
+                    ? caches.match('/webclient/index.html')
+                    : undefined)))
     );
 });
