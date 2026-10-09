@@ -129,3 +129,20 @@ Cloudflare is unreachable the server logs a warning and returns STUN only.
 Server identity: `/register` uses trust-on-first-use ownership. Each installation keeps
 `%AppData%/DeskShare/server-owner.key` and `server-id`; deleting them gives the machine a fresh owner secret,
 and the old ServerId can be reclaimed 10 minutes after its last registration.
+
+## 9. Monitoring and privacy (done 2026-10-09)
+
+- App Service health check path: `/health`.
+- Application Insights `appi-deskshare` (rg-agentwall, workspace DefaultWorkspace-...-WEU) with two *standard*
+  availability tests, every 5 min from Amsterdam, Dublin and Paris, TLS check (cert must have >= 7 days left):
+  `deskshare-signaling-health` (https://app.deskshare.zcloud.cz/health) and `deskshare-website`
+  (https://deskshare.zcloud.cz/).
+- Alerts `alert-deskshare-signaling-health` / `alert-deskshare-website`: fire when 2 of 3 locations fail,
+  action group `ag-deskshare` e-mails martin@zcloud.cz. The az CLI extension only knows the retired ping tests, so
+  the tests/alerts were created through the ARM API (Microsoft.Insights/webtests api-version 2022-06-15, kind
+  standard; metricAlerts with WebtestLocationAvailabilityCriteria).
+- Privacy policy: `site/zasady-ochrany-osobnich-udaju/` and `site/en/privacy/`. It states server logs are kept
+  at most 30 days; App Service file logging is off and container output is rotated by App Service. Keep that
+  statement true if logging is ever enabled (set retention <= 30 days).
+- Fonts are self-hosted (`site/assets/fonts`), the only third-party request from the site is the GitHub API call
+  for the latest version number (disclosed in the policy).
