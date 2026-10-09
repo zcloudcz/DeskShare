@@ -6,8 +6,9 @@
 set -euo pipefail
 
 DEST="$1"
-# FFMPEG_FORMULA: ffmpeg@8 where available, otherwise the plain ffmpeg formula (must still be FFmpeg 8).
-PREFIX="$(brew --prefix "${FFMPEG_FORMULA:-ffmpeg@8}")"
+# FFMPEG_PREFIX: an FFmpeg install prefix (source build, used on Intel); otherwise the Homebrew formula
+# FFMPEG_FORMULA (default ffmpeg@8). Either way it must be FFmpeg 8, checked below.
+PREFIX="${FFMPEG_PREFIX:-$(brew --prefix "${FFMPEG_FORMULA:-ffmpeg@8}")}"
 LIBS="avcodec avdevice avfilter avformat avutil swresample swscale postproc"
 mkdir -p "$DEST"
 

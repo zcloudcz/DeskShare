@@ -191,14 +191,40 @@ jobs:
 
       # No prebuilt FFmpeg 8 shared libs for macOS exist as a download; scripts/bundle-ffmpeg-macos.sh takes
       # Homebrew's ffmpeg@8 and makes the dylibs relocatable (major-version names, @loader_path install names).
-      # Not every runner image's Homebrew has the versioned ffmpeg@8 formula (the Intel image did not), so fall
-      # back to the plain formula; the bundle script refuses anything that is not FFmpeg 8 (libavcodec 62).
-      - name: Add FFmpeg 8 (Homebrew)
+      # FFmpeg 8 (libavcodec 62) is what FFmpeg.AutoGen 8.1 loads. Apple Silicon Homebrew has ffmpeg@8; the Intel
+      # image's Homebrew only offers FFmpeg 9, so there we build FFmpeg 8.1.2 from source (LGPL, with libvpx for
+      # the sender's VP8 encoder) once and cache it. The prefix lives under /usr/local so the bundle script
+      # rewrites its install names like any other Homebrew library.
+      - name: Cache FFmpeg 8 build (Intel)
+        if: ${{ matrix.rid == 'osx-x64' }}
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/opt/ffmpeg8-src
+          key: ffmpeg-8.1.2-lgpl-libvpx-${{ matrix.rid }}-v1
+
+      - name: Build FFmpeg 8 from source (Intel)
+        if: ${{ matrix.rid == 'osx-x64' && steps.ffmpeg-cache.outputs.cache-hit != 'true' }}
         run: |
-          if brew info ffmpeg@8 >/dev/null 2>&1; then FORMULA=ffmpeg@8; else FORMULA=ffmpeg; fi
-          echo "Using Homebrew formula: $FORMULA"
-          brew install "$FORMULA"
-          FFMPEG_FORMULA="$FORMULA" bash scripts/bundle-ffmpeg-macos.sh publish/ffmpeg
+          brew install nasm pkg-config libvpx
+          curl -sSfL -o ffmpeg.tar.xz https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz
+          tar -xJf ffmpeg.tar.xz
+          cd ffmpeg-8.1.2
+          ./configure --prefix=/usr/local/opt/ffmpeg8-src --enable-shared --disable-static \
+            --disable-programs --disable-doc --disable-debug --enable-libvpx
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
+      - name: Add FFmpeg 8
+        run: |
+          if [ "${{ matrix.rid }}" = "osx-x64" ]; then
+            brew list libvpx >/dev/null 2>&1 || brew install libvpx   # runtime dependency of the cached build
+            export FFMPEG_PREFIX=/usr/local/opt/ffmpeg8-src
+          else
+            brew install ffmpeg@8
+            export FFMPEG_FORMULA=ffmpeg@8
+          fi
+          bash scripts/bundle-ffmpeg-macos.sh publish/ffmpeg
 
       - name: Create .icns icon
         run: |
