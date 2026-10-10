@@ -156,6 +156,10 @@ public class ScreenSenderService : IHostedService, IDisposable
 
             _logger.LogInformation("Screen resolution: {Width}x{Height}", width, height);
 
+            // The session (and its encoders) must be created with the size we actually send, not the screen size.
+            var (outputWidth, outputHeight) = OutputSize.Compute(width, height, _configuration.MaxOutputWidth);
+            _logger.LogInformation("Output resolution: {Width}x{Height} (MaxOutputWidth={Max})", outputWidth, outputHeight, _configuration.MaxOutputWidth);
+
             // Create WebRTC session - use WebRTCSessionWithInput if remote control is enabled
             IVideoSource videoSource;
             bool initialized;
@@ -193,8 +197,8 @@ public class ScreenSenderService : IHostedService, IDisposable
 
                 // Initialize
                 initialized = await _webrtcSessionWithInput.InitializeAsync(
-                    width,
-                    height,
+                    outputWidth,
+                    outputHeight,
                     _configuration.TargetFps,
                     BuildSignalingUrl(),
                     _configuration.ServerId);
@@ -240,8 +244,8 @@ public class ScreenSenderService : IHostedService, IDisposable
 
                 // Initialize with configured ServerId
                 initialized = await _webrtcSession.InitializeAsync(
-                    width,
-                    height,
+                    outputWidth,
+                    outputHeight,
                     _configuration.TargetFps,
                     BuildSignalingUrl(),
                     _configuration.ServerId);
@@ -264,7 +268,7 @@ public class ScreenSenderService : IHostedService, IDisposable
             var capturer = PlatformServiceFactory.CreateScreenCapturer(_configuration.AdapterIndex, _configuration.OutputIndex, _configuration.TargetFps);
             var converter = new SimdPixelConverter(); // Use SIMD-optimized converter
 
-            _pipeline = new CapturePipeline(capturer, converter, videoSource);
+            _pipeline = new CapturePipeline(capturer, converter, videoSource, _configuration.MaxOutputWidth);
             _logger.LogInformation("Capture pipeline initialized with SIMD converter");
 
             if (_pipeline.Start(_configuration.TargetFps))
@@ -611,6 +615,12 @@ public class ScreenSenderConfiguration
     /// Target FPS for screen capture.
     /// </summary>
     public int TargetFps { get; set; } = 30;
+
+    /// <summary>
+    /// Maximum width of the video sent to viewers. Larger screens are downscaled (aspect ratio kept),
+    /// smaller ones are never upscaled. 0 = send the native screen resolution.
+    /// </summary>
+    public int MaxOutputWidth { get; set; } = 1920;
 
     /// <summary>
     /// Adapter index for screen capture (0 = primary GPU).

@@ -1,3 +1,4 @@
+using System.Buffers;
 using DeskShare.Core.Interfaces;
 using DeskShare.Core.Models;
 
@@ -33,12 +34,86 @@ public sealed class SimdPixelConverter : IFrameConverter
         if (targetWidth <= 0 || targetHeight <= 0)
             throw new ArgumentException("Target dimensions must be positive.");
 
-        if (targetWidth != source.Width || targetHeight != source.Height)
+        if (targetWidth == source.Width && targetHeight == source.Height)
         {
-            throw new NotImplementedException("Scaling is not yet implemented.");
+            return ConvertInternal(source, targetWidth, targetHeight);
         }
 
-        return ConvertInternal(source, targetWidth, targetHeight);
+        // Downscale in BGRA first, then reuse the normal BGRA -> I420 path on the smaller image.
+        // Scaling before the colour conversion means the expensive per-pixel work runs on fewer pixels.
+        var scaledStride = targetWidth * 4;
+        var scaledData = ArrayPool<byte>.Shared.Rent(scaledStride * targetHeight);
+        try
+        {
+            BoxDownscaleBgra(source, scaledData, targetWidth, targetHeight);
+            using var scaled = new Frame(targetWidth, targetHeight, scaledData, scaledStride, source.Timestamp);
+            return ConvertInternal(scaled, targetWidth, targetHeight);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(scaledData);
+        }
+    }
+
+    /// <summary>
+    /// Box filter: every destination pixel is the average of the source rectangle it covers.
+    /// Averaging (instead of picking one pixel) keeps thin text strokes visible and avoids shimmering.
+    /// Rectangle bounds are integers, so for non-integer ratios (e.g. 1.79x) neighbouring output pixels
+    /// cover 1 or 2 source pixels; that is cheap and visually close enough for screen content.
+    /// </summary>
+    private static void BoxDownscaleBgra(Frame source, byte[] destination, int targetWidth, int targetHeight)
+    {
+        var srcWidth = source.Width;
+        var srcHeight = source.Height;
+        var srcStride = source.Stride;
+
+        // Source column range [xStart[x], xEnd[x]) per destination column, computed once per frame.
+        var xStart = new int[targetWidth];
+        var xEnd = new int[targetWidth];
+        for (var x = 0; x < targetWidth; x++)
+        {
+            xStart[x] = (int)((long)x * srcWidth / targetWidth);
+            xEnd[x] = Math.Max(xStart[x] + 1, (int)((long)(x + 1) * srcWidth / targetWidth));
+        }
+
+        unsafe
+        {
+            fixed (byte* srcPtr = source.Data)
+            fixed (byte* dstPtr = destination)
+            {
+                for (var y = 0; y < targetHeight; y++)
+                {
+                    var yStart = (int)((long)y * srcHeight / targetHeight);
+                    var yEnd = Math.Max(yStart + 1, (int)((long)(y + 1) * srcHeight / targetHeight));
+                    var dstRow = dstPtr + (y * targetWidth * 4);
+
+                    for (var x = 0; x < targetWidth; x++)
+                    {
+                        int b = 0, g = 0, r = 0;
+                        var xs = xStart[x];
+                        var xe = xEnd[x];
+
+                        for (var sy = yStart; sy < yEnd; sy++)
+                        {
+                            var p = srcPtr + (sy * srcStride) + (xs * 4);
+                            for (var sx = xs; sx < xe; sx++, p += 4)
+                            {
+                                b += p[0];
+                                g += p[1];
+                                r += p[2];
+                            }
+                        }
+
+                        var count = (yEnd - yStart) * (xe - xs);
+                        var o = x * 4;
+                        dstRow[o] = (byte)(b / count);
+                        dstRow[o + 1] = (byte)(g / count);
+                        dstRow[o + 2] = (byte)(r / count);
+                        dstRow[o + 3] = 255;
+                    }
+                }
+            }
+        }
     }
 
     private static VideoFrame ConvertInternal(Frame source, int width, int height)

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using DeskShare.Core.Conversion;
 using DeskShare.Core.Interfaces;
 using DeskShare.Core.Models;
 using DeskShare.Core.Video;
@@ -19,6 +20,11 @@ public sealed class CapturePipeline : IDisposable
     private readonly IScreenCapturer _capturer;
     private readonly IFrameConverter _converter;
     private readonly IVideoSource _videoSource;
+    private readonly int _maxOutputWidth;
+
+    // Resolution actually sent; equals the capture size unless downscaling is active. Set in Start.
+    private int _outputWidth;
+    private int _outputHeight;
 
     private readonly BlockingCollection<Frame> _captureQueue;
     private readonly BlockingCollection<VideoFrame> _conversionQueue;
@@ -58,8 +64,10 @@ public sealed class CapturePipeline : IDisposable
     /// <param name="capturer">Screen capturer implementation.</param>
     /// <param name="converter">Pixel format converter.</param>
     /// <param name="videoSource">WebRTC video source.</param>
-    public CapturePipeline(IScreenCapturer capturer, IFrameConverter converter, IVideoSource videoSource)
+    /// <param name="maxOutputWidth">Maximum width of the sent video; 0 = native. See <see cref="OutputSize"/>.</param>
+    public CapturePipeline(IScreenCapturer capturer, IFrameConverter converter, IVideoSource videoSource, int maxOutputWidth = 0)
     {
+        _maxOutputWidth = maxOutputWidth;
         _capturer = capturer ?? throw new ArgumentNullException(nameof(capturer));
         _converter = converter ?? throw new ArgumentNullException(nameof(converter));
         _videoSource = videoSource ?? throw new ArgumentNullException(nameof(videoSource));
@@ -88,11 +96,13 @@ public sealed class CapturePipeline : IDisposable
             return false;
         }
 
+        (_outputWidth, _outputHeight) = OutputSize.Compute(_capturer.Width, _capturer.Height, _maxOutputWidth);
+
         // Initialize video source only if not already initialized (e.g., StubVideoSource)
         // For WebRTC scenarios, VideoSource is pre-initialized by WebRTCSession
         if (!_videoSource.IsInitialized)
         {
-            if (!_videoSource.Initialize(_capturer.Width, _capturer.Height, targetFps))
+            if (!_videoSource.Initialize(_outputWidth, _outputHeight, targetFps))
             {
                 Log.Error("Failed to initialize video source");
                 return false;
@@ -103,7 +113,8 @@ public sealed class CapturePipeline : IDisposable
             Log.Information("Video source already initialized, skipping initialization");
         }
 
-        Log.Information("Starting pipeline: {Width}x{Height} @ {TargetFps}fps", _capturer.Width, _capturer.Height, targetFps);
+        Log.Information("Starting pipeline: capture {Width}x{Height} -> output {OutWidth}x{OutHeight} @ {TargetFps}fps",
+            _capturer.Width, _capturer.Height, _outputWidth, _outputHeight, targetFps);
 
         _cts = new CancellationTokenSource();
         _isRunning = true;
@@ -219,7 +230,9 @@ public sealed class CapturePipeline : IDisposable
                 try
                 {
                     var convertStart = Stopwatch.GetTimestamp();
-                    var videoFrame = _converter.Convert(frame);
+                    var videoFrame = frame.Width == _outputWidth && frame.Height == _outputHeight
+                        ? _converter.Convert(frame)
+                        : _converter.ConvertAndScale(frame, _outputWidth, _outputHeight);
                     _convertTimings.Record(Stopwatch.GetTimestamp() - convertStart);
                     _lastOutputWidth = videoFrame.Width;
                     _lastOutputHeight = videoFrame.Height;
