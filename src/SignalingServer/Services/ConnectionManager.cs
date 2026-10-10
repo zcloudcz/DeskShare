@@ -487,7 +487,9 @@ public sealed class ConnectionManager : IDisposable
     /// Validates HMAC signature, passkey, and checks if server is available.
     /// If client is trusted, skips passkey validation.
     /// </summary>
-    public ClientAuthenticationResponse AuthenticateClient(ClientAuthenticationMessage auth)
+    /// <param name="auth">The viewer's authentication request.</param>
+    /// <param name="now">Injectable clock for the passkey expiry check in tests; defaults to UtcNow.</param>
+    public ClientAuthenticationResponse AuthenticateClient(ClientAuthenticationMessage auth, DateTime? now = null)
     {
         // === STEP 1: HMAC SIGNATURE VALIDATION (if provided) ===
         // This MUST be checked BEFORE passkey validation to prevent timing attacks
@@ -602,8 +604,11 @@ public sealed class ConnectionManager : IDisposable
         if (!isTrusted)
         {
             // Not trusted - compare with the passkey the sender registered. It is random, so knowing the
-            // ServerId is not enough; a session without a stored passkey fails closed.
-            if (!AuthenticationService.PasskeyMatches(session.Passkey, auth.Passkey))
+            // ServerId is not enough; a session without a stored passkey fails closed. The passkey also has to
+            // be unexpired: session.IsValid ignores ValidTo for a Connected session (it only looks at activity),
+            // so a leaked passkey would otherwise stay usable for as long as someone is connected.
+            if ((now ?? DateTime.UtcNow) >= session.ValidTo ||
+                !AuthenticationService.PasskeyMatches(session.Passkey, auth.Passkey))
             {
                 _logger.LogWarning("Client authentication failed - invalid passkey | ServerId: {ServerId} | ClientId: {ClientId}",
                     auth.ServerId, auth.ClientId);

@@ -56,6 +56,26 @@ public class TrustOwnershipTests
     }
 
     [Fact]
+    public void Passkey_IsRejectedAfterItsValidTo_EvenWhileTheSessionIsConnected()
+    {
+        using var manager = CreateManager();
+        var validTo = DateTime.UtcNow.AddMinutes(1);
+        manager.RegisterServer(new ServerRegistrationMessage
+        {
+            ServerId = ServerId,
+            Passkey = "EXPIRYPK2",
+            ValidTo = validTo,
+            RemoteControlEnabled = false,
+            TrustClientPermanent = false
+        });
+        ClientAuthenticationResponse Auth(DateTime at) => manager.AuthenticateClient(
+            new ClientAuthenticationMessage { ServerId = ServerId, ClientId = "client-1", Passkey = "EXPIRYPK2" }, at);
+
+        Assert.True(Auth(validTo.AddSeconds(-1)).Success); // session is now Connected
+        Assert.False(Auth(validTo).Success);               // same passkey after expiry, same connected viewer
+    }
+
+    [Fact]
     public void TrustGrantedByAStranger_DoesNotSurviveTheRealOwnerReturning()
     {
         using var manager = CreateManager();
