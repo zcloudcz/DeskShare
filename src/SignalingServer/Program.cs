@@ -709,10 +709,13 @@ app.MapGet("/health", (ConnectionManager cm) => Results.Ok(new
 
 var diagnosticsApiKey = builder.Configuration.GetValue<string>("Security:DiagnosticsApiKey") ?? "";
 
-IResult ValidateDiagnosticsAccess(HttpContext ctx)
+// listsEveryone: the endpoint enumerates all servers or connections (IDs, IP addresses, viewer ClientIds).
+// Such endpoints must never be open to the public: without a configured key they exist only in Development.
+// The per-server status stays public because the desktop app polls it to show whether a saved server is online.
+IResult ValidateDiagnosticsAccess(HttpContext ctx, bool listsEveryone = false)
 {
     if (string.IsNullOrEmpty(diagnosticsApiKey))
-        return null!;
+        return listsEveryone && !app.Environment.IsDevelopment() ? Results.NotFound() : null!;
 
     var providedKey = ctx.Request.Headers["X-Api-Key"].FirstOrDefault()
                    ?? ctx.Request.Query["apiKey"].FirstOrDefault();
@@ -729,7 +732,7 @@ IResult ValidateDiagnosticsAccess(HttpContext ctx)
 
 app.MapGet("/statistics", (HttpContext ctx, ConnectionManager cm) =>
 {
-    var denied = ValidateDiagnosticsAccess(ctx);
+    var denied = ValidateDiagnosticsAccess(ctx, listsEveryone: true);
     if (denied != null) return denied;
 
     var stats = cm.GetStatistics();
@@ -759,7 +762,7 @@ app.MapGet("/servers/{serverId}/status", async (HttpContext ctx, string serverId
 
 app.MapGet("/servers/status", async (HttpContext ctx, IServerSessionStorage sessionStorage) =>
 {
-    var denied = ValidateDiagnosticsAccess(ctx);
+    var denied = ValidateDiagnosticsAccess(ctx, listsEveryone: true);
     if (denied != null) return denied;
 
     var statuses = await sessionStorage.GetAllServerStatusesAsync();
