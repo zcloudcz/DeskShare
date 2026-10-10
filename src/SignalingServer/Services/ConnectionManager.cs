@@ -30,10 +30,12 @@ public sealed class ConnectionManager : IDisposable
     private readonly ConcurrentDictionary<string, (string ClientId, DateTime CreatedAt, SocketScope Scope)> _wsTokens = new();
     private int _tokenExpirationSeconds = 30;
 
-    // Resume tokens: maps token -> (clientId, serverId, expiresAt). A viewer that lost its WebSocket (e.g. during a
-    // server deployment) presents one to POST /resume instead of the passkey, which has rotated since it was typed.
-    // Single use: consuming one issues the next (rotation), so a leaked old token is worthless.
-    private readonly ConcurrentDictionary<string, (string ClientId, string ServerId, DateTime ExpiresAt)> _resumeTokens = new();
+    // Resume tokens: maps token -> (clientId, serverId, owner secret hash, expiresAt). A viewer that lost its WebSocket
+    // (e.g. during a server deployment) presents one to POST /resume instead of the passkey, which has rotated since
+    // it was typed. Single use: consuming one issues the next (rotation), so a leaked old token is worthless.
+    // The owner hash ties the token to the owner of the ServerId when it was issued; owner claims lapse, so without
+    // it a token obtained from an earlier (possibly hostile) owner would work against the next owner.
+    private readonly ConcurrentDictionary<string, (string ClientId, string ServerId, byte[]? OwnerHash, DateTime ExpiresAt)> _resumeTokens = new();
     private static readonly TimeSpan ResumeTokenLifetime = TimeSpan.FromMinutes(15);
 
     // ServerId ownership claims (trust on first use): ServerId -> (SHA256 of owner secret, last successful registration).
@@ -272,10 +274,13 @@ public sealed class ConnectionManager : IDisposable
     }
 
     /// <summary>
-    /// Two scoped sockets may talk when one is the sender and the other a viewer authorized for that same ServerId.
+    /// Two scoped sockets may talk when one is the sender and the other a viewer authorized for that same ServerId
+    /// under the same owner. Owner claims lapse, so a ServerId can change hands while sockets stay open; without the
+    /// owner check a socket authorized under the previous owner would be accepted as a peer of the new one.
     /// </summary>
     private static bool AreAuthorizedPeers(ClientConnection a, ClientConnection b) =>
-        a.Scope is { } sa && b.Scope is { } sb && sa.IsSender != sb.IsSender && sa.ServerId == sb.ServerId;
+        a.Scope is { } sa && b.Scope is { } sb && sa.IsSender != sb.IsSender && sa.ServerId == sb.ServerId &&
+        SameKnownOwner(sa.OwnerSecretHash, sb.OwnerSecretHash);
 
     /// <summary>
     /// Records that a message was received from a client.
@@ -790,6 +795,10 @@ public sealed class ConnectionManager : IDisposable
     private byte[]? CurrentOwnerHash(string serverId) =>
         _ownerClaims.TryGetValue(serverId, out var claim) ? claim.SecretHash : null;
 
+    /// <summary>Both hashes exist and are equal: a missing owner (absent claim) never matches anything.</summary>
+    private static bool SameKnownOwner(byte[]? a, byte[]? b) =>
+        a != null && b != null && CryptographicOperations.FixedTimeEquals(a, b);
+
     /// <summary>Both unowned (legacy registrations) or both the same owner secret hash.</summary>
     private static bool SameOwner(byte[]? granted, byte[]? current) =>
         granted == null || current == null
@@ -826,14 +835,14 @@ public sealed class ConnectionManager : IDisposable
     /// The socket is the sender's own (its connection id is the ServerId) and may talk to that server's viewers only.
     /// </summary>
     public string IssueServerWebSocketToken(string serverId) =>
-        IssueToken(serverId, new SocketScope(IsSender: true, serverId));
+        IssueToken(serverId, new SocketScope(IsSender: true, serverId, CurrentOwnerHash(serverId)));
 
     /// <summary>
     /// Issues a one-time WebSocket upgrade token for a viewer that authenticated against <paramref name="serverId"/>.
     /// The socket may talk to that one server only.
     /// </summary>
     public string IssueViewerWebSocketToken(string clientId, string serverId) =>
-        IssueToken(clientId, new SocketScope(IsSender: false, serverId));
+        IssueToken(clientId, new SocketScope(IsSender: false, serverId, CurrentOwnerHash(serverId)));
 
     private string IssueToken(string clientId, SocketScope scope)
     {
@@ -891,7 +900,7 @@ public sealed class ConnectionManager : IDisposable
     public string IssueResumeToken(string clientId, string serverId, DateTime? now = null)
     {
         var token = Base64UrlEncode(RandomNumberGenerator.GetBytes(32));
-        _resumeTokens[token] = (clientId, serverId, (now ?? DateTime.UtcNow) + ResumeTokenLifetime);
+        _resumeTokens[token] = (clientId, serverId, CurrentOwnerHash(serverId), (now ?? DateTime.UtcNow) + ResumeTokenLifetime);
 
         _logger.LogDebug("Resume token issued | ClientId: {ClientId} | ServerId: {ServerId} | Token: {Token}",
             clientId, serverId, token[..8]);
@@ -916,6 +925,14 @@ public sealed class ConnectionManager : IDisposable
         if ((now ?? DateTime.UtcNow) > data.ExpiresAt)
         {
             _logger.LogWarning("Resume token expired | ClientId: {ClientId} | Token: {Token}", data.ClientId, token[..Math.Min(8, token.Length)]);
+            return false;
+        }
+
+        // The owner of the ServerId must be the one the token was issued under; no current owner never matches.
+        if (!SameKnownOwner(data.OwnerHash, CurrentOwnerHash(data.ServerId)))
+        {
+            _logger.LogWarning("Resume token rejected, the ServerId changed owner | ClientId: {ClientId} | ServerId: {ServerId}",
+                data.ClientId, data.ServerId);
             return false;
         }
 
@@ -1024,9 +1041,10 @@ public sealed class ConnectionManager : IDisposable
 /// <summary>
 /// What a WebSocket may exchange signaling messages with, fixed when its token is issued.
 /// A sender (<paramref name="IsSender"/>) talks to viewers authorized for its ServerId; a viewer talks to exactly
-/// that one ServerId's sender.
+/// that one ServerId's sender. <paramref name="OwnerSecretHash"/> is the hash of the owner secret in force when the
+/// token was issued; peers must share it.
 /// </summary>
-public sealed record SocketScope(bool IsSender, string ServerId);
+public sealed record SocketScope(bool IsSender, string ServerId, byte[]? OwnerSecretHash);
 
 /// <summary>
 /// Represents a single client connection with statistics.

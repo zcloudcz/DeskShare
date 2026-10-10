@@ -5,6 +5,8 @@ using System.Text.Json;
 using System.Threading.Channels;
 using DeskShare.Core.Auth;
 using DeskShare.Core.Models;
+using DeskShare.SignalingServer.Services;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace DeskShare.IntegrationTests.Signaling;
 
@@ -185,6 +187,35 @@ public class SignalingRoutingTests
         await using var attackerViewer = await ConnectViewerAsync(http, "server-it-s7-attacker", "client-it-s7-attacker");
         await attackerViewer.SendAsync(Message(SignalingMessageType.ConnectionRequest, "server-it-s7-attacker"));
         Assert.NotNull(await socket1.NextAsync(SignalingMessageType.ConnectionRequest, Delivery));
+    }
+
+    [Fact]
+    public async Task ViewerAuthenticatedUnderAPreviousOwner_IsNotAPeerOfTheRealOwnerWhoReturns()
+    {
+        var http = _factory.CreateClient();
+        var cm = _factory.Services.GetRequiredService<ConnectionManager>();
+        const string serverId = "server-it-s8-victim";
+
+        // The victim is offline; an attacker claims its ID and authenticates a viewer against its own passkey.
+        await RegisterForTokenAsync(http, serverId, "secret-attacker");
+        await using var attackerViewer = await ConnectViewerAsync(http, serverId, "client-it-s8-attacker");
+
+        // The claim lapses (10 minutes without a registration) and the real owner comes back.
+        cm.ExpireOwnerClaims(DateTime.UtcNow.AddMinutes(11));
+        await using var victim = await ConnectSenderAsync(http, serverId, "secret-victim");
+        await using var realViewer = await ConnectViewerAsync(http, serverId, "client-it-s8-real");
+
+        await attackerViewer.SendAsync(Message(SignalingMessageType.ConnectionRequest, serverId));
+        await attackerViewer.SendAsync(Message(SignalingMessageType.ConnectionRequest)); // broadcast
+        await victim.SendAsync(Message(SignalingMessageType.Offer, "client-it-s8-attacker"));
+
+        // The old viewer neither reaches the sender (no offer is triggered) nor receives anything from it.
+        Assert.Null(await victim.NextAsync(SignalingMessageType.ConnectionRequest, Silence));
+        Assert.Null(await attackerViewer.NextAsync(SignalingMessageType.Offer, Silence));
+
+        // The legitimate viewer of the returned owner is unaffected.
+        await realViewer.SendAsync(Message(SignalingMessageType.ConnectionRequest, serverId));
+        Assert.NotNull(await victim.NextAsync(SignalingMessageType.ConnectionRequest, Delivery));
     }
 
     [Fact]

@@ -12,7 +12,13 @@ public class ResumeTokenTests
 {
     private static readonly DateTime T0 = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
 
-    private static ConnectionManager CreateManager() => new(Substitute.For<ILogger<ConnectionManager>>());
+    private static ConnectionManager CreateManager()
+    {
+        var manager = new ConnectionManager(Substitute.For<ILogger<ConnectionManager>>());
+        // Resume tokens are bound to the owner of the ServerId, so "server-1" needs an owner.
+        manager.AuthorizeServerOwner("server-1", "secret-A", "1.2.3.4", T0);
+        return manager;
+    }
 
     [Fact]
     public void IssuedToken_IsBase64Url_Of32Bytes_AndUnique()
@@ -54,6 +60,35 @@ public class ResumeTokenTests
         Assert.False(manager.TryConsumeResumeToken(token, out var clientId, out var serverId, T0));
         Assert.Empty(clientId);
         Assert.Empty(serverId);
+    }
+
+    [Fact]
+    public void Token_IsRejectedAfterTheServerIdChangedOwner_AndWorksAgainForTheRealOwner()
+    {
+        using var manager = CreateManager();
+        var token = manager.IssueResumeToken("client-1", "server-1", T0); // issued under owner A
+        var survivor = manager.IssueResumeToken("client-2", "server-1", T0);
+
+        // The claim lapses and a stranger takes the ID.
+        manager.ExpireOwnerClaims(T0.AddMinutes(11));
+        Assert.True(manager.AuthorizeServerOwner("server-1", "secret-B", "5.6.7.8", T0.AddMinutes(11)));
+        Assert.False(manager.TryConsumeResumeToken(token, out _, out _, T0.AddMinutes(12)));
+
+        // Owner A returns with its secret (e.g. after a signaling outage): tokens issued under A are good again.
+        manager.ExpireOwnerClaims(T0.AddMinutes(23));
+        Assert.True(manager.AuthorizeServerOwner("server-1", "secret-A", "1.2.3.4", T0.AddMinutes(23)));
+        Assert.True(manager.TryConsumeResumeToken(survivor, out _, out _, T0.AddMinutes(14)));
+    }
+
+    [Fact]
+    public void Token_IsRejected_WhenTheServerHasNoCurrentOwner()
+    {
+        using var manager = CreateManager();
+        var token = manager.IssueResumeToken("client-1", "server-1", T0);
+
+        manager.ExpireOwnerClaims(T0.AddMinutes(11)); // claim lapsed, nobody re-claimed
+
+        Assert.False(manager.TryConsumeResumeToken(token, out _, out _, T0.AddMinutes(12)));
     }
 
     [Fact]
