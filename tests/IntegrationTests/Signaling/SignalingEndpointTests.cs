@@ -164,6 +164,26 @@ public class SignalingEndpointTests
         Assert.DoesNotContain("webSocketToken", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task ServerStatusEndpoints_DoNotLeakTheViewerClientId()
+    {
+        var http = _factory.CreateClient();
+        var serverId = "server-it-status-leak";
+        var clientId = "client-it-status-leak-0123456789abcdef";
+        Assert.Equal(HttpStatusCode.OK, (await RegisterAsync(http, serverId, "secret-status")).StatusCode);
+        await AuthenticateAsync(http, serverId, clientId); // the viewer is now the connected client
+
+        var single = await http.GetAsync($"/servers/{serverId}/status");
+        var all = await http.GetAsync("/servers/status");
+
+        Assert.Equal(HttpStatusCode.OK, single.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, all.StatusCode);
+        var singleBody = await single.Content.ReadAsStringAsync();
+        Assert.Contains("Connected", singleBody, StringComparison.OrdinalIgnoreCase); // the session really is connected
+        Assert.DoesNotContain(clientId, singleBody);
+        Assert.DoesNotContain(clientId, await all.Content.ReadAsStringAsync());
+    }
+
     private static Task<HttpResponseMessage> ResumeAsync(HttpClient http, string resumeToken) =>
         http.PostAsJsonAsync("/resume", new ClientResumeMessage { ResumeToken = resumeToken });
 

@@ -1092,7 +1092,12 @@ public sealed class ServerStatusInfo
     /// <summary>Last activity timestamp (UTC).</summary>
     public DateTime LastActivity { get; set; }
 
-    /// <summary>ID of connected client (null if no client connected).</summary>
+    /// <summary>
+    /// ID of connected client (null if no client connected). Never serialized: the ClientId is the bearer
+    /// credential for the trusted-client passkey bypass, and the status endpoints may be reachable without an API
+    /// key. Server code (e.g. /resume) reads it in-process.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
     public string? ConnectedClientId { get; set; }
 
     /// <summary>Whether remote control is enabled on this server.</summary>
