@@ -42,6 +42,40 @@ public sealed class ServerIdGeneratorTests : IDisposable
         Assert.Equal(id, File.ReadAllText(IdPath));
     }
 
+    private string ClientIdPath => Path.Combine(_dir, "client-id");
+
+    [Fact]
+    public void GetOrCreateClientId_HasRandomFormat_AndIsPersisted()
+    {
+        var first = ServerIdGenerator.GetOrCreateClientId(ClientIdPath);
+
+        Assert.Matches("^client-[0-9a-f]{32}$", first);
+        Assert.Equal(first, ServerIdGenerator.GetOrCreateClientId(ClientIdPath));
+    }
+
+    [Fact]
+    public void GetOrCreateClientId_IsIndependentOfTheServerId()
+    {
+        var serverId = ServerIdGenerator.GetOrCreateServerId(IdPath);
+        var clientId = ServerIdGenerator.GetOrCreateClientId(ClientIdPath);
+
+        // The old scheme was "client-" + server id suffix; a viewer ID must not leak from the shown Server ID.
+        Assert.DoesNotContain(serverId[ServerIdGenerator.ServerIdPrefix.Length..], clientId);
+        Assert.NotEqual(clientId, ServerIdGenerator.GetOrCreateClientId(Path.Combine(_dir, "other-client-id")));
+    }
+
+    [Fact]
+    public void GetOrCreateClientId_IgnoresACorruptFile()
+    {
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(ClientIdPath, "client-short");
+
+        var id = ServerIdGenerator.GetOrCreateClientId(ClientIdPath);
+
+        Assert.Matches("^client-[0-9a-f]{32}$", id);
+        Assert.Equal(id, File.ReadAllText(ClientIdPath));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_dir))

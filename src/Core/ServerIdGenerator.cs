@@ -13,11 +13,51 @@ public static class ServerIdGenerator
     /// <summary>Prefix of every server identity; the signaling server refuses it as a viewer ClientId.</summary>
     public const string ServerIdPrefix = "server-";
 
+    /// <summary>Prefix of every viewer identity.</summary>
+    public const string ClientIdPrefix = "client-";
+
+    /// <summary>Number of hex characters after the prefix in a Client ID (128 bits).</summary>
+    private const int ClientIdHexLength = 32;
+
+    /// <summary>Where the Client ID is persisted.</summary>
+    public static string DefaultClientIdPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DeskShare", "client-id");
+
     /// <summary>
-    /// Stable viewer identity for this machine. Same hash as the Server ID but a different prefix, so a machine
-    /// that both shares and views never uses one identity for both roles (the signaling server rejects that).
+    /// Stable viewer identity for this machine. It is random and independent of the Server ID: the Client ID acts
+    /// as a bearer credential for "trusted" connections, so it must not be derivable from the Server ID that is
+    /// shown on screen. The different prefix also keeps a machine that both shares and views from using one
+    /// identity for both roles (the signaling server rejects that).
     /// </summary>
-    public static string GenerateClientId() => "client-" + GenerateServerId()[ServerIdPrefix.Length..];
+    public static string GenerateClientId() => GetOrCreateClientId(DefaultClientIdPath);
+
+    /// <summary>Reads the persisted Client ID from <paramref name="path"/>, or creates and saves a new random one.</summary>
+    public static string GetOrCreateClientId(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                var stored = File.ReadAllText(path).Trim();
+                if (stored.Length == ClientIdPrefix.Length + ClientIdHexLength &&
+                    stored.StartsWith(ClientIdPrefix, StringComparison.Ordinal) &&
+                    stored[ClientIdPrefix.Length..].All(char.IsAsciiHexDigitLower))
+                    return stored;
+            }
+        }
+        catch (IOException) { /* unreadable file: create a new ID below */ }
+        catch (UnauthorizedAccessException) { }
+
+        var id = ClientIdPrefix + Convert.ToHexString(RandomNumberGenerator.GetBytes(ClientIdHexLength / 2)).ToLowerInvariant();
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, id);
+        }
+        catch (IOException) { /* read-only profile: still usable, just not persisted */ }
+        catch (UnauthorizedAccessException) { }
+        return id;
+    }
 
     /// <summary>Where the Server ID is persisted after it is first derived.</summary>
     public static string DefaultIdPath => Path.Combine(
