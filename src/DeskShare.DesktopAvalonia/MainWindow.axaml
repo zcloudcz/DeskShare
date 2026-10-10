@@ -458,6 +458,7 @@
                                              Margin="0,0,0,5"/>
                                     <TextBox x:Name="ManualServerIdTextBox"
                                            Classes="modernTextBox"
+                                           Watermark="123 456 789"
                                            FontFamily="Consolas"/>
                                 </StackPanel>
 

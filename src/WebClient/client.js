@@ -73,9 +73,24 @@ async function signAuthRequest(serverId, passkey, timestamp, nonce) {
     return btoa(String.fromCharCode(...new Uint8Array(sig)));
 }
 
+// Mirrors ServerIdGenerator.NormalizeServerIdInput: "123 456 789", "123-456-789", "123456789" and
+// "server-123456789" all become "server-123456789". Anything else is only trimmed so legacy IDs still work.
+function normalizeServerId(input) {
+    const trimmed = (input || '').trim();
+    const rest = /^server-/i.test(trimmed) ? trimmed.slice('server-'.length) : trimmed;
+    const digits = rest.replace(/[ -]/g, '');
+    return /^[1-9]\d{8}$/.test(digits) ? `server-${digits}` : trimmed;
+}
+
+// Mirrors ServerIdGenerator.FormatServerIdForDisplay: "server-123456789" -> "123 456 789".
+function formatServerId(serverId) {
+    const m = /^server-([1-9]\d{2})(\d{3})(\d{3})$/.exec(serverId);
+    return m ? `${m[1]} ${m[2]} ${m[3]}` : serverId;
+}
+
 async function authenticate() {
     const baseUrl = getBaseUrl();
-    const serverId = document.getElementById('serverId').value;
+    const serverId = normalizeServerId(document.getElementById('serverId').value);
     const passkey = (document.getElementById('passkey')?.value || '').replace(/-/g, '');
 
     if (!serverId) {
@@ -206,7 +221,7 @@ async function connect(tryResume = false) {
                     updateStatus('Connected, requesting connection to server...', 'info');
 
                     // After getting our ID, request connection to the server
-                    const serverId = document.getElementById('serverId').value;
+                    const serverId = normalizeServerId(document.getElementById('serverId').value);
                     if (serverId) {
                         sendConnectionRequest(serverId);
                         // Start monitoring server liveness
@@ -426,7 +441,7 @@ function sendMessage(message) {
 }
 
 function sendConnectionRequest(serverId) {
-    updateStatus(`Requesting connection to ${serverId}...`, 'info');
+    updateStatus(`Requesting connection to ${formatServerId(serverId)}...`, 'info');
     // Send a connection request message to the server
     sendMessage({
         Type: 5, // ConnectionRequest (we'll need to add this type)

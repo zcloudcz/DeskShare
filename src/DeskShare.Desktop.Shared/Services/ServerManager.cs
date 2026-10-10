@@ -21,6 +21,9 @@ public class ServerManager : IDisposable
 
     public bool IsRunning => _isRunning;
     public string? ServerId => _serverId;
+
+    /// <summary>Raised when the sender replaced the Server ID after a collision on the signaling server.</summary>
+    public event EventHandler<string>? ServerIdChanged;
     public int ActiveConnections => _activeConnections;
 
     /// <summary>
@@ -97,6 +100,12 @@ public class ServerManager : IDisposable
             {
                 CurrentPasskey = args;
                 PasskeyChanged?.Invoke(this, args);
+            };
+
+            _screenSenderService.ServerIdChanged += (sender, newId) =>
+            {
+                _serverId = newId;
+                ServerIdChanged?.Invoke(this, newId);
             };
 
             await _screenSenderService.StartAsync(CancellationToken.None);

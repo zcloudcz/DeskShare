@@ -72,6 +72,10 @@ public partial class MainWindow : Window
         _serverManager = App.ServiceProvider?.GetService<ServerManager>()
                   ?? throw new InvalidOperationException("ServerManager not available");
 
+        // The sender may swap the Server ID after a collision on the signaling server; keep the display in sync.
+        _serverManager.ServerIdChanged += (_, newId) =>
+            Dispatcher.UIThread.Post(() => ServerIdText.Text = ServerIdGenerator.FormatServerIdForDisplay(newId));
+
         _connectionManager = App.ServiceProvider?.GetService<ConnectionManager>()
                   ?? throw new InvalidOperationException("ConnectionManager not available");
 
@@ -166,7 +170,7 @@ public partial class MainWindow : Window
             StartServerButton.Content = "Starting...";
 
             string serverId = GenerateServerId();
-            ServerIdText.Text = serverId;
+            ServerIdText.Text = ServerIdGenerator.FormatServerIdForDisplay(serverId);
 
             string? password = null;
 
@@ -445,7 +449,7 @@ public partial class MainWindow : Window
     {
         try
         {
-            string serverId = ManualServerIdTextBox.Text?.Trim() ?? "";
+            string serverId = ServerIdGenerator.NormalizeServerIdInput(ManualServerIdTextBox.Text);
             string passkey = DeskShare.Core.Auth.AuthenticationService.UnformatPasskey(ManualPasskeyTextBox.Text?.Trim() ?? "");
             // In Avalonia, TextBox with PasswordChar is used instead of PasswordBox
             string password = ManualPasswordBox.Text ?? "";

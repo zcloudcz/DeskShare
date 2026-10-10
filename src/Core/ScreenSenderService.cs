@@ -23,6 +23,7 @@ public class ScreenSenderService : IHostedService, IDisposable
     private readonly ILogger<ScreenSenderService> _logger;
     private readonly ScreenSenderConfiguration _configuration;
     private readonly HttpClient _httpClient;
+    private readonly string _serverIdPath;
     private Task? _executingTask;
     private CancellationTokenSource? _stoppingCts;
     private WebRTCSession? _webrtcSession;
@@ -34,7 +35,11 @@ public class ScreenSenderService : IHostedService, IDisposable
     private string? _webSocketToken;
 
     // Proves to the SignalingServer that we own our ServerId (see ServerRegistrationMessage.OwnerSecret)
-    private readonly ServerOwnerSecretStore _ownerSecretStore = new();
+    private readonly ServerOwnerSecretStore _ownerSecretStore;
+
+    // Server IDs are short (9 digits), so two installations can pick the same one. The signaling server then
+    // answers /register with 403; we pick a new ID this many times before giving up.
+    private const int MaxServerIdAttempts = 5;
 
     // Latest STUN/TURN servers from /register. The first registration happens before the WebRTC session exists,
     // so we keep them here and apply them when the session is created and again after every re-registration.
@@ -51,13 +56,24 @@ public class ScreenSenderService : IHostedService, IDisposable
     public ScreenSenderService(
         ILogger<ScreenSenderService> logger,
         ScreenSenderConfiguration configuration)
+        : this(logger, configuration, new HttpClient { Timeout = TimeSpan.FromSeconds(5) },
+            ServerIdGenerator.DefaultIdPath, new ServerOwnerSecretStore())
+    {
+    }
+
+    /// <summary>Lets tests supply a fake HTTP handler and temp files instead of the real ones.</summary>
+    internal ScreenSenderService(
+        ILogger<ScreenSenderService> logger,
+        ScreenSenderConfiguration configuration,
+        HttpClient httpClient,
+        string serverIdPath,
+        ServerOwnerSecretStore ownerSecretStore)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
-        _httpClient = new HttpClient
-        {
-            Timeout = TimeSpan.FromSeconds(5)
-        };
+        _httpClient = httpClient;
+        _serverIdPath = serverIdPath;
+        _ownerSecretStore = ownerSecretStore;
     }
 
     /// <summary>
@@ -85,6 +101,12 @@ public class ScreenSenderService : IHostedService, IDisposable
     /// Subscribers (UI) should update display when this fires.
     /// </summary>
     public event EventHandler<PasskeyChangedEventArgs>? PasskeyChanged;
+
+    /// <summary>
+    /// Raised when the first registration hit a Server ID collision and a new ID was picked.
+    /// The UI shows the ID, so it must update it when this fires.
+    /// </summary>
+    public event EventHandler<string>? ServerIdChanged;
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -133,7 +155,7 @@ public class ScreenSenderService : IHostedService, IDisposable
         IsRunning = true;
 
         // Generate initial passkey
-        await GenerateNewPasskeyAsync();
+        await GenerateNewPasskeyAsync(allowServerIdChange: true);
 
         // Start passkey rotation task
         _passkeyRotationTask = Task.Run(async () => await PasskeyRotationLoopAsync(stoppingToken), stoppingToken);
@@ -318,7 +340,7 @@ public class ScreenSenderService : IHostedService, IDisposable
     /// Generates a new passkey and updates expiration time.
     /// Raises PasskeyChanged event for UI update and registers with SignalingServer.
     /// </summary>
-    private async Task GenerateNewPasskeyAsync()
+    internal async Task GenerateNewPasskeyAsync(bool allowServerIdChange = false)
     {
         var now = DateTime.UtcNow;
         _currentPasskey = AuthenticationService.GeneratePasskey();
@@ -335,7 +357,7 @@ public class ScreenSenderService : IHostedService, IDisposable
         });
 
         // Register with SignalingServer
-        await RegisterWithSignalingServerAsync();
+        await RegisterWithSignalingServerAsync(allowServerIdChange);
     }
 
     /// <summary>
@@ -458,7 +480,11 @@ public class ScreenSenderService : IHostedService, IDisposable
     /// <summary>
     /// Registers this server with the SignalingServer so clients can discover and authenticate.
     /// </summary>
-    private async Task RegisterWithSignalingServerAsync()
+    /// <param name="allowServerIdChange">
+    /// True only for the first registration: the WebRTC session is created afterwards with the final ID.
+    /// Later registrations keep the ID, because the running session is already bound to it.
+    /// </param>
+    private async Task RegisterWithSignalingServerAsync(bool allowServerIdChange = false)
     {
         try
         {
@@ -475,21 +501,34 @@ public class ScreenSenderService : IHostedService, IDisposable
                 .Replace("wss://", "https://")
                 .Replace("/signal", "");
 
-            var registration = new ServerRegistrationMessage
-            {
-                ServerId = ServerId,
-                Passkey = _currentPasskey,
-                ValidTo = _passkeyValidTo,
-                RemoteControlEnabled = _configuration.EnableRemoteControl,
-                TrustClientPermanent = _configuration.TrustClientPermanent,
-                OwnerSecret = GetOwnerSecret()
-            };
-
             var registerUrl = $"{signalingHttpUrl}/register";
 
             _logger.LogDebug("Registering with SignalingServer: {Url}", registerUrl);
 
-            var response = await _httpClient.PostAsJsonAsync(registerUrl, registration);
+            HttpResponseMessage response;
+            for (var attempt = 1; ; attempt++)
+            {
+                var registration = new ServerRegistrationMessage
+                {
+                    ServerId = ServerId,
+                    Passkey = _currentPasskey,
+                    ValidTo = _passkeyValidTo,
+                    RemoteControlEnabled = _configuration.EnableRemoteControl,
+                    TrustClientPermanent = _configuration.TrustClientPermanent,
+                    OwnerSecret = GetOwnerSecret()
+                };
+
+                response = await _httpClient.PostAsJsonAsync(registerUrl, registration);
+
+                // 403 means another installation already owns this ServerId: pick and persist a new one.
+                if (response.StatusCode != System.Net.HttpStatusCode.Forbidden ||
+                    !allowServerIdChange || attempt >= MaxServerIdAttempts)
+                    break;
+
+                _configuration.ServerId = ServerIdGenerator.RegenerateServerId(_serverIdPath);
+                _logger.LogWarning("Server ID was already taken, using a new one | ServerId: {ServerId}", ServerId);
+                ServerIdChanged?.Invoke(this, ServerId);
+            }
 
             if (response.IsSuccessStatusCode)
             {

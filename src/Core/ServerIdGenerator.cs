@@ -1,12 +1,9 @@
-using System.Net.NetworkInformation;
 using System.Security.Cryptography;
-using System.Text;
 
 namespace DeskShare.Core;
 
 /// <summary>
-/// Generates a persistent Server ID based on the machine's MAC address.
-/// The Server ID will remain the same for the same machine.
+/// Generates and persists this installation's Server ID (short, shareable) and viewer Client ID (private).
 /// </summary>
 public static class ServerIdGenerator
 {
@@ -16,8 +13,15 @@ public static class ServerIdGenerator
     /// <summary>Prefix of every viewer identity.</summary>
     public const string ClientIdPrefix = "client-";
 
+    /// <summary>Number of decimal digits after the prefix in a Server ID.</summary>
+    private const int ServerIdDigits = 9;
+
     /// <summary>Number of hex characters after the prefix in a Client ID (128 bits).</summary>
     private const int ClientIdHexLength = 32;
+
+    /// <summary>Where the Server ID is persisted.</summary>
+    public static string DefaultIdPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DeskShare", "server-id");
 
     /// <summary>Where the Client ID is persisted.</summary>
     public static string DefaultClientIdPath => Path.Combine(
@@ -34,58 +38,105 @@ public static class ServerIdGenerator
     /// <summary>Reads the persisted Client ID from <paramref name="path"/>, or creates and saves a new random one.</summary>
     public static string GetOrCreateClientId(string path)
     {
-        try
-        {
-            if (File.Exists(path))
-            {
-                var stored = File.ReadAllText(path).Trim();
-                if (stored.Length == ClientIdPrefix.Length + ClientIdHexLength &&
-                    stored.StartsWith(ClientIdPrefix, StringComparison.Ordinal) &&
-                    stored[ClientIdPrefix.Length..].All(char.IsAsciiHexDigitLower))
-                    return stored;
-            }
-        }
-        catch (IOException) { /* unreadable file: create a new ID below */ }
-        catch (UnauthorizedAccessException) { }
+        var stored = ReadStored(path);
+        if (stored != null &&
+            stored.Length == ClientIdPrefix.Length + ClientIdHexLength &&
+            stored.StartsWith(ClientIdPrefix, StringComparison.Ordinal) &&
+            stored[ClientIdPrefix.Length..].All(char.IsAsciiHexDigitLower))
+            return stored;
 
         var id = ClientIdPrefix + Convert.ToHexString(RandomNumberGenerator.GetBytes(ClientIdHexLength / 2)).ToLowerInvariant();
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.WriteAllText(path, id);
-        }
-        catch (IOException) { /* read-only profile: still usable, just not persisted */ }
-        catch (UnauthorizedAccessException) { }
+        Persist(path, id);
         return id;
     }
 
-    /// <summary>Where the Server ID is persisted after it is first derived.</summary>
-    public static string DefaultIdPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DeskShare", "server-id");
-
     /// <summary>
-    /// Returns this machine's Server ID. It is derived from a MAC address once and then persisted, because the
-    /// "first active physical adapter" changes with docks, Wi-Fi vs. cable or USB adapters; a changing ID would
-    /// break saved and trusted connections and the server-side ownership claim.
+    /// Returns this installation's Server ID: "server-" plus 9 random decimal digits (short enough to read out
+    /// or type). It is created once and persisted, because a changing ID would break saved and trusted connections
+    /// and the server-side ownership claim.
     /// </summary>
     public static string GenerateServerId() => GetOrCreateServerId(DefaultIdPath);
 
-    /// <summary>Reads the persisted ID from <paramref name="path"/>, or derives and saves a new one.</summary>
+    /// <summary>
+    /// Reads the persisted ID from <paramref name="path"/>, or creates and saves a new one. A stored value in an
+    /// older format (derived from a MAC address) is discarded; old installs do not need to keep their ID.
+    /// </summary>
     public static string GetOrCreateServerId(string path)
+    {
+        var stored = ReadStored(path);
+        if (stored != null && TryGetServerIdDigits(stored, out _))
+            return stored;
+
+        return RegenerateServerId(path);
+    }
+
+    /// <summary>
+    /// Creates, persists and returns a new random Server ID. Used when the signaling server reports that another
+    /// installation already owns the current one (a collision is possible because the ID space is small).
+    /// </summary>
+    public static string RegenerateServerId(string path)
+    {
+        // 100_000_000..999_999_999 are exactly the 9-digit numbers, so the first digit is 1-9 and the draw is uniform.
+        var id = ServerIdPrefix + RandomNumberGenerator.GetInt32(100_000_000, 1_000_000_000);
+        Persist(path, id);
+        return id;
+    }
+
+    /// <summary>Formats "server-123456789" as "123 456 789" for display. Any other value is returned unchanged.</summary>
+    public static string FormatServerIdForDisplay(string serverId)
+    {
+        if (serverId == null || !TryGetServerIdDigits(serverId, out var digits))
+            return serverId!;
+
+        return $"{digits[..3]} {digits[3..6]} {digits[6..]}";
+    }
+
+    /// <summary>
+    /// Turns what a user typed ("123 456 789", "123456789", "123-456-789", "server-123456789") into the wire format
+    /// "server-123456789". Anything else is returned trimmed and otherwise unchanged, so manually typed legacy IDs
+    /// still reach the server as entered.
+    /// </summary>
+    public static string NormalizeServerIdInput(string? input)
+    {
+        var trimmed = (input ?? string.Empty).Trim();
+
+        var rest = trimmed.StartsWith(ServerIdPrefix, StringComparison.OrdinalIgnoreCase)
+            ? trimmed[ServerIdPrefix.Length..]
+            : trimmed;
+        var digits = new string(rest.Where(c => c is not (' ' or '-')).ToArray());
+
+        return digits.Length == ServerIdDigits && digits.All(char.IsAsciiDigit) && digits[0] != '0'
+            ? ServerIdPrefix + digits
+            : trimmed;
+    }
+
+    /// <summary>True for "server-" followed by exactly 9 digits, the first being 1-9.</summary>
+    private static bool TryGetServerIdDigits(string serverId, out string digits)
+    {
+        digits = string.Empty;
+        if (!serverId.StartsWith(ServerIdPrefix, StringComparison.Ordinal))
+            return false;
+
+        var rest = serverId[ServerIdPrefix.Length..];
+        if (rest.Length != ServerIdDigits || !rest.All(char.IsAsciiDigit) || rest[0] == '0')
+            return false;
+
+        digits = rest;
+        return true;
+    }
+
+    private static string? ReadStored(string path)
     {
         try
         {
-            if (File.Exists(path))
-            {
-                var stored = File.ReadAllText(path).Trim();
-                if (stored.StartsWith(ServerIdPrefix, StringComparison.Ordinal) && stored.Length > ServerIdPrefix.Length)
-                    return stored;
-            }
+            return File.Exists(path) ? File.ReadAllText(path).Trim() : null;
         }
-        catch (IOException) { /* unreadable file: derive a new ID below */ }
-        catch (UnauthorizedAccessException) { }
+        catch (IOException) { return null; /* unreadable file: create a new ID */ }
+        catch (UnauthorizedAccessException) { return null; }
+    }
 
-        var id = DeriveServerIdFromMac();
+    private static void Persist(string path, string id)
+    {
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -93,86 +144,5 @@ public static class ServerIdGenerator
         }
         catch (IOException) { /* read-only profile: still usable, just not persisted */ }
         catch (UnauthorizedAccessException) { }
-        return id;
-    }
-
-    /// <summary>Derives an ID from the first physical MAC address (machine name as fallback).</summary>
-    private static string DeriveServerIdFromMac()
-    {
-        var macAddress = GetFirstPhysicalMacAddress();
-
-        if (string.IsNullOrEmpty(macAddress))
-        {
-            // Fallback to machine name if no MAC address found
-            macAddress = Environment.MachineName;
-        }
-
-        // Create SHA256 hash of MAC address
-        using var sha256 = SHA256.Create();
-        var hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(macAddress));
-
-        // Take first 12 bytes and convert to base64
-        var serverId = Convert.ToBase64String(hashBytes, 0, 12)
-            .Replace("+", "")
-            .Replace("/", "")
-            .Replace("=", "");
-
-        return $"server-{serverId}";
-    }
-
-    /// <summary>
-    /// Gets the first physical (non-virtual) MAC address from the system.
-    /// </summary>
-    /// <returns>MAC address as string, or empty string if none found</returns>
-    private static string GetFirstPhysicalMacAddress()
-    {
-        try
-        {
-            var networkInterfaces = NetworkInterface.GetAllNetworkInterfaces()
-                .Where(ni =>
-                    ni.OperationalStatus == OperationalStatus.Up &&
-                    ni.NetworkInterfaceType != NetworkInterfaceType.Loopback &&
-                    ni.NetworkInterfaceType != NetworkInterfaceType.Tunnel &&
-                    !IsVirtualAdapter(ni))
-                .OrderBy(ni => ni.Name)
-                .ToList();
-
-            foreach (var ni in networkInterfaces)
-            {
-                var macAddress = ni.GetPhysicalAddress();
-                if (macAddress != null && macAddress.GetAddressBytes().Length > 0)
-                {
-                    var macString = string.Join(":", macAddress.GetAddressBytes().Select(b => b.ToString("X2")));
-                    if (!string.IsNullOrEmpty(macString) && macString != "00:00:00:00:00:00")
-                    {
-                        return macString;
-                    }
-                }
-            }
-        }
-        catch (Exception)
-        {
-            // Fallback handled by caller
-        }
-
-        return string.Empty;
-    }
-
-    /// <summary>
-    /// Checks if a network adapter is virtual (VM, VPN, etc).
-    /// </summary>
-    private static bool IsVirtualAdapter(NetworkInterface ni)
-    {
-        var description = ni.Description.ToLowerInvariant();
-        var name = ni.Name.ToLowerInvariant();
-
-        var virtualKeywords = new[]
-        {
-            "virtual", "vmware", "vbox", "hyper-v", "vpn", "tap", "vethernet",
-            "microsoft wi-fi direct", "bluetooth", "wireless hosted"
-        };
-
-        return virtualKeywords.Any(keyword =>
-            description.Contains(keyword) || name.Contains(keyword));
     }
 }
