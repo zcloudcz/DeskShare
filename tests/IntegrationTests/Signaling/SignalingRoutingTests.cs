@@ -87,18 +87,23 @@ public class SignalingRoutingTests
         }
     }
 
-    private async Task<Peer> ConnectAsync(string token)
+    private async Task<Peer> ConnectRawAsync(string token)
     {
         var socket = await _factory.Server.CreateWebSocketClient().ConnectAsync(
             new Uri($"ws://localhost/signal?token={Uri.EscapeDataString(token)}"), CancellationToken.None);
-        var peer = new Peer(socket);
+        return new Peer(socket);
+    }
+
+    private async Task<Peer> ConnectAsync(string token)
+    {
+        var peer = await ConnectRawAsync(token);
         // The server greets every socket with Identify; waiting for it means the socket is registered.
         Assert.NotNull(await peer.NextAsync(SignalingMessageType.Identify, Delivery));
         return peer;
     }
 
-    /// <summary>Registers a sender as its own installation and returns its connected socket.</summary>
-    private async Task<Peer> ConnectSenderAsync(HttpClient http, string serverId)
+    /// <summary>Registers (or re-registers) a server ID as an installation and returns its one-time socket token.</summary>
+    private static async Task<string> RegisterForTokenAsync(HttpClient http, string serverId, string ownerSecret)
     {
         var response = await http.PostAsJsonAsync("/register", new ServerRegistrationMessage
         {
@@ -107,12 +112,16 @@ public class SignalingRoutingTests
             ValidTo = DateTime.UtcNow.AddMinutes(5),
             RemoteControlEnabled = false,
             TrustClientPermanent = false,
-            OwnerSecret = "secret-" + serverId
+            OwnerSecret = ownerSecret
         });
         response.EnsureSuccessStatusCode();
         var body = (await response.Content.ReadFromJsonAsync<ServerRegistrationResponse>())!;
-        return await ConnectAsync(body.WebSocketToken!);
+        return body.WebSocketToken!;
     }
+
+    /// <summary>Registers a sender as its own installation and returns its connected socket.</summary>
+    private async Task<Peer> ConnectSenderAsync(HttpClient http, string serverId, string? ownerSecret = null) =>
+        await ConnectAsync(await RegisterForTokenAsync(http, serverId, ownerSecret ?? "secret-" + serverId));
 
     /// <summary>Authenticates a viewer for <paramref name="serverId"/> (the sender must be registered) and connects it.</summary>
     private async Task<Peer> ConnectViewerAsync(HttpClient http, string serverId, string clientId)
@@ -148,6 +157,34 @@ public class SignalingRoutingTests
         await attacker.SendAsync(Message(SignalingMessageType.ConnectionRequest));
 
         Assert.Null(await victim.NextAsync(SignalingMessageType.ConnectionRequest, Silence));
+    }
+
+    [Fact]
+    public async Task SecondSocketWithTheSameId_DoesNotKickTheFirst_NorWidenItsReach()
+    {
+        var http = _factory.CreateClient();
+        await using var victim = await ConnectSenderAsync(http, "server-it-s7-victim");
+        await using var victimViewer = await ConnectViewerAsync(http, "server-it-s7-victim", "client-it-s7-victim");
+
+        // The attacker owns its ID and holds two valid tokens for it.
+        var token1 = await RegisterForTokenAsync(http, "server-it-s7-attacker", "secret-attacker");
+        var token2 = await RegisterForTokenAsync(http, "server-it-s7-attacker", "secret-attacker");
+        await using var socket1 = await ConnectAsync(token1);
+        await using var socket2 = await ConnectRawAsync(token2);
+        // Socket 2 is refused ("already in use"); its cleanup must not remove socket 1's registration.
+        Assert.NotNull(await socket2.NextAsync(SignalingMessageType.Error, Delivery));
+
+        await socket1.SendAsync(Message(SignalingMessageType.ConnectionRequest, "server-it-s7-victim"));
+        await socket1.SendAsync(Message(SignalingMessageType.ConnectionRequest, "client-it-s7-victim"));
+        await socket1.SendAsync(Message(SignalingMessageType.ConnectionRequest)); // broadcast
+
+        Assert.Null(await victim.NextAsync(SignalingMessageType.ConnectionRequest, Silence));
+        Assert.Null(await victimViewer.NextAsync(SignalingMessageType.ConnectionRequest, Silence));
+
+        // Socket 1 is still the registered connection: its own viewer can still reach it.
+        await using var attackerViewer = await ConnectViewerAsync(http, "server-it-s7-attacker", "client-it-s7-attacker");
+        await attackerViewer.SendAsync(Message(SignalingMessageType.ConnectionRequest, "server-it-s7-attacker"));
+        Assert.NotNull(await socket1.NextAsync(SignalingMessageType.ConnectionRequest, Delivery));
     }
 
     [Fact]

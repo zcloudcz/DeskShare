@@ -389,6 +389,10 @@ app.Map("/signal", async (HttpContext context, ConnectionManager cm) =>
     var remoteAddress = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
     WebSocketReceiveResult? receiveResult = null;
 
+    // Only a connection that really got registered may unregister itself and announce its disconnect. A second
+    // socket that fails with "already in use" must not tear down the first socket's registration.
+    var registered = false;
+
     try
     {
         if (!cm.RegisterClient(clientId, webSocket, remoteAddress, scope))
@@ -409,6 +413,8 @@ app.Map("/signal", async (HttpContext context, ConnectionManager cm) =>
                 context.RequestAborted);
             return;
         }
+
+        registered = true;
 
         // Send confirmation with client ID
         var identifyMessage = new SignalingMessage
@@ -455,14 +461,7 @@ app.Map("/signal", async (HttpContext context, ConnectionManager cm) =>
                             message.SenderId = clientId;
                             message.Timestamp = DateTime.UtcNow;
 
-                            if (!string.IsNullOrWhiteSpace(message.TargetId))
-                            {
-                                await cm.SendMessageAsync(message, context.RequestAborted);
-                            }
-                            else
-                            {
-                                await cm.BroadcastAsync(clientId, message, context.RequestAborted);
-                            }
+                            await cm.RouteMessageAsync(clientId, webSocket, message, context.RequestAborted);
                         }
                     }
                     catch (JsonException ex)
@@ -488,7 +487,7 @@ app.Map("/signal", async (HttpContext context, ConnectionManager cm) =>
     }
     finally
     {
-        if (clientId != null)
+        if (registered)
         {
             var disconnectMessage = new SignalingMessage
             {
@@ -500,7 +499,7 @@ app.Map("/signal", async (HttpContext context, ConnectionManager cm) =>
 
             try
             {
-                await cm.BroadcastAsync(clientId, disconnectMessage, CancellationToken.None);
+                await cm.RouteMessageAsync(clientId, webSocket, disconnectMessage, CancellationToken.None);
             }
             catch
             {
@@ -508,7 +507,7 @@ app.Map("/signal", async (HttpContext context, ConnectionManager cm) =>
             }
 
             var reason = receiveResult?.CloseStatusDescription ?? "Connection closed";
-            cm.UnregisterClient(clientId, reason);
+            cm.UnregisterClient(clientId, reason, webSocket);
         }
     }
 });

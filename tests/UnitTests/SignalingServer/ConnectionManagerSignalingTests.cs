@@ -59,6 +59,21 @@ public class ConnectionManagerSignalingTests
     }
 
     [Fact]
+    public void UnregisterClient_WithADifferentSocketInstance_IsANoOp()
+    {
+        var manager = CreateConnectionManager();
+        var registered = Substitute.For<WebSocket>();
+        var other = Substitute.For<WebSocket>();
+        manager.RegisterClient("client-1", registered, "127.0.0.1");
+
+        manager.UnregisterClient("client-1", "from a socket that never registered", other);
+        Assert.Equal(1, manager.ConnectionCount);
+
+        manager.UnregisterClient("client-1", "the real one", registered);
+        Assert.Equal(0, manager.ConnectionCount);
+    }
+
+    [Fact]
     public void RegisterClient_NullClientId_ThrowsArgumentException()
     {
         // Arrange

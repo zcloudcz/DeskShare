@@ -119,9 +119,15 @@ public sealed class ConnectionManager : IDisposable
     /// </summary>
     /// <param name="clientId">Client identifier to unregister.</param>
     /// <param name="reason">Reason for disconnection (optional).</param>
-    public void UnregisterClient(string clientId, string reason = "")
+    /// <param name="socket">
+    /// The socket that is going away. When given, the entry is removed only if it belongs to that very socket:
+    /// a second socket that failed to register under the same ClientId must not remove the first one's entry.
+    /// </param>
+    public void UnregisterClient(string clientId, string reason = "", WebSocket? socket = null)
     {
-        if (_connections.TryRemove(clientId, out var connection))
+        if (_connections.TryGetValue(clientId, out var connection) &&
+            (socket == null || connection.WebSocket == socket) &&
+            _connections.TryRemove(new KeyValuePair<string, ClientConnection>(clientId, connection)))
         {
             Interlocked.Increment(ref _totalDisconnectsEver);
 
@@ -139,12 +145,34 @@ public sealed class ConnectionManager : IDisposable
     }
 
     /// <summary>
-    /// Sends a signaling message to a specific client.
+    /// Routes a message received on <paramref name="source"/> to its target (or, without a TargetId, to its peers),
+    /// applying the scope of that connection itself. A message from a socket that is not the registered one for
+    /// <paramref name="clientId"/> is dropped: the scope must come from the connection instance, never from
+    /// whichever connection currently holds the same ClientId string.
     /// </summary>
-    /// <param name="message">Message to send.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>Task representing the async operation.</returns>
-    public async Task SendMessageAsync(SignalingMessage message, CancellationToken cancellationToken = default)
+    public async Task RouteMessageAsync(string clientId, WebSocket source, SignalingMessage message, CancellationToken cancellationToken = default)
+    {
+        if (!_connections.TryGetValue(clientId, out var from) || from.WebSocket != source)
+        {
+            _logger.LogWarning("Message dropped, source socket is not the registered connection | ClientId: {ClientId} | Type: {Type}",
+                clientId, message.Type);
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(message.TargetId))
+            await SendCoreAsync(message, from, cancellationToken);
+        else
+            await BroadcastCoreAsync(from, clientId, message, cancellationToken);
+    }
+
+    /// <summary>
+    /// Sends a server-originated signaling message to a specific client (no sender connection, so no scope check).
+    /// Messages from sockets go through <see cref="RouteMessageAsync"/>.
+    /// </summary>
+    public Task SendMessageAsync(SignalingMessage message, CancellationToken cancellationToken = default) =>
+        SendCoreAsync(message, null, cancellationToken);
+
+    private async Task SendCoreAsync(SignalingMessage message, ClientConnection? from, CancellationToken cancellationToken)
     {
         if (message == null)
             throw new ArgumentNullException(nameof(message));
@@ -164,10 +192,8 @@ public sealed class ConnectionManager : IDisposable
 
         // A server ID is a short public address, so the routing rule must not rely on IDs being secret:
         // a socket may only reach the peers its token authorised (see SocketScope).
-        if (message.SenderId != null &&
-            _connections.TryGetValue(message.SenderId, out var from) &&
-            from.Scope != null &&
-            message.TargetId != message.SenderId &&
+        if (from?.Scope != null &&
+            message.TargetId != from.ClientId &&
             !AreAuthorizedPeers(from, connection))
         {
             _logger.LogWarning(
@@ -206,17 +232,18 @@ public sealed class ConnectionManager : IDisposable
     }
 
     /// <summary>
-    /// Broadcasts a message to all connected clients except the sender. A sender with a <see cref="SocketScope"/>
-    /// reaches only its authorized peers (viewer: its server, server: its viewers); legacy sockets reach everyone.
+    /// Broadcasts a server-originated message to all connected clients except <paramref name="senderId"/>.
+    /// Messages from sockets go through <see cref="RouteMessageAsync"/>, which limits a scoped sender to its peers.
     /// </summary>
     /// <param name="senderId">Sender client ID to exclude.</param>
     /// <param name="message">Message to broadcast.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Task representing the async operation.</returns>
-    public async Task BroadcastAsync(string senderId, SignalingMessage message, CancellationToken cancellationToken = default)
-    {
-        _connections.TryGetValue(senderId, out var from);
+    public Task BroadcastAsync(string senderId, SignalingMessage message, CancellationToken cancellationToken = default) =>
+        BroadcastCoreAsync(null, senderId, message, cancellationToken);
 
+    private async Task BroadcastCoreAsync(ClientConnection? from, string senderId, SignalingMessage message, CancellationToken cancellationToken)
+    {
         var taskList = _connections
             .Where(kvp => kvp.Key != senderId && kvp.Value.WebSocket.State == WebSocketState.Open)
             .Where(kvp => from?.Scope == null || AreAuthorizedPeers(from, kvp.Value))
@@ -234,7 +261,7 @@ public sealed class ConnectionManager : IDisposable
                     ErrorMessage = message.ErrorMessage,
                     Timestamp = message.Timestamp
                 };
-                return SendMessageAsync(broadcastMessage, cancellationToken);
+                return SendCoreAsync(broadcastMessage, from, cancellationToken);
             })
             .ToList();
 
