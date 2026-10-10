@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using DeskShare.Core.Interfaces;
 using DeskShare.Core.Models;
+using DeskShare.Core.Video;
 using Serilog;
 
 namespace DeskShare.Core.Pipeline;
@@ -36,6 +37,15 @@ public sealed class CapturePipeline : IDisposable
     private long _framesConverted;
     private long _framesTransmitted;
     private long _framesDroppedBackpressure;
+
+    // Per-stage timing, reported every StageReportIntervalSeconds (see ReportStageTimings).
+    private const int StageReportIntervalSeconds = 10;
+    private readonly StageTimings _acquireTimings = new();
+    private readonly StageTimings _convertTimings = new();
+    private readonly StageTimings _pushTimings = new();
+    private Timer? _timingReportTimer;
+    private int _lastOutputWidth;
+    private int _lastOutputHeight;
 
     /// <summary>
     /// Gets a value indicating whether the pipeline is currently running.
@@ -98,6 +108,10 @@ public sealed class CapturePipeline : IDisposable
         _cts = new CancellationTokenSource();
         _isRunning = true;
 
+        _timingReportTimer = new Timer(
+            _ => ReportStageTimings(), null,
+            TimeSpan.FromSeconds(StageReportIntervalSeconds), TimeSpan.FromSeconds(StageReportIntervalSeconds));
+
         // Start three worker threads
         _captureTask = Task.Run(() => CaptureLoopAsync(_cts.Token));
         _conversionTask = Task.Run(() => ConversionLoopAsync(_cts.Token));
@@ -117,6 +131,8 @@ public sealed class CapturePipeline : IDisposable
         Log.Information("Stopping pipeline...");
 
         _cts?.Cancel();
+        _timingReportTimer?.Dispose();
+        _timingReportTimer = null;
 
         // Wait for all tasks to complete
         try
@@ -148,9 +164,13 @@ public sealed class CapturePipeline : IDisposable
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                // Try to acquire frame
+                // Try to acquire frame. Only successful acquisitions are timed: a failed attempt just
+                // means "no new frame yet" and would skew the average.
+                var acquireStart = Stopwatch.GetTimestamp();
                 if (_capturer.TryAcquireFrame(out var frame))
                 {
+                    _acquireTimings.Record(Stopwatch.GetTimestamp() - acquireStart);
+
                     if (Interlocked.Increment(ref _framesCaptured) % 100 == 0)
                     {
                         Log.Debug("Captured {Count} frames so far", _framesCaptured);
@@ -198,7 +218,11 @@ public sealed class CapturePipeline : IDisposable
             {
                 try
                 {
+                    var convertStart = Stopwatch.GetTimestamp();
                     var videoFrame = _converter.Convert(frame);
+                    _convertTimings.Record(Stopwatch.GetTimestamp() - convertStart);
+                    _lastOutputWidth = videoFrame.Width;
+                    _lastOutputHeight = videoFrame.Height;
                     Interlocked.Increment(ref _framesConverted);
 
                     // Try to add to transmission queue
@@ -244,7 +268,11 @@ public sealed class CapturePipeline : IDisposable
             {
                 try
                 {
-                    if (_videoSource.PushFrame(videoFrame))
+                    // PushFrame encodes (software VP8) and sends synchronously, so this is the encode cost.
+                    var pushStart = Stopwatch.GetTimestamp();
+                    var pushed = _videoSource.PushFrame(videoFrame);
+                    _pushTimings.Record(Stopwatch.GetTimestamp() - pushStart);
+                    if (pushed)
                     {
                         Interlocked.Increment(ref _framesTransmitted);
                     }
@@ -277,6 +305,58 @@ public sealed class CapturePipeline : IDisposable
     }
 
     /// <summary>
+    /// Logs average and max time per stage since the previous report, then resets the counters.
+    /// </summary>
+    private void ReportStageTimings()
+    {
+        var acquire = _acquireTimings.TakeSnapshot();
+        var convert = _convertTimings.TakeSnapshot();
+        var push = _pushTimings.TakeSnapshot();
+        var viewers = _videoSource is MultiClientVideoSource multi ? multi.ConnectedClientCount : -1;
+
+        Log.Information(
+            "Pipeline timing (last {Seconds}s): frames={Frames}, output={Width}x{Height}, viewers={Viewers}, " +
+            "acquire avg/max={AcquireAvg:F1}/{AcquireMax:F1}ms, convert avg/max={ConvertAvg:F1}/{ConvertMax:F1}ms, " +
+            "push(encode+send) avg/max={PushAvg:F1}/{PushMax:F1}ms",
+            StageReportIntervalSeconds, push.Count, _lastOutputWidth, _lastOutputHeight, viewers,
+            acquire.AvgMs, acquire.MaxMs, convert.AvgMs, convert.MaxMs, push.AvgMs, push.MaxMs);
+    }
+
+    /// <summary>
+    /// Lock-free accumulator for one stage's timings. Record is called from one pipeline thread and
+    /// TakeSnapshot from the timer thread, so Interlocked is enough and nothing allocates per frame.
+    /// </summary>
+    private sealed class StageTimings
+    {
+        private long _count;
+        private long _totalTicks;
+        private long _maxTicks;
+
+        public void Record(long ticks)
+        {
+            Interlocked.Increment(ref _count);
+            Interlocked.Add(ref _totalTicks, ticks);
+
+            // Raise the max only if this sample is larger (CAS loop in case the reader resets concurrently).
+            long current;
+            while (ticks > (current = Interlocked.Read(ref _maxTicks)))
+            {
+                if (Interlocked.CompareExchange(ref _maxTicks, ticks, current) == current)
+                    break;
+            }
+        }
+
+        public (long Count, double AvgMs, double MaxMs) TakeSnapshot()
+        {
+            var count = Interlocked.Exchange(ref _count, 0);
+            var total = Interlocked.Exchange(ref _totalTicks, 0);
+            var max = Interlocked.Exchange(ref _maxTicks, 0);
+            var toMs = 1000.0 / Stopwatch.Frequency;
+            return (count, count > 0 ? total * toMs / count : 0, max * toMs);
+        }
+    }
+
+    /// <summary>
     /// Prints pipeline statistics to console.
     /// </summary>
     private void PrintStatistics()
@@ -306,6 +386,7 @@ public sealed class CapturePipeline : IDisposable
             StopAsync().GetAwaiter().GetResult();
         }
 
+        _timingReportTimer?.Dispose();
         _cts?.Dispose();
         _captureQueue?.Dispose();
         _conversionQueue?.Dispose();
