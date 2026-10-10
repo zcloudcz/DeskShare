@@ -163,10 +163,12 @@ public class AzureTableSessionStorage : IServerSessionStorage
 
             if (!isTrusted)
             {
-                if (!AuthenticationService.ValidatePasskey(
-                    authRequest.ServerId,
-                    authRequest.Passkey,
-                    DateTime.UtcNow))
+                // The table holds a hash of the registered passkey; compare hashes in constant time.
+                // A session without a stored passkey fails closed.
+                if (string.IsNullOrEmpty(session.Passkey) || string.IsNullOrEmpty(authRequest.Passkey) ||
+                    !CryptographicOperations.FixedTimeEquals(
+                        Encoding.UTF8.GetBytes(session.Passkey),
+                        Encoding.UTF8.GetBytes(HashPasskey(authRequest.Passkey))))
                 {
                     _logger.LogWarning(
                         "Authentication failed - invalid passkey: {ServerId}/{ClientId}",
@@ -389,7 +391,8 @@ public class AzureTableSessionStorage : IServerSessionStorage
 
     private static string HashPasskey(string passkey)
     {
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(passkey));
+        // Upper-cased so the comparison stays case-insensitive like the in-memory path.
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(passkey.ToUpperInvariant()));
         return Convert.ToBase64String(hash);
     }
 }

@@ -321,7 +321,7 @@ public class ScreenSenderService : IHostedService, IDisposable
     private async Task GenerateNewPasskeyAsync()
     {
         var now = DateTime.UtcNow;
-        _currentPasskey = AuthenticationService.GeneratePasskey(ServerId, now);
+        _currentPasskey = AuthenticationService.GeneratePasskey();
         _passkeyValidTo = AuthenticationService.GetPasskeyExpiration(now);
 
         _logger.LogInformation("Generated new passkey: {Passkey} (valid until {ValidTo})",

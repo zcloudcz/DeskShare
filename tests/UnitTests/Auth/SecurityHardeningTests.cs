@@ -11,40 +11,69 @@ public class SecurityHardeningTests
     #region Constant-Time Passkey Comparison
 
     [Fact]
-    public void ValidatePasskey_CorrectPasskey_ReturnsTrue()
+    public void PasskeyMatches_CorrectAndLowercase_ReturnsTrue()
     {
-        var serverId = "TEST-SERVER-001";
-        var timestamp = new DateTime(2025, 6, 1, 12, 0, 0, DateTimeKind.Utc);
-        var passkey = AuthenticationService.GeneratePasskey(serverId, timestamp);
-
-        Assert.True(AuthenticationService.ValidatePasskey(serverId, passkey, timestamp));
+        Assert.True(AuthenticationService.PasskeyMatches("A3F7K9M2P", "A3F7K9M2P"));
+        Assert.True(AuthenticationService.PasskeyMatches("A3F7K9M2P", "a3f7k9m2p"));
     }
 
     [Fact]
-    public void ValidatePasskey_LowercasePasskey_ReturnsTrue()
+    public void PasskeyMatches_WrongPasskey_ReturnsFalse()
     {
-        var serverId = "TEST-SERVER-001";
-        var timestamp = new DateTime(2025, 6, 1, 12, 0, 0, DateTimeKind.Utc);
-        var passkey = AuthenticationService.GeneratePasskey(serverId, timestamp).ToLowerInvariant();
-
-        Assert.True(AuthenticationService.ValidatePasskey(serverId, passkey, timestamp));
+        Assert.False(AuthenticationService.PasskeyMatches("A3F7K9M2P", "XXXXXXXXX"));
     }
 
     [Fact]
-    public void ValidatePasskey_WrongPasskey_ReturnsFalse()
+    public void PasskeyMatches_EmptyInputs_ReturnsFalse()
     {
-        var serverId = "TEST-SERVER-001";
-        var timestamp = new DateTime(2025, 6, 1, 12, 0, 0, DateTimeKind.Utc);
-
-        Assert.False(AuthenticationService.ValidatePasskey(serverId, "XXXXXXXXX", timestamp));
+        Assert.False(AuthenticationService.PasskeyMatches("", "ABC"));
+        Assert.False(AuthenticationService.PasskeyMatches("ABC", ""));
+        Assert.False(AuthenticationService.PasskeyMatches(null, "ABC"));
     }
 
     [Fact]
-    public void ValidatePasskey_EmptyInputs_ReturnsFalse()
+    public void AuthenticateClient_PasskeyDerivedFromServerId_IsRejected_RegisteredPasskeyAccepted_AndReplacedOnReRegister()
     {
-        Assert.False(AuthenticationService.ValidatePasskey("", "ABC", DateTime.UtcNow));
-        Assert.False(AuthenticationService.ValidatePasskey("server", "", DateTime.UtcNow));
-        Assert.False(AuthenticationService.ValidatePasskey(null!, "ABC", DateTime.UtcNow));
+        var cm = new ConnectionManager(Substitute.For<ILogger<ConnectionManager>>());
+        cm.Configure(requireHmacSignature: false);
+        var serverId = "server-123456789";
+
+        void Register(string passkey) => cm.RegisterServer(new ServerRegistrationMessage
+        {
+            ServerId = serverId,
+            Passkey = passkey,
+            ValidTo = DateTime.UtcNow.AddMinutes(5),
+            RemoteControlEnabled = false,
+            TrustClientPermanent = false
+        });
+
+        bool Auth(string passkey, string clientId) => cm.AuthenticateClient(new ClientAuthenticationMessage
+        {
+            ServerId = serverId,
+            Passkey = passkey,
+            ClientId = clientId
+        }).Success;
+
+        Register("RANDOMPK2");
+
+        // The old scheme: SHA256(serverId + date + 45 s window) mapped to the charset. It must no longer work.
+        Assert.False(Auth(OldDeterministicPasskey(serverId, DateTime.UtcNow), "client-a"));
+        Assert.True(Auth("RANDOMPK2", "client-a"));
+
+        // The sender rotates the passkey; the previous one must stop working. Re-registering resets the session.
+        Register("ROTATEDP3");
+        Assert.False(Auth("RANDOMPK2", "client-b"));
+        Assert.True(Auth("ROTATEDP3", "client-b"));
+    }
+
+    // Copy of the removed GeneratePasskey(serverId, time), kept only to prove its output is no longer accepted.
+    private static string OldDeterministicPasskey(string serverId, DateTime now)
+    {
+        const string charset = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+        long rounded = (long)now.TimeOfDay.TotalSeconds / 45 * 45;
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes($"{serverId}-{now.Date:yyyyMMdd}-{rounded}"));
+        return new string(Enumerable.Range(0, 9).Select(i => charset[hash[i] % charset.Length]).ToArray());
     }
 
     #endregion
@@ -60,7 +89,7 @@ public class SecurityHardeningTests
 
         var serverId = "server-test";
         var now = DateTime.UtcNow;
-        var passkey = AuthenticationService.GeneratePasskey(serverId, now);
+        var passkey = AuthenticationService.GeneratePasskey();
 
         cm.RegisterServer(new ServerRegistrationMessage
         {
@@ -92,7 +121,7 @@ public class SecurityHardeningTests
 
         var serverId = "server-test";
         var now = DateTime.UtcNow;
-        var passkey = AuthenticationService.GeneratePasskey(serverId, now);
+        var passkey = AuthenticationService.GeneratePasskey();
 
         cm.RegisterServer(new ServerRegistrationMessage
         {

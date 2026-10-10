@@ -563,8 +563,9 @@ public sealed class ConnectionManager : IDisposable
 
         if (!isTrusted)
         {
-            // Not trusted - validate passkey
-            if (!AuthenticationService.ValidatePasskey(auth.ServerId, auth.Passkey, DateTime.UtcNow))
+            // Not trusted - compare with the passkey the sender registered. It is random, so knowing the
+            // ServerId is not enough; a session without a stored passkey fails closed.
+            if (!AuthenticationService.PasskeyMatches(session.Passkey, auth.Passkey))
             {
                 _logger.LogWarning("Client authentication failed - invalid passkey | ServerId: {ServerId} | ClientId: {ClientId}",
                     auth.ServerId, auth.ClientId);

@@ -32,12 +32,15 @@ public class SignalingEndpointTests : IClassFixture<SignalingEndpointTests.Serve
 
     public SignalingEndpointTests(ServerFactory factory) => _factory = factory;
 
+    // The server compares viewers' passkeys with the one registered here (it is not derived from the ServerId).
+    private const string TestPasskey = "TESTPASS2";
+
     private static async Task<HttpResponseMessage> RegisterAsync(HttpClient http, string serverId, string? ownerSecret)
     {
         var registration = new ServerRegistrationMessage
         {
             ServerId = serverId,
-            Passkey = "ignored", // the server derives the real passkey from ServerId + time
+            Passkey = TestPasskey,
             ValidTo = DateTime.UtcNow.AddMinutes(1),
             RemoteControlEnabled = false,
             TrustClientPermanent = false,
@@ -49,7 +52,7 @@ public class SignalingEndpointTests : IClassFixture<SignalingEndpointTests.Serve
     private static async Task<ClientAuthenticationResponse> AuthenticateAsync(HttpClient http, string serverId, string clientId)
     {
         var now = DateTime.UtcNow;
-        var passkey = AuthenticationService.GeneratePasskey(serverId, now);
+        var passkey = TestPasskey;
         var nonce = Guid.NewGuid().ToString();
 
         var response = await http.PostAsJsonAsync("/authenticate", new ClientAuthenticationMessage
@@ -134,7 +137,7 @@ public class SignalingEndpointTests : IClassFixture<SignalingEndpointTests.Serve
         Assert.Equal(HttpStatusCode.OK, (await RegisterAsync(http, "server-it-attacker", "secret-attacker")).StatusCode);
 
         var now = DateTime.UtcNow;
-        var passkey = AuthenticationService.GeneratePasskey("server-it-attacker", now);
+        var passkey = TestPasskey;
         var nonce = Guid.NewGuid().ToString();
         var response = await http.PostAsJsonAsync("/authenticate", new ClientAuthenticationMessage
         {
