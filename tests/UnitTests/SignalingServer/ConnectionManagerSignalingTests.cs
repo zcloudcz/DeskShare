@@ -12,11 +12,11 @@ public class ConnectionManagerSignalingTests
     {
         var manager = CreateConnectionManager();
 
-        var token = manager.IssueWebSocketToken("server-1");
+        var token = manager.IssueServerWebSocketToken("server-1");
 
-        Assert.True(manager.ValidateAndConsumeToken(token, out var clientId));
+        Assert.True(manager.ValidateAndConsumeToken(token, out var clientId, out _));
         Assert.Equal("server-1", clientId);
-        Assert.False(manager.ValidateAndConsumeToken(token, out _)); // second use must fail
+        Assert.False(manager.ValidateAndConsumeToken(token, out _, out _)); // second use must fail
     }
 
     private ConnectionManager CreateConnectionManager()

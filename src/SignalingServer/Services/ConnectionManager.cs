@@ -24,9 +24,10 @@ public sealed class ConnectionManager : IDisposable
     private readonly Timer _sessionCleanupTimer;
     private readonly NonceCache _nonceCache;
 
-    // WebSocket tokens: maps token -> (clientId, createdAt)
-    // Tokens are single-use and expire after a configurable number of seconds.
-    private readonly ConcurrentDictionary<string, (string ClientId, DateTime CreatedAt)> _wsTokens = new();
+    // WebSocket tokens: maps token -> (clientId, createdAt, scope)
+    // Tokens are single-use and expire after a configurable number of seconds. The scope records what the
+    // socket may talk to, so routing can be enforced without asking anyone again.
+    private readonly ConcurrentDictionary<string, (string ClientId, DateTime CreatedAt, SocketScope Scope)> _wsTokens = new();
     private int _tokenExpirationSeconds = 30;
 
     // Resume tokens: maps token -> (clientId, serverId, expiresAt). A viewer that lost its WebSocket (e.g. during a
@@ -78,7 +79,8 @@ public sealed class ConnectionManager : IDisposable
     /// <param name="webSocket">WebSocket connection.</param>
     /// <param name="remoteAddress">Client's remote address (optional).</param>
     /// <returns>True if registered successfully, false if client ID already exists.</returns>
-    public bool RegisterClient(string clientId, WebSocket webSocket, string remoteAddress = "unknown")
+    /// <param name="scope">Who this socket may exchange messages with; null only for legacy token-less sockets.</param>
+    public bool RegisterClient(string clientId, WebSocket webSocket, string remoteAddress = "unknown", SocketScope? scope = null)
     {
         Guard.NotNullOrWhiteSpace(clientId, nameof(clientId));
         Guard.NotNull(webSocket, nameof(webSocket));
@@ -88,6 +90,7 @@ public sealed class ConnectionManager : IDisposable
             ClientId = clientId,
             WebSocket = webSocket,
             RemoteAddress = remoteAddress,
+            Scope = scope,
             ConnectedAt = DateTime.UtcNow,
             LastActivityAt = DateTime.UtcNow
         };
@@ -156,6 +159,20 @@ public sealed class ConnectionManager : IDisposable
             return;
         }
 
+        // A server ID is a short public address, so the routing rule must not rely on IDs being secret:
+        // a socket may only reach the peers its token authorised (see SocketScope).
+        if (message.SenderId != null &&
+            _connections.TryGetValue(message.SenderId, out var from) &&
+            from.Scope != null &&
+            message.TargetId != message.SenderId &&
+            !AreAuthorizedPeers(from, connection))
+        {
+            _logger.LogWarning(
+                "Message dropped, target is not an authorized peer | SenderId: {SenderId} | TargetId: {TargetId} | Type: {Type}",
+                message.SenderId, message.TargetId, message.Type);
+            return;
+        }
+
         if (connection.WebSocket.State != WebSocketState.Open)
         {
             _logger.LogWarning("Target client {TargetId} WebSocket is not open (state: {State})",
@@ -186,7 +203,8 @@ public sealed class ConnectionManager : IDisposable
     }
 
     /// <summary>
-    /// Broadcasts a message to all connected clients except the sender.
+    /// Broadcasts a message to all connected clients except the sender. A sender with a <see cref="SocketScope"/>
+    /// reaches only its authorized peers (viewer: its server, server: its viewers); legacy sockets reach everyone.
     /// </summary>
     /// <param name="senderId">Sender client ID to exclude.</param>
     /// <param name="message">Message to broadcast.</param>
@@ -194,8 +212,11 @@ public sealed class ConnectionManager : IDisposable
     /// <returns>Task representing the async operation.</returns>
     public async Task BroadcastAsync(string senderId, SignalingMessage message, CancellationToken cancellationToken = default)
     {
+        _connections.TryGetValue(senderId, out var from);
+
         var taskList = _connections
             .Where(kvp => kvp.Key != senderId && kvp.Value.WebSocket.State == WebSocketState.Open)
+            .Where(kvp => from?.Scope == null || AreAuthorizedPeers(from, kvp.Value))
             .Select(kvp =>
             {
                 var broadcastMessage = new SignalingMessage
@@ -219,6 +240,12 @@ public sealed class ConnectionManager : IDisposable
         _logger.LogDebug("Broadcast message | SenderId: {SenderId} | Type: {Type} | Recipients: {Count}",
             senderId, message.Type, taskList.Count);
     }
+
+    /// <summary>
+    /// Two scoped sockets may talk when one is the sender and the other a viewer authorized for that same ServerId.
+    /// </summary>
+    private static bool AreAuthorizedPeers(ClientConnection a, ClientConnection b) =>
+        a.Scope is { } sa && b.Scope is { } sb && sa.IsSender != sb.IsSender && sa.ServerId == sb.ServerId;
 
     /// <summary>
     /// Records that a message was received from a client.
@@ -421,9 +448,9 @@ public sealed class ConnectionManager : IDisposable
             });
 
             _logger.LogInformation(
-                "Server registered | ServerId: {ServerId} | Passkey: {Passkey} | ValidTo: {ValidTo} | RemoteControl: {RemoteControl}",
+                // The passkey is a secret now (it is what lets a viewer in), so it never goes to the server log.
+                "Server registered | ServerId: {ServerId} | ValidTo: {ValidTo} | RemoteControl: {RemoteControl}",
                 registration.ServerId,
-                AuthenticationService.FormatPasskeyForDisplay(registration.Passkey),
                 registration.ValidTo.ToLocalTime(),
                 registration.RemoteControlEnabled);
 
@@ -731,15 +758,23 @@ public sealed class ConnectionManager : IDisposable
     }
 
     /// <summary>
-    /// Issues a one-time WebSocket upgrade token for an authenticated client.
-    /// The token must be used within the configured expiration window.
+    /// Issues a one-time WebSocket upgrade token for a sender that registered <paramref name="serverId"/>.
+    /// The socket is the sender's own (its connection id is the ServerId) and may talk to that server's viewers only.
     /// </summary>
-    /// <param name="clientId">The authenticated client ID.</param>
-    /// <returns>A short-lived single-use token string.</returns>
-    public string IssueWebSocketToken(string clientId)
+    public string IssueServerWebSocketToken(string serverId) =>
+        IssueToken(serverId, new SocketScope(IsSender: true, serverId));
+
+    /// <summary>
+    /// Issues a one-time WebSocket upgrade token for a viewer that authenticated against <paramref name="serverId"/>.
+    /// The socket may talk to that one server only.
+    /// </summary>
+    public string IssueViewerWebSocketToken(string clientId, string serverId) =>
+        IssueToken(clientId, new SocketScope(IsSender: false, serverId));
+
+    private string IssueToken(string clientId, SocketScope scope)
     {
         var token = Guid.NewGuid().ToString("N");
-        _wsTokens[token] = (clientId, DateTime.UtcNow);
+        _wsTokens[token] = (clientId, DateTime.UtcNow, scope);
 
         _logger.LogDebug("WebSocket token issued | ClientId: {ClientId} | Token: {Token}", clientId, token[..8]);
         return token;
@@ -751,10 +786,12 @@ public sealed class ConnectionManager : IDisposable
     /// </summary>
     /// <param name="token">The token to validate.</param>
     /// <param name="clientId">Output: the authenticated client ID if valid.</param>
+    /// <param name="scope">Output: who the socket may talk to (null if the token is invalid).</param>
     /// <returns>True if the token is valid, not expired, and not already used.</returns>
-    public bool ValidateAndConsumeToken(string token, out string clientId)
+    public bool ValidateAndConsumeToken(string token, out string clientId, out SocketScope? scope)
     {
         clientId = string.Empty;
+        scope = null;
 
         if (string.IsNullOrWhiteSpace(token))
             return false;
@@ -776,6 +813,7 @@ public sealed class ConnectionManager : IDisposable
         }
 
         clientId = tokenData.ClientId;
+        scope = tokenData.Scope;
         return true;
     }
 
@@ -920,6 +958,13 @@ public sealed class ConnectionManager : IDisposable
 }
 
 /// <summary>
+/// What a WebSocket may exchange signaling messages with, fixed when its token is issued.
+/// A sender (<paramref name="IsSender"/>) talks to viewers authorized for its ServerId; a viewer talks to exactly
+/// that one ServerId's sender.
+/// </summary>
+public sealed record SocketScope(bool IsSender, string ServerId);
+
+/// <summary>
 /// Represents a single client connection with statistics.
 /// </summary>
 internal sealed class ClientConnection
@@ -927,6 +972,7 @@ internal sealed class ClientConnection
     public string ClientId { get; set; } = string.Empty;
     public WebSocket WebSocket { get; set; } = null!;
     public string RemoteAddress { get; set; } = string.Empty;
+    public SocketScope? Scope { get; set; }
     public DateTime ConnectedAt { get; set; }
     public DateTime LastActivityAt { get; set; }
 

@@ -1,0 +1,214 @@
+using System.Net.Http.Json;
+using System.Net.WebSockets;
+using System.Text;
+using System.Text.Json;
+using System.Threading.Channels;
+using DeskShare.Core.Auth;
+using DeskShare.Core.Models;
+
+namespace DeskShare.IntegrationTests.Signaling;
+
+/// <summary>
+/// A Server ID is a short public address, so the signaling server must enforce who may talk to whom:
+/// a viewer only to the server it authenticated for, a sender only to that server's viewers.
+/// These tests use real WebSockets against the in-process server.
+/// </summary>
+[Collection(SignalingServerCollection.Name)]
+public class SignalingRoutingTests
+{
+    private const string Passkey = "TESTPASS2";
+    private static readonly TimeSpan Silence = TimeSpan.FromMilliseconds(600);
+    private static readonly TimeSpan Delivery = TimeSpan.FromSeconds(5);
+
+    private readonly SignalingEndpointTests.ServerFactory _factory;
+
+    public SignalingRoutingTests(SignalingEndpointTests.ServerFactory factory) => _factory = factory;
+
+    /// <summary>A connected socket that collects every message the server pushes to it.</summary>
+    private sealed class Peer : IAsyncDisposable
+    {
+        private readonly WebSocket _socket;
+        private readonly Channel<SignalingMessage> _inbox = Channel.CreateUnbounded<SignalingMessage>();
+        private readonly Task _pump;
+
+        public Peer(WebSocket socket)
+        {
+            _socket = socket;
+            _pump = Task.Run(PumpAsync);
+        }
+
+        private async Task PumpAsync()
+        {
+            var buffer = new byte[16384];
+            try
+            {
+                while (_socket.State == WebSocketState.Open)
+                {
+                    var result = await _socket.ReceiveAsync(buffer, CancellationToken.None);
+                    if (result.MessageType == WebSocketMessageType.Close) break;
+                    var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                    _inbox.Writer.TryWrite(JsonSerializer.Deserialize<SignalingMessage>(json)!);
+                }
+            }
+            catch (Exception) { /* socket closed or aborted: nothing more will arrive */ }
+            finally { _inbox.Writer.TryComplete(); }
+        }
+
+        public async Task SendAsync(SignalingMessage message) =>
+            await _socket.SendAsync(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(message)),
+                WebSocketMessageType.Text, true, CancellationToken.None);
+
+        /// <summary>Next message of the given type, or null if none arrives within the timeout.</summary>
+        public async Task<SignalingMessage?> NextAsync(SignalingMessageType type, TimeSpan timeout)
+        {
+            using var cts = new CancellationTokenSource(timeout);
+            try
+            {
+                while (await _inbox.Reader.WaitToReadAsync(cts.Token))
+                {
+                    while (_inbox.Reader.TryRead(out var m))
+                        if (m.Type == type) return m;
+                }
+            }
+            catch (OperationCanceledException) { }
+            return null;
+        }
+
+        public async Task CloseAsync()
+        {
+            if (_socket.State == WebSocketState.Open)
+                await _socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            _socket.Dispose();
+            await _pump;
+        }
+    }
+
+    private async Task<Peer> ConnectAsync(string token)
+    {
+        var socket = await _factory.Server.CreateWebSocketClient().ConnectAsync(
+            new Uri($"ws://localhost/signal?token={Uri.EscapeDataString(token)}"), CancellationToken.None);
+        var peer = new Peer(socket);
+        // The server greets every socket with Identify; waiting for it means the socket is registered.
+        Assert.NotNull(await peer.NextAsync(SignalingMessageType.Identify, Delivery));
+        return peer;
+    }
+
+    /// <summary>Registers a sender as its own installation and returns its connected socket.</summary>
+    private async Task<Peer> ConnectSenderAsync(HttpClient http, string serverId)
+    {
+        var response = await http.PostAsJsonAsync("/register", new ServerRegistrationMessage
+        {
+            ServerId = serverId,
+            Passkey = Passkey,
+            ValidTo = DateTime.UtcNow.AddMinutes(5),
+            RemoteControlEnabled = false,
+            TrustClientPermanent = false,
+            OwnerSecret = "secret-" + serverId
+        });
+        response.EnsureSuccessStatusCode();
+        var body = (await response.Content.ReadFromJsonAsync<ServerRegistrationResponse>())!;
+        return await ConnectAsync(body.WebSocketToken!);
+    }
+
+    /// <summary>Authenticates a viewer for <paramref name="serverId"/> (the sender must be registered) and connects it.</summary>
+    private async Task<Peer> ConnectViewerAsync(HttpClient http, string serverId, string clientId)
+    {
+        var now = DateTime.UtcNow;
+        var nonce = Guid.NewGuid().ToString();
+        var response = await http.PostAsJsonAsync("/authenticate", new ClientAuthenticationMessage
+        {
+            ServerId = serverId,
+            Passkey = Passkey,
+            ClientId = clientId,
+            Timestamp = now,
+            Nonce = nonce,
+            Signature = RequestSigningService.SignRequest(serverId, Passkey, now, nonce)
+        });
+        response.EnsureSuccessStatusCode();
+        var body = (await response.Content.ReadFromJsonAsync<ClientAuthenticationResponse>())!;
+        return await ConnectAsync(body.WebSocketToken!);
+    }
+
+    private static SignalingMessage Message(SignalingMessageType type, string? targetId = null) =>
+        new() { Type = type, TargetId = targetId, Sdp = "payload" };
+
+    [Fact]
+    public async Task Attacker_WhoRegisteredItsOwnServerId_CannotReachAnotherSender()
+    {
+        var http = _factory.CreateClient();
+        await using var victim = await ConnectSenderAsync(http, "server-it-route-victim");
+        await using var attacker = await ConnectSenderAsync(http, "server-it-route-attacker");
+
+        // Targeted and broadcast: neither may reach the victim (it is not the attacker's viewer).
+        await attacker.SendAsync(Message(SignalingMessageType.ConnectionRequest, "server-it-route-victim"));
+        await attacker.SendAsync(Message(SignalingMessageType.ConnectionRequest));
+
+        Assert.Null(await victim.NextAsync(SignalingMessageType.ConnectionRequest, Silence));
+    }
+
+    [Fact]
+    public async Task Viewer_AuthenticatedForServerA_CannotReachServerB_OrOtherViewers()
+    {
+        var http = _factory.CreateClient();
+        await using var serverA = await ConnectSenderAsync(http, "server-it-route-a");
+        await using var serverB = await ConnectSenderAsync(http, "server-it-route-b");
+        await using var viewerA = await ConnectViewerAsync(http, "server-it-route-a", "client-it-route-va");
+        await using var viewerB = await ConnectViewerAsync(http, "server-it-route-b", "client-it-route-vb");
+
+        await viewerA.SendAsync(Message(SignalingMessageType.ConnectionRequest, "server-it-route-b"));
+        await viewerA.SendAsync(Message(SignalingMessageType.ConnectionRequest, "client-it-route-vb"));
+        await viewerA.SendAsync(Message(SignalingMessageType.IceCandidate)); // broadcast
+
+        Assert.Null(await serverB.NextAsync(SignalingMessageType.ConnectionRequest, Silence));
+        Assert.Null(await viewerB.NextAsync(SignalingMessageType.ConnectionRequest, Silence));
+        Assert.Null(await serverB.NextAsync(SignalingMessageType.IceCandidate, Silence));
+        Assert.Null(await viewerB.NextAsync(SignalingMessageType.IceCandidate, Silence));
+
+        // The broadcast did reach the viewer's own server, so the silence above is the rule, not a broken test.
+        Assert.NotNull(await serverA.NextAsync(SignalingMessageType.IceCandidate, Delivery));
+    }
+
+    [Fact]
+    public async Task LegitimateViewerAndSender_ExchangeMessagesInBothDirections()
+    {
+        var http = _factory.CreateClient();
+        await using var server = await ConnectSenderAsync(http, "server-it-route-ok");
+        await using var viewer = await ConnectViewerAsync(http, "server-it-route-ok", "client-it-route-ok");
+
+        // Viewer -> sender, addressed (ConnectionRequest, Answer) ...
+        await viewer.SendAsync(Message(SignalingMessageType.ConnectionRequest, "server-it-route-ok"));
+        var request = await server.NextAsync(SignalingMessageType.ConnectionRequest, Delivery);
+        Assert.Equal("client-it-route-ok", request?.SenderId);
+
+        // ... sender -> viewer, addressed (Offer) and broadcast (ICE candidates carry no TargetId) ...
+        await server.SendAsync(Message(SignalingMessageType.Offer, "client-it-route-ok"));
+        Assert.NotNull(await viewer.NextAsync(SignalingMessageType.Offer, Delivery));
+        await server.SendAsync(Message(SignalingMessageType.IceCandidate));
+        Assert.NotNull(await viewer.NextAsync(SignalingMessageType.IceCandidate, Delivery));
+
+        // ... and the keep-alive ping every client sends to itself keeps working.
+        await viewer.SendAsync(Message(SignalingMessageType.Ping, "client-it-route-ok"));
+        Assert.NotNull(await viewer.NextAsync(SignalingMessageType.Ping, Delivery));
+    }
+
+    [Fact]
+    public async Task DisconnectNotice_ReachesOnlyThePeer()
+    {
+        var http = _factory.CreateClient();
+        await using var server = await ConnectSenderAsync(http, "server-it-route-dc");
+        await using var viewer = await ConnectViewerAsync(http, "server-it-route-dc", "client-it-route-dc");
+        await using var otherServer = await ConnectSenderAsync(http, "server-it-route-dc-other");
+        await using var otherViewer = await ConnectViewerAsync(http, "server-it-route-dc-other", "client-it-route-dc-other");
+
+        await viewer.CloseAsync();
+
+        var notice = await server.NextAsync(SignalingMessageType.Error, Delivery);
+        Assert.Contains("client-it-route-dc", notice?.ErrorMessage);
+        Assert.Null(await otherServer.NextAsync(SignalingMessageType.Error, Silence));
+        Assert.Null(await otherViewer.NextAsync(SignalingMessageType.Error, Silence));
+    }
+}

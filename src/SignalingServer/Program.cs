@@ -345,12 +345,13 @@ app.Map("/signal", async (HttpContext context, ConnectionManager cm) =>
     }
 
     string clientId;
+    SocketScope? scope = null;
     var allowLegacy = builder.Configuration.GetValue<bool>("Security:AllowLegacyConnections", false);
 
     if (context.Request.Query.TryGetValue("token", out var tokenValue) &&
         !string.IsNullOrWhiteSpace(tokenValue.ToString()))
     {
-        if (!cm.ValidateAndConsumeToken(tokenValue.ToString(), out clientId))
+        if (!cm.ValidateAndConsumeToken(tokenValue.ToString(), out clientId, out scope))
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             return;
@@ -389,7 +390,7 @@ app.Map("/signal", async (HttpContext context, ConnectionManager cm) =>
 
     try
     {
-        if (!cm.RegisterClient(clientId, webSocket, remoteAddress))
+        if (!cm.RegisterClient(clientId, webSocket, remoteAddress, scope))
         {
             var errorMessage = new SignalingMessage
             {
@@ -576,7 +577,7 @@ app.MapPost("/register", async (HttpContext context, IServerSessionStorage sessi
         {
             // The sender connects to /signal right after registering. Without a token it would need
             // AllowLegacyConnections, which is off by default, so hand it one here.
-            response.WebSocketToken = cm.IssueWebSocketToken(registration.ServerId);
+            response.WebSocketToken = cm.IssueServerWebSocketToken(registration.ServerId);
             response.IceServers = await iceServers.GetIceServersAsync(context.RequestAborted);
             return Results.Ok(response);
         }
@@ -623,7 +624,7 @@ app.MapPost("/authenticate", async (HttpContext context, IServerSessionStorage s
         {
             cm.RecordAuthSuccess();
 
-            var token = cm.IssueWebSocketToken(authRequest.ClientId);
+            var token = cm.IssueViewerWebSocketToken(authRequest.ClientId, authRequest.ServerId);
 
             return Results.Ok(new
             {
@@ -682,7 +683,7 @@ app.MapPost("/resume", async (HttpContext context, IServerSessionStorage session
         {
             Success = true,
             status.RemoteControlEnabled,
-            WebSocketToken = cm.IssueWebSocketToken(clientId),
+            WebSocketToken = cm.IssueViewerWebSocketToken(clientId, serverId),
             ResumeToken = cm.IssueResumeToken(clientId, serverId),
             IceServers = await iceServers.GetIceServersAsync(context.RequestAborted)
         });

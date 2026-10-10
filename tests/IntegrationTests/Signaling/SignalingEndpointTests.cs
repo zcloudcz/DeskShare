@@ -8,10 +8,21 @@ using DeskShare.Core.Auth;
 namespace DeskShare.IntegrationTests.Signaling;
 
 /// <summary>
+/// All signaling test classes share one in-process server: two WebApplicationFactory instances of the same
+/// Program in one process interfere (the first one disposed takes shared state down with it).
+/// </summary>
+[CollectionDefinition(Name)]
+public class SignalingServerCollection : ICollectionFixture<SignalingEndpointTests.ServerFactory>
+{
+    public const string Name = "Signaling server";
+}
+
+/// <summary>
 /// Runs the real SignalingServer in-process and walks the client flow the desktop viewer uses:
 /// /register (sender) -> /authenticate (viewer) -> /signal?token=...
 /// </summary>
-public class SignalingEndpointTests : IClassFixture<SignalingEndpointTests.ServerFactory>
+[Collection(SignalingServerCollection.Name)]
+public class SignalingEndpointTests
 {
     /// <summary>Hosts the server with production-like security and no UDP STUN listener (port 3478 would clash).</summary>
     public sealed class ServerFactory : WebApplicationFactory<Program>
