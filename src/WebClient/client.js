@@ -684,8 +684,10 @@ function startStatsMonitoring() {
                 }
             });
 
-            // Firefox has no transport.selectedCandidatePairId; fall back to the nominated pair.
+            // Firefox has no transport.selectedCandidatePairId; it marks the pair with the non-standard
+            // `selected` flag instead. Several pairs can be nominated, so that is only the last resort.
             const selectedPair = pairs[selectedPairId] ||
+                Object.values(pairs).find(p => p.selected) ||
                 Object.values(pairs).find(p => p.nominated && p.state === 'succeeded');
             let connectionType = '-';
             if (selectedPair) {

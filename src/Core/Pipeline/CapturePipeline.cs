@@ -284,9 +284,11 @@ public sealed class CapturePipeline : IDisposable
                     // PushFrame encodes (software VP8) and sends synchronously, so this is the encode cost.
                     var pushStart = Stopwatch.GetTimestamp();
                     var pushed = _videoSource.PushFrame(videoFrame);
-                    _pushTimings.Record(Stopwatch.GetTimestamp() - pushStart);
                     if (pushed)
                     {
+                        // Rejected pushes (no viewer, frame-rate limit) return almost instantly and would
+                        // drag the encode average down, so only real pushes are timed.
+                        _pushTimings.Record(Stopwatch.GetTimestamp() - pushStart);
                         Interlocked.Increment(ref _framesTransmitted);
                     }
                     else
@@ -336,34 +338,37 @@ public sealed class CapturePipeline : IDisposable
     }
 
     /// <summary>
-    /// Lock-free accumulator for one stage's timings. Record is called from one pipeline thread and
-    /// TakeSnapshot from the timer thread, so Interlocked is enough and nothing allocates per frame.
+    /// Accumulator for one stage's timings. Record is called from one pipeline thread and TakeSnapshot from
+    /// the timer thread. The lock keeps count, total and max consistent with each other; it is taken once per
+    /// frame and almost never contended, so its cost is negligible next to conversion or encoding.
     /// </summary>
     private sealed class StageTimings
     {
+        private readonly object _lock = new();
         private long _count;
         private long _totalTicks;
         private long _maxTicks;
 
         public void Record(long ticks)
         {
-            Interlocked.Increment(ref _count);
-            Interlocked.Add(ref _totalTicks, ticks);
-
-            // Raise the max only if this sample is larger (CAS loop in case the reader resets concurrently).
-            long current;
-            while (ticks > (current = Interlocked.Read(ref _maxTicks)))
+            lock (_lock)
             {
-                if (Interlocked.CompareExchange(ref _maxTicks, ticks, current) == current)
-                    break;
+                _count++;
+                _totalTicks += ticks;
+                if (ticks > _maxTicks)
+                    _maxTicks = ticks;
             }
         }
 
         public (long Count, double AvgMs, double MaxMs) TakeSnapshot()
         {
-            var count = Interlocked.Exchange(ref _count, 0);
-            var total = Interlocked.Exchange(ref _totalTicks, 0);
-            var max = Interlocked.Exchange(ref _maxTicks, 0);
+            long count, total, max;
+            lock (_lock)
+            {
+                (count, total, max) = (_count, _totalTicks, _maxTicks);
+                _count = _totalTicks = _maxTicks = 0;
+            }
+
             var toMs = 1000.0 / Stopwatch.Frequency;
             return (count, count > 0 ? total * toMs / count : 0, max * toMs);
         }

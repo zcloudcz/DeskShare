@@ -15,7 +15,8 @@ public static class OutputSize
         if (maxWidth <= 0 || sourceWidth <= maxWidth)
             return (sourceWidth, sourceHeight);
 
-        var width = maxWidth & ~1; // round down to even so we stay within the requested cap
+        // Round down to even so we stay within the requested cap; at least 2 so a cap of 1 cannot yield width 0.
+        var width = Math.Max(2, maxWidth & ~1);
         var height = ToEven(sourceHeight * (double)width / sourceWidth);
         return (width, height);
     }

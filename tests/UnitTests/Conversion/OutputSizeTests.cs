@@ -15,6 +15,7 @@ public sealed class OutputSizeTests
     [InlineData(1366, 768, 1280, 1280, 720)]    // 1280/1366*768 = 719.6 -> 720
     [InlineData(2560, 1080, 1281, 1280, 540)]   // odd cap is rounded down to even
     [InlineData(1920, 1200, 1280, 1280, 800)]
+    [InlineData(1920, 1080, 1, 2, 2)]           // absurd cap still gives a valid (non-zero, even) size
     public void Compute_ReturnsExpectedSize(int srcW, int srcH, int max, int expectedW, int expectedH)
     {
         var (w, h) = OutputSize.Compute(srcW, srcH, max);
