@@ -159,7 +159,10 @@ public class AzureTableSessionStorage : IServerSessionStorage
                 return CreateFailureResponse("Another client already connected");
             }
 
-            bool isTrusted = await IsTrustedClientAsync(authRequest.ServerId, authRequest.ClientId);
+            // Fail closed: this backend never skips the passkey check for trusted clients. Permanent trust must be
+            // bound to the owner secret of the ServerId, which is implemented in ConnectionManager only (production
+            // uses the in-memory backend). Trust rows are still written below, but not honoured here.
+            bool isTrusted = false;
 
             if (!isTrusted)
             {
