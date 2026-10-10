@@ -618,20 +618,23 @@ app.MapPost("/authenticate", async (HttpContext context, IServerSessionStorage s
             return Results.BadRequest(new { Error = "Invalid ClientId" });
         }
 
+        // Captured before the passkey check: the tokens below are bound to the owner whose passkey was verified,
+        // even if the ServerId changes hands in between.
+        var owner = cm.CaptureOwner(authRequest.ServerId);
         var response = await sessionStorage.AuthenticateClientAsync(authRequest);
 
         if (response.Success)
         {
             cm.RecordAuthSuccess();
 
-            var token = cm.IssueViewerWebSocketToken(authRequest.ClientId, authRequest.ServerId);
+            var token = cm.IssueViewerWebSocketToken(authRequest.ClientId, authRequest.ServerId, owner);
 
             return Results.Ok(new
             {
                 response.Success,
                 response.RemoteControlEnabled,
                 WebSocketToken = token,
-                ResumeToken = cm.IssueResumeToken(authRequest.ClientId, authRequest.ServerId),
+                ResumeToken = cm.IssueResumeToken(authRequest.ClientId, authRequest.ServerId, owner),
                 IceServers = await iceServers.GetIceServersAsync(context.RequestAborted)
             });
         }
@@ -661,7 +664,7 @@ app.MapPost("/resume", async (HttpContext context, IServerSessionStorage session
         var request = await context.Request.ReadFromJsonAsync<DeskShare.Core.Auth.ClientResumeMessage>();
 
         // Consumed first: whatever happens next, this token can never be replayed.
-        if (request == null || !cm.TryConsumeResumeToken(request.ResumeToken, out var clientId, out var serverId))
+        if (request == null || !cm.TryConsumeResumeToken(request.ResumeToken, out var clientId, out var serverId, out var owner))
         {
             cm.RecordAuthFailure();
             return Results.Unauthorized();
@@ -683,8 +686,9 @@ app.MapPost("/resume", async (HttpContext context, IServerSessionStorage session
         {
             Success = true,
             status.RemoteControlEnabled,
-            WebSocketToken = cm.IssueViewerWebSocketToken(clientId, serverId),
-            ResumeToken = cm.IssueResumeToken(clientId, serverId),
+            // Same owner the consumed token was bound to, not whoever owns the ID by now.
+            WebSocketToken = cm.IssueViewerWebSocketToken(clientId, serverId, owner),
+            ResumeToken = cm.IssueResumeToken(clientId, serverId, owner),
             IceServers = await iceServers.GetIceServersAsync(context.RequestAborted)
         });
     }

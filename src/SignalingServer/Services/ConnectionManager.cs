@@ -795,6 +795,13 @@ public sealed class ConnectionManager : IDisposable
     private byte[]? CurrentOwnerHash(string serverId) =>
         _ownerClaims.TryGetValue(serverId, out var claim) ? claim.SecretHash : null;
 
+    /// <summary>
+    /// The owner (secret hash) of <paramref name="serverId"/> right now. Endpoints capture it BEFORE they check a
+    /// viewer's credentials and issue tokens with that captured value, so a token can never end up bound to an
+    /// owner that took the ID over between the check and the issuance.
+    /// </summary>
+    public byte[]? CaptureOwner(string serverId) => CurrentOwnerHash(serverId);
+
     /// <summary>Both hashes exist and are equal: a missing owner (absent claim) never matches anything.</summary>
     private static bool SameKnownOwner(byte[]? a, byte[]? b) =>
         a != null && b != null && CryptographicOperations.FixedTimeEquals(a, b);
@@ -842,7 +849,11 @@ public sealed class ConnectionManager : IDisposable
     /// The socket may talk to that one server only.
     /// </summary>
     public string IssueViewerWebSocketToken(string clientId, string serverId) =>
-        IssueToken(clientId, new SocketScope(IsSender: false, serverId, CurrentOwnerHash(serverId)));
+        IssueViewerWebSocketToken(clientId, serverId, CurrentOwnerHash(serverId));
+
+    /// <summary>Same, bound to the owner captured when the viewer's credentials were checked (see <see cref="CaptureOwner"/>).</summary>
+    public string IssueViewerWebSocketToken(string clientId, string serverId, byte[]? ownerHash) =>
+        IssueToken(clientId, new SocketScope(IsSender: false, serverId, ownerHash));
 
     private string IssueToken(string clientId, SocketScope scope)
     {
@@ -897,10 +908,14 @@ public sealed class ConnectionManager : IDisposable
     /// <param name="serverId">The server the viewer authenticated against.</param>
     /// <param name="now">Injectable clock for tests; defaults to UtcNow.</param>
     /// <returns>32 random bytes, base64url encoded (URL and JSON safe).</returns>
-    public string IssueResumeToken(string clientId, string serverId, DateTime? now = null)
+    public string IssueResumeToken(string clientId, string serverId, DateTime? now = null) =>
+        IssueResumeToken(clientId, serverId, CurrentOwnerHash(serverId), now);
+
+    /// <summary>Same, bound to the owner captured when the viewer's credentials were checked (see <see cref="CaptureOwner"/>).</summary>
+    public string IssueResumeToken(string clientId, string serverId, byte[]? ownerHash, DateTime? now = null)
     {
         var token = Base64UrlEncode(RandomNumberGenerator.GetBytes(32));
-        _resumeTokens[token] = (clientId, serverId, CurrentOwnerHash(serverId), (now ?? DateTime.UtcNow) + ResumeTokenLifetime);
+        _resumeTokens[token] = (clientId, serverId, ownerHash, (now ?? DateTime.UtcNow) + ResumeTokenLifetime);
 
         _logger.LogDebug("Resume token issued | ClientId: {ClientId} | ServerId: {ServerId} | Token: {Token}",
             clientId, serverId, token[..8]);
@@ -912,9 +927,14 @@ public sealed class ConnectionManager : IDisposable
     /// so it can never be tried twice.
     /// </summary>
     /// <returns>True if the token existed and had not expired.</returns>
-    public bool TryConsumeResumeToken(string token, out string clientId, out string serverId, DateTime? now = null)
+    public bool TryConsumeResumeToken(string token, out string clientId, out string serverId, DateTime? now = null) =>
+        TryConsumeResumeToken(token, out clientId, out serverId, out _, now);
+
+    /// <summary>Same, also returning the owner the token was issued under, so follow-up tokens stay bound to it.</summary>
+    public bool TryConsumeResumeToken(string token, out string clientId, out string serverId, out byte[]? ownerHash, DateTime? now = null)
     {
         clientId = serverId = string.Empty;
+        ownerHash = null;
 
         if (string.IsNullOrWhiteSpace(token) || !_resumeTokens.TryRemove(token, out var data))
         {
@@ -938,6 +958,7 @@ public sealed class ConnectionManager : IDisposable
 
         clientId = data.ClientId;
         serverId = data.ServerId;
+        ownerHash = data.OwnerHash;
         return true;
     }
 
@@ -1008,8 +1029,11 @@ public sealed class ConnectionManager : IDisposable
     /// </summary>
     public async Task DisconnectClientAsync(string clientId, string reason, CancellationToken cancellationToken = default)
     {
-        if (_connections.TryGetValue(clientId, out var connection) &&
-            connection.WebSocket.State == WebSocketState.Open)
+        // Unregister exactly the connection we close: a newer socket may register under the same id meanwhile.
+        if (!_connections.TryGetValue(clientId, out var connection))
+            return;
+
+        if (connection.WebSocket.State == WebSocketState.Open)
         {
             try
             {
@@ -1023,7 +1047,7 @@ public sealed class ConnectionManager : IDisposable
                 _logger.LogDebug(ex, "Error closing WebSocket for {ClientId}", clientId);
             }
         }
-        UnregisterClient(clientId, reason);
+        UnregisterClient(clientId, reason, connection.WebSocket);
     }
 
     #endregion

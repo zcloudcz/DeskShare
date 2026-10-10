@@ -81,6 +81,33 @@ public class ResumeTokenTests
     }
 
     [Fact]
+    public void TokenIssuedWithACapturedOwner_StaysBoundToThatOwner_WhenTheIdChangesHandsBeforeIssuance()
+    {
+        using var manager = CreateManager();
+
+        // An endpoint captured the owner, verified the viewer against it, and then the ID changed hands
+        // before the token was issued. The token must belong to the captured owner, not to the new one.
+        var captured = manager.CaptureOwner("server-1");
+        manager.ExpireOwnerClaims(T0.AddMinutes(11));
+        Assert.True(manager.AuthorizeServerOwner("server-1", "secret-B", "5.6.7.8", T0.AddMinutes(11)));
+
+        var token = manager.IssueResumeToken("client-1", "server-1", captured, T0.AddMinutes(11));
+
+        Assert.False(manager.TryConsumeResumeToken(token, out _, out _, T0.AddMinutes(12)));
+    }
+
+    [Fact]
+    public void ConsumedToken_ReportsTheOwnerItWasIssuedUnder()
+    {
+        using var manager = CreateManager();
+        var token = manager.IssueResumeToken("client-1", "server-1", T0);
+
+        Assert.True(manager.TryConsumeResumeToken(token, out _, out _, out var owner, T0.AddMinutes(1)));
+
+        Assert.Equal(manager.CaptureOwner("server-1"), owner);
+    }
+
+    [Fact]
     public void Token_IsRejected_WhenTheServerHasNoCurrentOwner()
     {
         using var manager = CreateManager();
