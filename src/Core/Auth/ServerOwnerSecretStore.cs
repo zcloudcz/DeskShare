@@ -23,7 +23,11 @@ public sealed class ServerOwnerSecretStore
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DeskShare", "server-owner.key");
     }
 
-    /// <summary>Returns the stored secret, creating and persisting a new one on first use.</summary>
+    /// <summary>
+    /// Returns the stored secret, creating and persisting a new one on first use. If the key file cannot be read or
+    /// written, a secret that lives only in memory for this process is used instead: the signaling server rejects
+    /// registrations without an owner secret, and an unpersisted secret still protects the ID while we run.
+    /// </summary>
     public string GetOrCreate()
     {
         lock (_lock)
@@ -31,23 +35,37 @@ public sealed class ServerOwnerSecretStore
             if (_cached != null)
                 return _cached;
 
-            if (File.Exists(_path))
+            try
             {
-                var existing = File.ReadAllText(_path).Trim();
-                if (existing.Length > 0)
-                    return _cached = existing;
+                if (File.Exists(_path))
+                {
+                    var existing = File.ReadAllText(_path).Trim();
+                    if (existing.Length > 0)
+                        return _cached = existing;
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Unreadable key file: fall through and make a new secret.
             }
 
             var secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
 
-            Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
 
-            // Create the file and lock down its permissions BEFORE writing the secret into it,
-            // otherwise it would briefly be world-readable on Unix. On Windows %APPDATA% is already per-user.
-            File.WriteAllText(_path, string.Empty);
-            if (!OperatingSystem.IsWindows())
-                File.SetUnixFileMode(_path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-            File.WriteAllText(_path, secret);
+                // Create the file and lock down its permissions BEFORE writing the secret into it,
+                // otherwise it would briefly be world-readable on Unix. On Windows %APPDATA% is already per-user.
+                File.WriteAllText(_path, string.Empty);
+                if (!OperatingSystem.IsWindows())
+                    File.SetUnixFileMode(_path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                File.WriteAllText(_path, secret);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Not persisted (read-only profile): keep the secret in memory only.
+            }
 
             return _cached = secret;
         }

@@ -46,6 +46,9 @@ public sealed class ConnectionManager : IDisposable
     private int _idleTimeoutSeconds = 300;
     private bool _requireHmacSignature;
 
+    // Security:AllowLegacyConnections (Development only). Also lets senders without an owner secret register.
+    private bool _allowLegacyConnections;
+
     // Aggregate statistics
     private long _totalConnectionsEver;
     private long _totalDisconnectsEver;
@@ -357,7 +360,8 @@ public sealed class ConnectionManager : IDisposable
     /// </summary>
     /// <remarks>
     /// Rules: unclaimed + secret = claim it; claimed + same secret = ok; claimed + missing/different secret = reject;
-    /// unclaimed + no secret = ok (old senders that predate OwnerSecret). A claim lapses 10 minutes after the
+    /// no secret at all = reject, because the ID would stay unowned and anyone could take it over. Only legacy mode
+    /// (Security:AllowLegacyConnections) still accepts unclaimed + no secret. A claim lapses 10 minutes after the
     /// last successful registration so a reinstall that lost its key file can reclaim the ServerId later.
     /// </remarks>
     /// <param name="serverId">The ServerId the registration is for.</param>
@@ -370,6 +374,13 @@ public sealed class ConnectionManager : IDisposable
 
         if (string.IsNullOrEmpty(ownerSecret))
         {
+            if (!_allowLegacyConnections)
+            {
+                _logger.LogWarning(
+                    "Registration rejected, no owner secret was sent | ServerId: {ServerId} | IP: {IP}", serverId, remoteIp);
+                return false;
+            }
+
             if (_ownerClaims.ContainsKey(serverId))
             {
                 _logger.LogWarning(
@@ -766,12 +777,13 @@ public sealed class ConnectionManager : IDisposable
     /// Configures connection limits and token settings from configuration.
     /// Call this during startup before accepting connections.
     /// </summary>
-    public void Configure(int maxConnections = 100, int idleTimeoutSeconds = 300, int tokenExpirationSeconds = 30, bool requireHmacSignature = false)
+    public void Configure(int maxConnections = 100, int idleTimeoutSeconds = 300, int tokenExpirationSeconds = 30, bool requireHmacSignature = false, bool allowLegacyConnections = false)
     {
         _maxConnections = maxConnections;
         _idleTimeoutSeconds = idleTimeoutSeconds;
         _tokenExpirationSeconds = tokenExpirationSeconds;
         _requireHmacSignature = requireHmacSignature;
+        _allowLegacyConnections = allowLegacyConnections;
         _logger.LogInformation(
             "ConnectionManager configured | MaxConnections: {Max} | IdleTimeout: {Idle}s | TokenExpiry: {Token}s | RequireHmac: {Hmac}",
             _maxConnections, _idleTimeoutSeconds, _tokenExpirationSeconds, _requireHmacSignature);

@@ -136,6 +136,16 @@ public class SignalingEndpointTests
         Assert.Equal(HttpStatusCode.Forbidden, noSecret.StatusCode);
     }
 
+    [Fact]
+    public async Task Register_WithoutOwnerSecret_IsRejected_EvenForAFreshServerId()
+    {
+        var http = _factory.CreateClient();
+
+        var response = await RegisterAsync(http, "server-it-no-secret", null);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
     [Theory]
     [InlineData("server-it-victim")]      // a currently registered server
     [InlineData("server-not-registered")] // any id with the server prefix

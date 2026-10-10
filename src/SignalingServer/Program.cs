@@ -271,7 +271,8 @@ connectionManager.Configure(
     maxConnections: builder.Configuration.GetValue<int>("WebSocket:MaxConnections", 100),
     idleTimeoutSeconds: builder.Configuration.GetValue<int>("WebSocket:IdleTimeoutSeconds", 300),
     tokenExpirationSeconds: builder.Configuration.GetValue<int>("WebSocket:TokenExpirationSeconds", 30),
-    requireHmacSignature: builder.Configuration.GetValue<bool>("Security:RequireHmacSignature", false));
+    requireHmacSignature: builder.Configuration.GetValue<bool>("Security:RequireHmacSignature", false),
+    allowLegacyConnections: builder.Configuration.GetValue<bool>("Security:AllowLegacyConnections", false));
 
 var webSocketOptions = new WebSocketOptions
 {
