@@ -24,6 +24,10 @@ public class ScreenSenderService : IHostedService, IDisposable
     private readonly ScreenSenderConfiguration _configuration;
     private readonly HttpClient _httpClient;
     private readonly string _serverIdPath;
+
+    // Rotation and signaling reconnects can both register. Without serialization an older request could finish
+    // last and put an old passkey back on the server, so the viewer would be told the new one but be refused.
+    private readonly SemaphoreSlim _registerLock = new(1, 1);
     private Task? _executingTask;
     private CancellationTokenSource? _stoppingCts;
     private WebRTCSession? _webrtcSession;
@@ -485,6 +489,21 @@ public class ScreenSenderService : IHostedService, IDisposable
     /// Later registrations keep the ID, because the running session is already bound to it.
     /// </param>
     private async Task RegisterWithSignalingServerAsync(bool allowServerIdChange = false)
+    {
+        // One registration at a time. The request is built from the current passkey only after the lock is held,
+        // so whichever call runs last always sends the newest passkey.
+        await _registerLock.WaitAsync();
+        try
+        {
+            await RegisterCoreAsync(allowServerIdChange);
+        }
+        finally
+        {
+            _registerLock.Release();
+        }
+    }
+
+    private async Task RegisterCoreAsync(bool allowServerIdChange)
     {
         try
         {
