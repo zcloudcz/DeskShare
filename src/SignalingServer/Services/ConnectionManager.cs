@@ -685,15 +685,19 @@ public sealed class ConnectionManager : IDisposable
     public void TrustClient(string serverId, string clientId)
     {
         var key = GetTrustKey(serverId, clientId);
+        // Trust is granted by whoever owns the ServerId right now; remember which owner secret that was.
+        var ownerHash = CurrentOwnerHash(serverId);
         var trust = new TrustedConnection
         {
             ServerId = serverId,
             ClientId = clientId,
+            OwnerSecretHash = ownerHash,
             EstablishedAt = DateTime.UtcNow
         };
 
         _trustedConnections.AddOrUpdate(key, trust, (k, existing) =>
         {
+            existing.OwnerSecretHash = ownerHash;
             existing.EstablishedAt = DateTime.UtcNow;
             existing.LastUsed = DateTime.UtcNow;
             return existing;
@@ -705,12 +709,19 @@ public sealed class ConnectionManager : IDisposable
     }
 
     /// <summary>
-    /// Checks if a client is permanently trusted by a server.
+    /// Checks if a client is permanently trusted by a server, as long as the ServerId is still owned by the
+    /// installation that granted the trust.
     /// </summary>
+    /// <remarks>
+    /// Owner claims are in memory and lapse after 10 minutes, so someone else can temporarily own a ServerId.
+    /// Trust they create (or trust the real owner created earlier) must not be honoured under a different owner,
+    /// otherwise a ClientId trusted by one owner would bypass the passkey of the next one.
+    /// </remarks>
     public bool IsTrustedClient(string serverId, string clientId)
     {
         var key = GetTrustKey(serverId, clientId);
-        if (_trustedConnections.TryGetValue(key, out var trust))
+        if (_trustedConnections.TryGetValue(key, out var trust) &&
+            SameOwner(trust.OwnerSecretHash, CurrentOwnerHash(serverId)))
         {
             // Update last used timestamp
             trust.LastUsed = DateTime.UtcNow;
@@ -732,6 +743,15 @@ public sealed class ConnectionManager : IDisposable
                 serverId, clientId);
         }
     }
+
+    private byte[]? CurrentOwnerHash(string serverId) =>
+        _ownerClaims.TryGetValue(serverId, out var claim) ? claim.SecretHash : null;
+
+    /// <summary>Both unowned (legacy registrations) or both the same owner secret hash.</summary>
+    private static bool SameOwner(byte[]? granted, byte[]? current) =>
+        granted == null || current == null
+            ? granted == null && current == null
+            : CryptographicOperations.FixedTimeEquals(granted, current);
 
     private static string GetTrustKey(string serverId, string clientId)
     {
@@ -1063,6 +1083,9 @@ internal sealed class TrustedConnection
 {
     /// <summary>Server ID in the trust relationship.</summary>
     public required string ServerId { get; set; }
+
+    /// <summary>SHA256 of the owner secret in force when trust was granted (null for unowned legacy servers).</summary>
+    public byte[]? OwnerSecretHash { get; set; }
 
     /// <summary>Client ID in the trust relationship.</summary>
     public required string ClientId { get; set; }
