@@ -70,7 +70,7 @@ public class ServerManager : IDisposable
             }
 
             var targetFps = _configuration.GetValue<int>("Server:TargetFps", 30);
-            var maxOutputWidth = _configuration.GetValue<int>("Server:MaxOutputWidth", 1920);
+            var maxOutputWidth = _configuration.GetValue<int>("Server:MaxOutputWidth", 0);
             var adapterIndex = _configuration.GetValue<int>("Server:AdapterIndex", 0);
             var outputIndex = _configuration.GetValue<int>("Server:OutputIndex", 0);
 

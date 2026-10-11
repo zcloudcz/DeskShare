@@ -618,9 +618,10 @@ public class ScreenSenderConfiguration
 
     /// <summary>
     /// Maximum width of the video sent to viewers. Larger screens are downscaled (aspect ratio kept),
-    /// smaller ones are never upscaled. 0 = send the native screen resolution.
+    /// smaller ones are never upscaled. 0 = send the native screen resolution (the default: on a fast PC the
+    /// scaling costs about what the encoder saves, so a cap only pays off on slow CPUs or slow links).
     /// </summary>
-    public int MaxOutputWidth { get; set; } = 1920;
+    public int MaxOutputWidth { get; set; } = 0;
 
     /// <summary>
     /// Adapter index for screen capture (0 = primary GPU).
