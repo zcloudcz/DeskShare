@@ -43,6 +43,12 @@ public sealed class ConnectionManager : IDisposable
     private readonly ConcurrentDictionary<string, (byte[] SecretHash, DateTime LastSeen)> _ownerClaims = new();
     private static readonly TimeSpan OwnerClaimLifetime = TimeSpan.FromMinutes(10);
 
+    // Serializes everything that reads or changes "who owns a ServerId" together with that owner's session:
+    // claiming, registering, claim expiry, viewer authentication (incl. granting trust). These are a few calls per
+    // second at most, so one lock is enough; lock-free dictionaries alone cannot keep claim and session consistent.
+    // ponytail: one global lock, switch to per-ServerId locks if registration volume ever makes it contended.
+    private readonly object _ownershipLock = new();
+
     // Connection limits
     private int _maxConnections = 100;
     private int _idleTimeoutSeconds = 300;
@@ -404,6 +410,12 @@ public sealed class ConnectionManager : IDisposable
     /// <param name="now">Injectable clock for tests; defaults to UtcNow.</param>
     public bool AuthorizeServerOwner(string serverId, string? ownerSecret, string remoteIp, DateTime? now = null)
     {
+        lock (_ownershipLock)
+            return AuthorizeServerOwnerCore(serverId, ownerSecret, remoteIp, now);
+    }
+
+    private bool AuthorizeServerOwnerCore(string serverId, string? ownerSecret, string remoteIp, DateTime? now)
+    {
         var time = now ?? DateTime.UtcNow;
 
         if (string.IsNullOrEmpty(ownerSecret))
@@ -459,6 +471,7 @@ public sealed class ConnectionManager : IDisposable
     /// </summary>
     public void ExpireOwnerClaims(DateTime now)
     {
+        lock (_ownershipLock)
         foreach (var kvp in _ownerClaims)
         {
             if (now - kvp.Value.LastSeen > OwnerClaimLifetime && _ownerClaims.TryRemove(kvp))
@@ -474,6 +487,26 @@ public sealed class ConnectionManager : IDisposable
     /// Called when server starts and wants to accept client connections.
     /// </summary>
     public ServerRegistrationResponse RegisterServer(ServerRegistrationMessage registration)
+    {
+        lock (_ownershipLock)
+        {
+            // /register authorizes the owner and stores the session in two calls. If the ID got another owner in
+            // between, this registration must not overwrite that owner's session (and passkey).
+            if (_ownerClaims.TryGetValue(registration.ServerId, out var claim) &&
+                !SameKnownOwner(claim.SecretHash, HashOwnerSecret(registration.OwnerSecret)))
+            {
+                _logger.LogWarning("Registration rejected, ServerId belongs to another owner | ServerId: {ServerId}", registration.ServerId);
+                return new ServerRegistrationResponse { Success = false, ErrorMessage = "ServerId is registered by another installation." };
+            }
+
+            return RegisterServerCore(registration);
+        }
+    }
+
+    private static byte[]? HashOwnerSecret(string? ownerSecret) =>
+        string.IsNullOrEmpty(ownerSecret) ? null : SHA256.HashData(Encoding.UTF8.GetBytes(ownerSecret));
+
+    private ServerRegistrationResponse RegisterServerCore(ServerRegistrationMessage registration)
     {
         try
         {
@@ -534,6 +567,14 @@ public sealed class ConnectionManager : IDisposable
     /// <param name="auth">The viewer's authentication request.</param>
     /// <param name="now">Injectable clock for the passkey expiry check in tests; defaults to UtcNow.</param>
     public ClientAuthenticationResponse AuthenticateClient(ClientAuthenticationMessage auth, DateTime? now = null)
+    {
+        // One lock for the whole decision, including granting trust: the session, its passkey and the owner
+        // claim are read as one consistent state (see _ownershipLock).
+        lock (_ownershipLock)
+            return AuthenticateClientCore(auth, now);
+    }
+
+    private ClientAuthenticationResponse AuthenticateClientCore(ClientAuthenticationMessage auth, DateTime? now)
     {
         // === STEP 1: HMAC SIGNATURE VALIDATION (if provided) ===
         // This MUST be checked BEFORE passkey validation to prevent timing attacks
@@ -812,7 +853,11 @@ public sealed class ConnectionManager : IDisposable
     /// viewer's credentials and issue tokens with that captured value, so a token can never end up bound to an
     /// owner that took the ID over between the check and the issuance.
     /// </summary>
-    public byte[]? CaptureOwner(string serverId) => CurrentOwnerHash(serverId);
+    public byte[]? CaptureOwner(string serverId)
+    {
+        lock (_ownershipLock)
+            return CurrentOwnerHash(serverId);
+    }
 
     /// <summary>
     /// True when <paramref name="serverId"/> still has the owner that <see cref="CaptureOwner"/> returned. Checked
@@ -820,7 +865,7 @@ public sealed class ConnectionManager : IDisposable
     /// unchanged owner before and after means the verified passkey was that owner's.
     /// </summary>
     public bool IsStillOwnedBy(string serverId, byte[]? capturedOwner) =>
-        SameOwner(capturedOwner, CurrentOwnerHash(serverId));
+        SameOwner(capturedOwner, CaptureOwner(serverId));
 
     /// <summary>Both hashes exist and are equal: a missing owner (absent claim) never matches anything.</summary>
     private static bool SameKnownOwner(byte[]? a, byte[]? b) =>
@@ -863,6 +908,13 @@ public sealed class ConnectionManager : IDisposable
     /// </summary>
     public string IssueServerWebSocketToken(string serverId) =>
         IssueToken(serverId, new SocketScope(IsSender: true, serverId, CurrentOwnerHash(serverId)));
+
+    /// <summary>
+    /// Same, bound to the owner secret this very registration proved, not to whoever owns the ID when the token
+    /// is issued. A registration that lost a race for the ID then gets a token no viewer of the new owner accepts.
+    /// </summary>
+    public string IssueServerWebSocketToken(string serverId, string? ownerSecret) =>
+        IssueToken(serverId, new SocketScope(IsSender: true, serverId, HashOwnerSecret(ownerSecret)));
 
     /// <summary>
     /// Issues a one-time WebSocket upgrade token for a viewer that authenticated against <paramref name="serverId"/>.
@@ -969,7 +1021,7 @@ public sealed class ConnectionManager : IDisposable
         }
 
         // The owner of the ServerId must be the one the token was issued under; no current owner never matches.
-        if (!SameKnownOwner(data.OwnerHash, CurrentOwnerHash(data.ServerId)))
+        if (!SameKnownOwner(data.OwnerHash, CaptureOwner(data.ServerId)))
         {
             _logger.LogWarning("Resume token rejected, the ServerId changed owner | ClientId: {ClientId} | ServerId: {ServerId}",
                 data.ClientId, data.ServerId);

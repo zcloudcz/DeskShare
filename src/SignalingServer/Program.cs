@@ -577,7 +577,7 @@ app.MapPost("/register", async (HttpContext context, IServerSessionStorage sessi
         {
             // The sender connects to /signal right after registering. Without a token it would need
             // AllowLegacyConnections, which is off by default, so hand it one here.
-            response.WebSocketToken = cm.IssueServerWebSocketToken(registration.ServerId);
+            response.WebSocketToken = cm.IssueServerWebSocketToken(registration.ServerId, registration.OwnerSecret);
             response.IceServers = await iceServers.GetIceServersAsync(context.RequestAborted);
             return Results.Ok(response);
         }

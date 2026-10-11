@@ -24,6 +24,7 @@ public class TrustOwnershipTests
         {
             ServerId = ServerId,
             Passkey = passkey,
+            OwnerSecret = secret,
             ValidTo = DateTime.UtcNow.AddMinutes(5),
             RemoteControlEnabled = false,
             TrustClientPermanent = true
@@ -86,6 +87,24 @@ public class TrustOwnershipTests
         Assert.True(manager.AuthorizeServerOwner(ServerId, "secret-B", "5.6.7.8", T0));
 
         Assert.False(Authenticate(manager, "client-1", "LEFTOVER2"));
+    }
+
+    [Fact]
+    public void RegistrationThatLostTheIdToAnotherOwner_CannotOverwriteThatOwnersSession()
+    {
+        using var manager = CreateManager();
+        Register(manager, "secret-B", "OWNERBPK2", T0);
+
+        // A request that was authorized earlier under another owner arrives late and tries to store its session.
+        var late = manager.RegisterServer(new ServerRegistrationMessage
+        {
+            ServerId = ServerId, Passkey = "LATEPASS2", OwnerSecret = "secret-A", ValidTo = DateTime.UtcNow.AddMinutes(5),
+            RemoteControlEnabled = false, TrustClientPermanent = false
+        });
+
+        Assert.False(late.Success);
+        Assert.False(Authenticate(manager, "client-1", "LATEPASS2"));
+        Assert.True(Authenticate(manager, "client-1", "OWNERBPK2"));
     }
 
     [Fact]
