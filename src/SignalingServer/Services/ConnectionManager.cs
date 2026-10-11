@@ -194,8 +194,10 @@ public sealed class ConnectionManager : IDisposable
 
         // A server ID is a short public address, so the routing rule must not rely on IDs being secret:
         // a socket may only reach the peers its token authorised (see SocketScope).
+        // Sending to yourself (keep-alive ping) is always fine, but "yourself" means this very connection: another
+        // socket may have taken over the same ClientId since the message was received.
         if (from?.Scope != null &&
-            message.TargetId != from.ClientId &&
+            connection != from &&
             !AreAuthorizedPeers(from, connection))
         {
             _logger.LogWarning(
@@ -427,6 +429,13 @@ public sealed class ConnectionManager : IDisposable
         }
 
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(ownerSecret));
+
+        // Nobody owns the ID right now, so whoever registers next becomes its owner. A session left over from a
+        // previous owner (with that owner's passkey) must be gone BEFORE the new claim becomes visible: otherwise
+        // /authenticate could verify the old passkey and hand out a token bound to the new owner.
+        if (!_ownerClaims.ContainsKey(serverId))
+            _serverSessions.TryRemove(serverId, out _);
+
         var claim = _ownerClaims.GetOrAdd(serverId, _ => (hash, time));
 
         // Fixed-time compare so response timing cannot be used to guess the secret byte by byte.
@@ -452,8 +461,11 @@ public sealed class ConnectionManager : IDisposable
     {
         foreach (var kvp in _ownerClaims)
         {
-            if (now - kvp.Value.LastSeen > OwnerClaimLifetime)
-                _ownerClaims.TryRemove(kvp);
+            if (now - kvp.Value.LastSeen > OwnerClaimLifetime && _ownerClaims.TryRemove(kvp))
+            {
+                // The session (and its passkey) belongs to the owner that just lapsed; it goes with the claim.
+                _serverSessions.TryRemove(kvp.Key, out _);
+            }
         }
     }
 
@@ -801,6 +813,14 @@ public sealed class ConnectionManager : IDisposable
     /// owner that took the ID over between the check and the issuance.
     /// </summary>
     public byte[]? CaptureOwner(string serverId) => CurrentOwnerHash(serverId);
+
+    /// <summary>
+    /// True when <paramref name="serverId"/> still has the owner that <see cref="CaptureOwner"/> returned. Checked
+    /// after a successful credential check: a session only ever exists under the owner that registered it, so an
+    /// unchanged owner before and after means the verified passkey was that owner's.
+    /// </summary>
+    public bool IsStillOwnedBy(string serverId, byte[]? capturedOwner) =>
+        SameOwner(capturedOwner, CurrentOwnerHash(serverId));
 
     /// <summary>Both hashes exist and are equal: a missing owner (absent claim) never matches anything.</summary>
     private static bool SameKnownOwner(byte[]? a, byte[]? b) =>

@@ -623,6 +623,14 @@ app.MapPost("/authenticate", async (HttpContext context, IServerSessionStorage s
         var owner = cm.CaptureOwner(authRequest.ServerId);
         var response = await sessionStorage.AuthenticateClientAsync(authRequest);
 
+        if (response.Success && !cm.IsStillOwnedBy(authRequest.ServerId, owner))
+        {
+            // The ServerId changed hands while we were checking: we cannot tell whose passkey was verified.
+            cm.RecordAuthFailure();
+            Log.Warning("Authentication rejected, ServerId changed owner during the check | ServerId: {ServerId}", authRequest.ServerId);
+            return Results.Unauthorized();
+        }
+
         if (response.Success)
         {
             cm.RecordAuthSuccess();

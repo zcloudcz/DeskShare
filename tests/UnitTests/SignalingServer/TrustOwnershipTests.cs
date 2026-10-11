@@ -56,6 +56,39 @@ public class TrustOwnershipTests
     }
 
     [Fact]
+    public void SessionOfALapsedOwner_IsGone_SoItsPasskeyCannotBeUsedUnderTheNextOwner()
+    {
+        using var manager = CreateManager();
+        Register(manager, "secret-A", "OWNERAPK2", T0);
+
+        manager.ExpireOwnerClaims(T0.AddMinutes(11));
+
+        // The claim lapsed: the old session must not linger for whoever claims the ID next.
+        Assert.False(Authenticate(manager, "client-1", "OWNERAPK2"));
+
+        // The next owner has authorized but not stored its registration yet: still nothing to authenticate against.
+        Assert.True(manager.AuthorizeServerOwner(ServerId, "secret-B", "5.6.7.8", T0.AddMinutes(11)));
+        Assert.False(Authenticate(manager, "client-1", "OWNERAPK2"));
+        Assert.False(manager.IsStillOwnedBy(ServerId, capturedOwner: null)); // owner changed from "nobody" to B
+    }
+
+    [Fact]
+    public void ClaimingAnUnownedId_DropsALeftoverSession_BeforeTheNewOwnerIsVisible()
+    {
+        using var manager = CreateManager();
+        // A session without any owner claim (e.g. left behind by an earlier owner).
+        manager.RegisterServer(new ServerRegistrationMessage
+        {
+            ServerId = ServerId, Passkey = "LEFTOVER2", ValidTo = DateTime.UtcNow.AddMinutes(5),
+            RemoteControlEnabled = false, TrustClientPermanent = false
+        });
+
+        Assert.True(manager.AuthorizeServerOwner(ServerId, "secret-B", "5.6.7.8", T0));
+
+        Assert.False(Authenticate(manager, "client-1", "LEFTOVER2"));
+    }
+
+    [Fact]
     public void Passkey_IsRejectedAfterItsValidTo_EvenWhileTheSessionIsConnected()
     {
         using var manager = CreateManager();
