@@ -641,6 +641,10 @@ function startStatsMonitoring() {
             let packetLoss = 0;
             let jitter = 0;
             let rtt = 0;
+            let resolution = '-';
+            let selectedPairId = null;
+            const candidates = {};
+            const pairs = {};
 
             stats.forEach(report => {
                 // Inbound RTP stream stats (video we're receiving)
@@ -667,6 +671,10 @@ function startStatsMonitoring() {
                         jitter = (report.jitter * 1000).toFixed(2); // Convert to ms
                     }
 
+                    if (report.frameWidth && report.frameHeight) {
+                        resolution = `${report.frameWidth}x${report.frameHeight}`;
+                    }
+
                     lastBytesReceived = report.bytesReceived || lastBytesReceived;
                     lastFramesDecoded = report.framesDecoded || lastFramesDecoded;
                     lastTimestamp = now;
@@ -678,10 +686,39 @@ function startStatsMonitoring() {
                         rtt = Math.round(report.currentRoundTripTime * 1000); // Convert to ms
                     }
                 }
+
+                // Collected so the route (direct vs relay) can be resolved after the loop.
+                if (report.type === 'local-candidate' || report.type === 'remote-candidate') {
+                    candidates[report.id] = report;
+                }
+                if (report.type === 'candidate-pair') {
+                    pairs[report.id] = report;
+                }
+                if (report.type === 'transport' && report.selectedCandidatePairId) {
+                    selectedPairId = report.selectedCandidatePairId;
+                }
             });
+
+            // Firefox has no transport.selectedCandidatePairId; it marks the pair with the non-standard
+            // `selected` flag instead. Several pairs can be nominated, so that is only the last resort.
+            const selectedPair = pairs[selectedPairId] ||
+                Object.values(pairs).find(p => p.selected) ||
+                Object.values(pairs).find(p => p.nominated && p.state === 'succeeded');
+            let connectionType = '-';
+            if (selectedPair) {
+                const local = candidates[selectedPair.localCandidateId];
+                const remote = candidates[selectedPair.remoteCandidateId];
+                const isRelay = (local && local.candidateType === 'relay') ||
+                    (remote && remote.candidateType === 'relay');
+                // The relay protocol (udp/tcp/tls) is reported on the local candidate.
+                const relayProtocol = local && local.relayProtocol ? ` (${local.relayProtocol})` : '';
+                connectionType = isRelay ? `relay${relayProtocol}` : 'direct';
+            }
 
             // Update UI with statistics
             updateStatsDisplay(bitrateKbps, fps, packetLoss, jitter, rtt);
+            document.getElementById('connectionType').textContent = connectionType;
+            document.getElementById('resolution').textContent = resolution;
         } catch (error) {
             console.error('Error getting WebRTC stats:', error);
         }
@@ -702,6 +739,8 @@ function stopStatsMonitoring() {
     document.getElementById('fps').textContent = '- fps';
     document.getElementById('packetLoss').textContent = '-%';
     document.getElementById('latency').textContent = '- ms';
+    document.getElementById('connectionType').textContent = '-';
+    document.getElementById('resolution').textContent = '-';
 }
 
 /**

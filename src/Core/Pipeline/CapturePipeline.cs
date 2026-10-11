@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using DeskShare.Core.Conversion;
 using DeskShare.Core.Interfaces;
 using DeskShare.Core.Models;
+using DeskShare.Core.Video;
 using Serilog;
 
 namespace DeskShare.Core.Pipeline;
@@ -18,6 +20,11 @@ public sealed class CapturePipeline : IDisposable
     private readonly IScreenCapturer _capturer;
     private readonly IFrameConverter _converter;
     private readonly IVideoSource _videoSource;
+    private readonly int _maxOutputWidth;
+
+    // Resolution actually sent; equals the capture size unless downscaling is active. Set in Start.
+    private int _outputWidth;
+    private int _outputHeight;
 
     private readonly BlockingCollection<Frame> _captureQueue;
     private readonly BlockingCollection<VideoFrame> _conversionQueue;
@@ -37,6 +44,15 @@ public sealed class CapturePipeline : IDisposable
     private long _framesTransmitted;
     private long _framesDroppedBackpressure;
 
+    // Per-stage timing, reported every StageReportIntervalSeconds (see ReportStageTimings).
+    private const int StageReportIntervalSeconds = 10;
+    private readonly StageTimings _acquireTimings = new();
+    private readonly StageTimings _convertTimings = new();
+    private readonly StageTimings _pushTimings = new();
+    private Timer? _timingReportTimer;
+    private int _lastOutputWidth;
+    private int _lastOutputHeight;
+
     /// <summary>
     /// Gets a value indicating whether the pipeline is currently running.
     /// </summary>
@@ -48,8 +64,10 @@ public sealed class CapturePipeline : IDisposable
     /// <param name="capturer">Screen capturer implementation.</param>
     /// <param name="converter">Pixel format converter.</param>
     /// <param name="videoSource">WebRTC video source.</param>
-    public CapturePipeline(IScreenCapturer capturer, IFrameConverter converter, IVideoSource videoSource)
+    /// <param name="maxOutputWidth">Maximum width of the sent video; 0 = native. See <see cref="OutputSize"/>.</param>
+    public CapturePipeline(IScreenCapturer capturer, IFrameConverter converter, IVideoSource videoSource, int maxOutputWidth = 0)
     {
+        _maxOutputWidth = maxOutputWidth;
         _capturer = capturer ?? throw new ArgumentNullException(nameof(capturer));
         _converter = converter ?? throw new ArgumentNullException(nameof(converter));
         _videoSource = videoSource ?? throw new ArgumentNullException(nameof(videoSource));
@@ -78,11 +96,13 @@ public sealed class CapturePipeline : IDisposable
             return false;
         }
 
+        (_outputWidth, _outputHeight) = OutputSize.Compute(_capturer.Width, _capturer.Height, _maxOutputWidth);
+
         // Initialize video source only if not already initialized (e.g., StubVideoSource)
         // For WebRTC scenarios, VideoSource is pre-initialized by WebRTCSession
         if (!_videoSource.IsInitialized)
         {
-            if (!_videoSource.Initialize(_capturer.Width, _capturer.Height, targetFps))
+            if (!_videoSource.Initialize(_outputWidth, _outputHeight, targetFps))
             {
                 Log.Error("Failed to initialize video source");
                 return false;
@@ -93,10 +113,15 @@ public sealed class CapturePipeline : IDisposable
             Log.Information("Video source already initialized, skipping initialization");
         }
 
-        Log.Information("Starting pipeline: {Width}x{Height} @ {TargetFps}fps", _capturer.Width, _capturer.Height, targetFps);
+        Log.Information("Starting pipeline: capture {Width}x{Height} -> output {OutWidth}x{OutHeight} @ {TargetFps}fps",
+            _capturer.Width, _capturer.Height, _outputWidth, _outputHeight, targetFps);
 
         _cts = new CancellationTokenSource();
         _isRunning = true;
+
+        _timingReportTimer = new Timer(
+            _ => ReportStageTimings(), null,
+            TimeSpan.FromSeconds(StageReportIntervalSeconds), TimeSpan.FromSeconds(StageReportIntervalSeconds));
 
         // Start three worker threads
         _captureTask = Task.Run(() => CaptureLoopAsync(_cts.Token));
@@ -117,6 +142,8 @@ public sealed class CapturePipeline : IDisposable
         Log.Information("Stopping pipeline...");
 
         _cts?.Cancel();
+        _timingReportTimer?.Dispose();
+        _timingReportTimer = null;
 
         // Wait for all tasks to complete
         try
@@ -148,9 +175,13 @@ public sealed class CapturePipeline : IDisposable
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                // Try to acquire frame
+                // Try to acquire frame. Only successful acquisitions are timed: a failed attempt just
+                // means "no new frame yet" and would skew the average.
+                var acquireStart = Stopwatch.GetTimestamp();
                 if (_capturer.TryAcquireFrame(out var frame))
                 {
+                    _acquireTimings.Record(Stopwatch.GetTimestamp() - acquireStart);
+
                     if (Interlocked.Increment(ref _framesCaptured) % 100 == 0)
                     {
                         Log.Debug("Captured {Count} frames so far", _framesCaptured);
@@ -198,7 +229,13 @@ public sealed class CapturePipeline : IDisposable
             {
                 try
                 {
-                    var videoFrame = _converter.Convert(frame);
+                    var convertStart = Stopwatch.GetTimestamp();
+                    var videoFrame = frame.Width == _outputWidth && frame.Height == _outputHeight
+                        ? _converter.Convert(frame)
+                        : _converter.ConvertAndScale(frame, _outputWidth, _outputHeight);
+                    _convertTimings.Record(Stopwatch.GetTimestamp() - convertStart);
+                    _lastOutputWidth = videoFrame.Width;
+                    _lastOutputHeight = videoFrame.Height;
                     Interlocked.Increment(ref _framesConverted);
 
                     // Try to add to transmission queue
@@ -244,8 +281,14 @@ public sealed class CapturePipeline : IDisposable
             {
                 try
                 {
-                    if (_videoSource.PushFrame(videoFrame))
+                    // PushFrame encodes (software VP8) and sends synchronously, so this is the encode cost.
+                    var pushStart = Stopwatch.GetTimestamp();
+                    var pushed = _videoSource.PushFrame(videoFrame);
+                    if (pushed)
                     {
+                        // Rejected pushes (no viewer, frame-rate limit) return almost instantly and would
+                        // drag the encode average down, so only real pushes are timed.
+                        _pushTimings.Record(Stopwatch.GetTimestamp() - pushStart);
                         Interlocked.Increment(ref _framesTransmitted);
                     }
                     else
@@ -274,6 +317,61 @@ public sealed class CapturePipeline : IDisposable
         }
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Logs average and max time per stage since the previous report, then resets the counters.
+    /// </summary>
+    private void ReportStageTimings()
+    {
+        var acquire = _acquireTimings.TakeSnapshot();
+        var convert = _convertTimings.TakeSnapshot();
+        var push = _pushTimings.TakeSnapshot();
+        var viewers = _videoSource is MultiClientVideoSource multi ? multi.ConnectedClientCount : -1;
+
+        Log.Information(
+            "Pipeline timing (last {Seconds}s): frames={Frames}, output={Width}x{Height}, viewers={Viewers}, " +
+            "acquire avg/max={AcquireAvg:F1}/{AcquireMax:F1}ms, convert avg/max={ConvertAvg:F1}/{ConvertMax:F1}ms, " +
+            "push(encode+send) avg/max={PushAvg:F1}/{PushMax:F1}ms",
+            StageReportIntervalSeconds, push.Count, _lastOutputWidth, _lastOutputHeight, viewers,
+            acquire.AvgMs, acquire.MaxMs, convert.AvgMs, convert.MaxMs, push.AvgMs, push.MaxMs);
+    }
+
+    /// <summary>
+    /// Accumulator for one stage's timings. Record is called from one pipeline thread and TakeSnapshot from
+    /// the timer thread. The lock keeps count, total and max consistent with each other; it is taken once per
+    /// frame and almost never contended, so its cost is negligible next to conversion or encoding.
+    /// </summary>
+    private sealed class StageTimings
+    {
+        private readonly object _lock = new();
+        private long _count;
+        private long _totalTicks;
+        private long _maxTicks;
+
+        public void Record(long ticks)
+        {
+            lock (_lock)
+            {
+                _count++;
+                _totalTicks += ticks;
+                if (ticks > _maxTicks)
+                    _maxTicks = ticks;
+            }
+        }
+
+        public (long Count, double AvgMs, double MaxMs) TakeSnapshot()
+        {
+            long count, total, max;
+            lock (_lock)
+            {
+                (count, total, max) = (_count, _totalTicks, _maxTicks);
+                _count = _totalTicks = _maxTicks = 0;
+            }
+
+            var toMs = 1000.0 / Stopwatch.Frequency;
+            return (count, count > 0 ? total * toMs / count : 0, max * toMs);
+        }
     }
 
     /// <summary>
@@ -306,6 +404,7 @@ public sealed class CapturePipeline : IDisposable
             StopAsync().GetAwaiter().GetResult();
         }
 
+        _timingReportTimer?.Dispose();
         _cts?.Dispose();
         _captureQueue?.Dispose();
         _conversionQueue?.Dispose();
