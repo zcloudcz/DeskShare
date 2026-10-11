@@ -8,10 +8,21 @@ using DeskShare.Core.Auth;
 namespace DeskShare.IntegrationTests.Signaling;
 
 /// <summary>
+/// All signaling test classes share one in-process server: two WebApplicationFactory instances of the same
+/// Program in one process interfere (the first one disposed takes shared state down with it).
+/// </summary>
+[CollectionDefinition(Name)]
+public class SignalingServerCollection : ICollectionFixture<SignalingEndpointTests.ServerFactory>
+{
+    public const string Name = "Signaling server";
+}
+
+/// <summary>
 /// Runs the real SignalingServer in-process and walks the client flow the desktop viewer uses:
 /// /register (sender) -> /authenticate (viewer) -> /signal?token=...
 /// </summary>
-public class SignalingEndpointTests : IClassFixture<SignalingEndpointTests.ServerFactory>
+[Collection(SignalingServerCollection.Name)]
+public class SignalingEndpointTests
 {
     /// <summary>Hosts the server with production-like security and no UDP STUN listener (port 3478 would clash).</summary>
     public sealed class ServerFactory : WebApplicationFactory<Program>
@@ -32,12 +43,15 @@ public class SignalingEndpointTests : IClassFixture<SignalingEndpointTests.Serve
 
     public SignalingEndpointTests(ServerFactory factory) => _factory = factory;
 
+    // The server compares viewers' passkeys with the one registered here (it is not derived from the ServerId).
+    private const string TestPasskey = "TESTPASS2";
+
     private static async Task<HttpResponseMessage> RegisterAsync(HttpClient http, string serverId, string? ownerSecret)
     {
         var registration = new ServerRegistrationMessage
         {
             ServerId = serverId,
-            Passkey = "ignored", // the server derives the real passkey from ServerId + time
+            Passkey = TestPasskey,
             ValidTo = DateTime.UtcNow.AddMinutes(1),
             RemoteControlEnabled = false,
             TrustClientPermanent = false,
@@ -49,7 +63,7 @@ public class SignalingEndpointTests : IClassFixture<SignalingEndpointTests.Serve
     private static async Task<ClientAuthenticationResponse> AuthenticateAsync(HttpClient http, string serverId, string clientId)
     {
         var now = DateTime.UtcNow;
-        var passkey = AuthenticationService.GeneratePasskey(serverId, now);
+        var passkey = TestPasskey;
         var nonce = Guid.NewGuid().ToString();
 
         var response = await http.PostAsJsonAsync("/authenticate", new ClientAuthenticationMessage
@@ -122,6 +136,16 @@ public class SignalingEndpointTests : IClassFixture<SignalingEndpointTests.Serve
         Assert.Equal(HttpStatusCode.Forbidden, noSecret.StatusCode);
     }
 
+    [Fact]
+    public async Task Register_WithoutOwnerSecret_IsRejected_EvenForAFreshServerId()
+    {
+        var http = _factory.CreateClient();
+
+        var response = await RegisterAsync(http, "server-it-no-secret", null);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
     [Theory]
     [InlineData("server-it-victim")]      // a currently registered server
     [InlineData("server-not-registered")] // any id with the server prefix
@@ -134,7 +158,7 @@ public class SignalingEndpointTests : IClassFixture<SignalingEndpointTests.Serve
         Assert.Equal(HttpStatusCode.OK, (await RegisterAsync(http, "server-it-attacker", "secret-attacker")).StatusCode);
 
         var now = DateTime.UtcNow;
-        var passkey = AuthenticationService.GeneratePasskey("server-it-attacker", now);
+        var passkey = TestPasskey;
         var nonce = Guid.NewGuid().ToString();
         var response = await http.PostAsJsonAsync("/authenticate", new ClientAuthenticationMessage
         {
@@ -148,6 +172,26 @@ public class SignalingEndpointTests : IClassFixture<SignalingEndpointTests.Serve
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.DoesNotContain("webSocketToken", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ServerStatusEndpoints_DoNotLeakTheViewerClientId()
+    {
+        var http = _factory.CreateClient();
+        var serverId = "server-it-status-leak";
+        var clientId = "client-it-status-leak-0123456789abcdef";
+        Assert.Equal(HttpStatusCode.OK, (await RegisterAsync(http, serverId, "secret-status")).StatusCode);
+        await AuthenticateAsync(http, serverId, clientId); // the viewer is now the connected client
+
+        var single = await http.GetAsync($"/servers/{serverId}/status");
+        var all = await http.GetAsync("/servers/status");
+
+        Assert.Equal(HttpStatusCode.OK, single.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, all.StatusCode);
+        var singleBody = await single.Content.ReadAsStringAsync();
+        Assert.Contains("Connected", singleBody, StringComparison.OrdinalIgnoreCase); // the session really is connected
+        Assert.DoesNotContain(clientId, singleBody);
+        Assert.DoesNotContain(clientId, await all.Content.ReadAsStringAsync());
     }
 
     private static Task<HttpResponseMessage> ResumeAsync(HttpClient http, string resumeToken) =>

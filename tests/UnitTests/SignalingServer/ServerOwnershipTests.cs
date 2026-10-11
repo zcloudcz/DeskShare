@@ -52,9 +52,21 @@ public class ServerOwnershipTests
     }
 
     [Fact]
-    public void MissingSecret_IsAllowedWhileUnclaimed()
+    public void MissingSecret_IsRejected_ByDefault()
     {
         using var manager = CreateManager();
+
+        // Without a secret the ID would stay unowned and anyone could register over it later.
+        Assert.False(manager.AuthorizeServerOwner("server-1", null, "1.2.3.4", T0));
+        Assert.False(manager.AuthorizeServerOwner("server-1", "", "1.2.3.4", T0));
+        Assert.False(manager.IsKnownServerId("server-1"));
+    }
+
+    [Fact]
+    public void MissingSecret_IsAllowedWhileUnclaimed_InLegacyMode()
+    {
+        using var manager = CreateManager();
+        manager.Configure(allowLegacyConnections: true);
 
         // Old senders (v1.0/v1.1) do not know OwnerSecret yet and must keep working.
         Assert.True(manager.AuthorizeServerOwner("server-legacy", null, "1.2.3.4", T0));

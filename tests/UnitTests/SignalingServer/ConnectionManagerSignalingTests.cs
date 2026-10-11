@@ -12,11 +12,11 @@ public class ConnectionManagerSignalingTests
     {
         var manager = CreateConnectionManager();
 
-        var token = manager.IssueWebSocketToken("server-1");
+        var token = manager.IssueServerWebSocketToken("server-1");
 
-        Assert.True(manager.ValidateAndConsumeToken(token, out var clientId));
+        Assert.True(manager.ValidateAndConsumeToken(token, out var clientId, out _));
         Assert.Equal("server-1", clientId);
-        Assert.False(manager.ValidateAndConsumeToken(token, out _)); // second use must fail
+        Assert.False(manager.ValidateAndConsumeToken(token, out _, out _)); // second use must fail
     }
 
     private ConnectionManager CreateConnectionManager()
@@ -56,6 +56,21 @@ public class ConnectionManagerSignalingTests
 
         // Assert
         Assert.False(result);
+    }
+
+    [Fact]
+    public void UnregisterClient_WithADifferentSocketInstance_IsANoOp()
+    {
+        var manager = CreateConnectionManager();
+        var registered = Substitute.For<WebSocket>();
+        var other = Substitute.For<WebSocket>();
+        manager.RegisterClient("client-1", registered, "127.0.0.1");
+
+        manager.UnregisterClient("client-1", "from a socket that never registered", other);
+        Assert.Equal(1, manager.ConnectionCount);
+
+        manager.UnregisterClient("client-1", "the real one", registered);
+        Assert.Equal(0, manager.ConnectionCount);
     }
 
     [Fact]

@@ -271,7 +271,8 @@ connectionManager.Configure(
     maxConnections: builder.Configuration.GetValue<int>("WebSocket:MaxConnections", 100),
     idleTimeoutSeconds: builder.Configuration.GetValue<int>("WebSocket:IdleTimeoutSeconds", 300),
     tokenExpirationSeconds: builder.Configuration.GetValue<int>("WebSocket:TokenExpirationSeconds", 30),
-    requireHmacSignature: builder.Configuration.GetValue<bool>("Security:RequireHmacSignature", false));
+    requireHmacSignature: builder.Configuration.GetValue<bool>("Security:RequireHmacSignature", false),
+    allowLegacyConnections: builder.Configuration.GetValue<bool>("Security:AllowLegacyConnections", false));
 
 var webSocketOptions = new WebSocketOptions
 {
@@ -345,12 +346,13 @@ app.Map("/signal", async (HttpContext context, ConnectionManager cm) =>
     }
 
     string clientId;
+    SocketScope? scope = null;
     var allowLegacy = builder.Configuration.GetValue<bool>("Security:AllowLegacyConnections", false);
 
     if (context.Request.Query.TryGetValue("token", out var tokenValue) &&
         !string.IsNullOrWhiteSpace(tokenValue.ToString()))
     {
-        if (!cm.ValidateAndConsumeToken(tokenValue.ToString(), out clientId))
+        if (!cm.ValidateAndConsumeToken(tokenValue.ToString(), out clientId, out scope))
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             return;
@@ -387,9 +389,13 @@ app.Map("/signal", async (HttpContext context, ConnectionManager cm) =>
     var remoteAddress = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
     WebSocketReceiveResult? receiveResult = null;
 
+    // Only a connection that really got registered may unregister itself and announce its disconnect. A second
+    // socket that fails with "already in use" must not tear down the first socket's registration.
+    var registered = false;
+
     try
     {
-        if (!cm.RegisterClient(clientId, webSocket, remoteAddress))
+        if (!cm.RegisterClient(clientId, webSocket, remoteAddress, scope))
         {
             var errorMessage = new SignalingMessage
             {
@@ -407,6 +413,8 @@ app.Map("/signal", async (HttpContext context, ConnectionManager cm) =>
                 context.RequestAborted);
             return;
         }
+
+        registered = true;
 
         // Send confirmation with client ID
         var identifyMessage = new SignalingMessage
@@ -453,14 +461,7 @@ app.Map("/signal", async (HttpContext context, ConnectionManager cm) =>
                             message.SenderId = clientId;
                             message.Timestamp = DateTime.UtcNow;
 
-                            if (!string.IsNullOrWhiteSpace(message.TargetId))
-                            {
-                                await cm.SendMessageAsync(message, context.RequestAborted);
-                            }
-                            else
-                            {
-                                await cm.BroadcastAsync(clientId, message, context.RequestAborted);
-                            }
+                            await cm.RouteMessageAsync(clientId, webSocket, message, context.RequestAborted);
                         }
                     }
                     catch (JsonException ex)
@@ -486,7 +487,7 @@ app.Map("/signal", async (HttpContext context, ConnectionManager cm) =>
     }
     finally
     {
-        if (clientId != null)
+        if (registered)
         {
             var disconnectMessage = new SignalingMessage
             {
@@ -498,7 +499,7 @@ app.Map("/signal", async (HttpContext context, ConnectionManager cm) =>
 
             try
             {
-                await cm.BroadcastAsync(clientId, disconnectMessage, CancellationToken.None);
+                await cm.RouteMessageAsync(clientId, webSocket, disconnectMessage, CancellationToken.None);
             }
             catch
             {
@@ -506,7 +507,7 @@ app.Map("/signal", async (HttpContext context, ConnectionManager cm) =>
             }
 
             var reason = receiveResult?.CloseStatusDescription ?? "Connection closed";
-            cm.UnregisterClient(clientId, reason);
+            cm.UnregisterClient(clientId, reason, webSocket);
         }
     }
 });
@@ -576,7 +577,7 @@ app.MapPost("/register", async (HttpContext context, IServerSessionStorage sessi
         {
             // The sender connects to /signal right after registering. Without a token it would need
             // AllowLegacyConnections, which is off by default, so hand it one here.
-            response.WebSocketToken = cm.IssueWebSocketToken(registration.ServerId);
+            response.WebSocketToken = cm.IssueServerWebSocketToken(registration.ServerId, registration.OwnerSecret);
             response.IceServers = await iceServers.GetIceServersAsync(context.RequestAborted);
             return Results.Ok(response);
         }
@@ -617,20 +618,34 @@ app.MapPost("/authenticate", async (HttpContext context, IServerSessionStorage s
             return Results.BadRequest(new { Error = "Invalid ClientId" });
         }
 
+        // Captured before the passkey check: the tokens below are bound to the owner whose passkey was verified,
+        // even if the ServerId changes hands in between.
+        var owner = cm.CaptureOwner(authRequest.ServerId);
         var response = await sessionStorage.AuthenticateClientAsync(authRequest);
+
+        if (response.Success && !cm.IsStillOwnedBy(authRequest.ServerId, owner))
+        {
+            // The ServerId changed hands while we were checking: we cannot tell whose passkey was verified.
+            cm.RecordAuthFailure();
+            Log.Warning("Authentication rejected, ServerId changed owner during the check | ServerId: {ServerId}", authRequest.ServerId);
+            return Results.Unauthorized();
+        }
 
         if (response.Success)
         {
             cm.RecordAuthSuccess();
 
-            var token = cm.IssueWebSocketToken(authRequest.ClientId);
+            // Prefer the owner reported by the credential check itself (in-memory backend); the captured one is the
+            // fallback for backends that do not report it and is guarded by the IsStillOwnedBy check above.
+            owner = response.VerifiedOwnerHash ?? owner;
+            var token = cm.IssueViewerWebSocketToken(authRequest.ClientId, authRequest.ServerId, owner);
 
             return Results.Ok(new
             {
                 response.Success,
                 response.RemoteControlEnabled,
                 WebSocketToken = token,
-                ResumeToken = cm.IssueResumeToken(authRequest.ClientId, authRequest.ServerId),
+                ResumeToken = cm.IssueResumeToken(authRequest.ClientId, authRequest.ServerId, owner),
                 IceServers = await iceServers.GetIceServersAsync(context.RequestAborted)
             });
         }
@@ -660,7 +675,7 @@ app.MapPost("/resume", async (HttpContext context, IServerSessionStorage session
         var request = await context.Request.ReadFromJsonAsync<DeskShare.Core.Auth.ClientResumeMessage>();
 
         // Consumed first: whatever happens next, this token can never be replayed.
-        if (request == null || !cm.TryConsumeResumeToken(request.ResumeToken, out var clientId, out var serverId))
+        if (request == null || !cm.TryConsumeResumeToken(request.ResumeToken, out var clientId, out var serverId, out var owner))
         {
             cm.RecordAuthFailure();
             return Results.Unauthorized();
@@ -682,8 +697,9 @@ app.MapPost("/resume", async (HttpContext context, IServerSessionStorage session
         {
             Success = true,
             status.RemoteControlEnabled,
-            WebSocketToken = cm.IssueWebSocketToken(clientId),
-            ResumeToken = cm.IssueResumeToken(clientId, serverId),
+            // Same owner the consumed token was bound to, not whoever owns the ID by now.
+            WebSocketToken = cm.IssueViewerWebSocketToken(clientId, serverId, owner),
+            ResumeToken = cm.IssueResumeToken(clientId, serverId, owner),
             IceServers = await iceServers.GetIceServersAsync(context.RequestAborted)
         });
     }
@@ -707,10 +723,13 @@ app.MapGet("/health", (ConnectionManager cm) => Results.Ok(new
 
 var diagnosticsApiKey = builder.Configuration.GetValue<string>("Security:DiagnosticsApiKey") ?? "";
 
-IResult ValidateDiagnosticsAccess(HttpContext ctx)
+// listsEveryone: the endpoint enumerates all servers or connections (IDs, IP addresses, viewer ClientIds).
+// Such endpoints must never be open to the public: without a configured key they exist only in Development.
+// The per-server status stays public because the desktop app polls it to show whether a saved server is online.
+IResult ValidateDiagnosticsAccess(HttpContext ctx, bool listsEveryone = false)
 {
     if (string.IsNullOrEmpty(diagnosticsApiKey))
-        return null!;
+        return listsEveryone && !app.Environment.IsDevelopment() ? Results.NotFound() : null!;
 
     var providedKey = ctx.Request.Headers["X-Api-Key"].FirstOrDefault()
                    ?? ctx.Request.Query["apiKey"].FirstOrDefault();
@@ -727,7 +746,7 @@ IResult ValidateDiagnosticsAccess(HttpContext ctx)
 
 app.MapGet("/statistics", (HttpContext ctx, ConnectionManager cm) =>
 {
-    var denied = ValidateDiagnosticsAccess(ctx);
+    var denied = ValidateDiagnosticsAccess(ctx, listsEveryone: true);
     if (denied != null) return denied;
 
     var stats = cm.GetStatistics();
@@ -757,7 +776,7 @@ app.MapGet("/servers/{serverId}/status", async (HttpContext ctx, string serverId
 
 app.MapGet("/servers/status", async (HttpContext ctx, IServerSessionStorage sessionStorage) =>
 {
-    var denied = ValidateDiagnosticsAccess(ctx);
+    var denied = ValidateDiagnosticsAccess(ctx, listsEveryone: true);
     if (denied != null) return denied;
 
     var statuses = await sessionStorage.GetAllServerStatusesAsync();

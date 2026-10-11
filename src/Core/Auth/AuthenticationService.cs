@@ -14,13 +14,13 @@ namespace DeskShare.Core.Auth;
 ///
 /// How it works:
 /// 1. Server ID: Generated from MAC address (stable identifier for this machine)
-/// 2. Passkey: 9-character code generated from MAC + current time (rotates every 45 seconds)
+/// 2. Passkey: random 9-character code (rotates every 45 seconds), registered with the SignalingServer
 /// 3. The passkey proves that someone physically has access to the server machine
 ///
 /// Why time-based passkeys?
 /// - Short expiration (45s) limits window for unauthorized access
 /// - Auto-rotation means if someone sees the passkey, it's only valid briefly
-/// - No need to store passwords - regenerated on demand
+/// - No need to store passwords - a fresh random one is generated on demand
 /// </remarks>
 public sealed class AuthenticationService
 {
@@ -59,58 +59,23 @@ public sealed class AuthenticationService
     }
 
     /// <summary>
-    /// Generates a time-based passkey for authentication.
-    /// The passkey is valid for 45 seconds from the provided timestamp.
+    /// Generates a random passkey for authentication.
     /// </summary>
-    /// <param name="serverId">The server ID (from MAC address).</param>
-    /// <param name="timestamp">The timestamp to use for generation (typically DateTime.UtcNow).</param>
     /// <returns>A 9-character passkey using safe alphanumeric characters.</returns>
     /// <remarks>
     /// For junior developers:
-    /// This generates a temporary password that changes every 45 seconds.
-    ///
-    /// How it works:
-    /// 1. Combine serverId + rounded timestamp (to 45-second intervals)
-    /// 2. Hash the combination using SHA256 (cryptographic hash function)
-    /// 3. Convert hash bytes to a 9-character code using our safe character set
-    ///
-    /// Why hash?
-    /// - Ensures the passkey is unpredictable (can't guess next one)
-    /// - Same inputs always produce same output (deterministic)
-    /// - One-way function (can't reverse-engineer the serverId from passkey)
-    ///
-    /// Why round timestamp?
-    /// - So the same passkey is generated for the entire 45-second window
-    /// - Client and server can independently generate the same passkey
+    /// The passkey must be unguessable, so it comes from a cryptographic random number generator and is NOT
+    /// derived from anything a third party could know (such as the Server ID, which is shown in the UI).
+    /// The sender registers the value with the SignalingServer, which compares what a viewer types against it.
+    /// <see cref="RandomNumberGenerator.GetInt32(int)"/> avoids modulo bias, so every character is equally likely.
     /// </remarks>
-    public static string GeneratePasskey(string serverId, DateTime timestamp)
+    public static string GeneratePasskey()
     {
-        if (string.IsNullOrEmpty(serverId))
-            throw new ArgumentNullException(nameof(serverId));
-
-        // Round timestamp to 45-second intervals
-        // Example: 10:00:37 → 10:00:00, 10:00:52 → 10:00:45, 10:01:31 → 10:01:30
-        long totalSeconds = (long)timestamp.ToUniversalTime().TimeOfDay.TotalSeconds;
-        long intervalNumber = totalSeconds / PasskeyValiditySeconds;
-        long roundedSeconds = intervalNumber * PasskeyValiditySeconds;
-
-        // Combine serverId with rounded timestamp for uniqueness
-        string input = $"{serverId}-{timestamp.ToUniversalTime().Date:yyyyMMdd}-{roundedSeconds}";
-
-        // Generate hash
-        byte[] hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
-
-        // Convert hash to passkey using safe character set
-        var passkey = new StringBuilder(PasskeyLength);
-        for (int i = 0; i < PasskeyLength; i++)
+        return string.Create(PasskeyLength, 0, static (span, _) =>
         {
-            // Use hash bytes to pick characters from charset
-            // Modulo ensures we stay within charset bounds
-            int index = hashBytes[i % hashBytes.Length] % PasskeyCharset.Length;
-            passkey.Append(PasskeyCharset[index]);
-        }
-
-        return passkey.ToString();
+            for (int i = 0; i < span.Length; i++)
+                span[i] = PasskeyCharset[RandomNumberGenerator.GetInt32(PasskeyCharset.Length)];
+        });
     }
 
     /// <summary>
@@ -130,34 +95,19 @@ public sealed class AuthenticationService
     }
 
     /// <summary>
-    /// Validates a passkey against the expected value for the given server and timestamp.
+    /// Compares a provided passkey with the registered one in constant time, ignoring case.
     /// </summary>
-    /// <param name="serverId">The server ID.</param>
-    /// <param name="providedPasskey">The passkey to validate.</param>
-    /// <param name="validationTime">The time to validate against (typically DateTime.UtcNow).</param>
-    /// <returns>True if passkey is valid, false otherwise.</returns>
     /// <remarks>
-    /// For junior developers:
-    /// This checks if a passkey is correct and not expired.
-    ///
-    /// How it works:
-    /// 1. Generate what the passkey SHOULD be for this timestamp
-    /// 2. Compare it with what the user provided (case-insensitive)
-    /// 3. Return true only if they match exactly
-    ///
-    /// Security note:
-    /// We use InvariantCultureIgnoreCase for comparison so users can type
-    /// lowercase letters, but the comparison is still secure.
+    /// Fails closed: an empty registered passkey (session without a stored value) never matches anything.
+    /// Constant time so response timing cannot be used to guess the passkey character by character.
     /// </remarks>
-    public static bool ValidatePasskey(string serverId, string providedPasskey, DateTime validationTime)
+    public static bool PasskeyMatches(string? registeredPasskey, string? providedPasskey)
     {
-        if (string.IsNullOrEmpty(serverId) || string.IsNullOrEmpty(providedPasskey))
+        if (string.IsNullOrEmpty(registeredPasskey) || string.IsNullOrEmpty(providedPasskey))
             return false;
 
-        string expectedPasskey = GeneratePasskey(serverId, validationTime);
-
         return FixedTimeEquals(
-            Encoding.UTF8.GetBytes(expectedPasskey.ToUpperInvariant()),
+            Encoding.UTF8.GetBytes(registeredPasskey.ToUpperInvariant()),
             Encoding.UTF8.GetBytes(providedPasskey.ToUpperInvariant()));
     }
 

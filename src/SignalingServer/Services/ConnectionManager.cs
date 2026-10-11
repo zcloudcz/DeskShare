@@ -24,15 +24,18 @@ public sealed class ConnectionManager : IDisposable
     private readonly Timer _sessionCleanupTimer;
     private readonly NonceCache _nonceCache;
 
-    // WebSocket tokens: maps token -> (clientId, createdAt)
-    // Tokens are single-use and expire after a configurable number of seconds.
-    private readonly ConcurrentDictionary<string, (string ClientId, DateTime CreatedAt)> _wsTokens = new();
+    // WebSocket tokens: maps token -> (clientId, createdAt, scope)
+    // Tokens are single-use and expire after a configurable number of seconds. The scope records what the
+    // socket may talk to, so routing can be enforced without asking anyone again.
+    private readonly ConcurrentDictionary<string, (string ClientId, DateTime CreatedAt, SocketScope Scope)> _wsTokens = new();
     private int _tokenExpirationSeconds = 30;
 
-    // Resume tokens: maps token -> (clientId, serverId, expiresAt). A viewer that lost its WebSocket (e.g. during a
-    // server deployment) presents one to POST /resume instead of the passkey, which has rotated since it was typed.
-    // Single use: consuming one issues the next (rotation), so a leaked old token is worthless.
-    private readonly ConcurrentDictionary<string, (string ClientId, string ServerId, DateTime ExpiresAt)> _resumeTokens = new();
+    // Resume tokens: maps token -> (clientId, serverId, owner secret hash, expiresAt). A viewer that lost its WebSocket
+    // (e.g. during a server deployment) presents one to POST /resume instead of the passkey, which has rotated since
+    // it was typed. Single use: consuming one issues the next (rotation), so a leaked old token is worthless.
+    // The owner hash ties the token to the owner of the ServerId when it was issued; owner claims lapse, so without
+    // it a token obtained from an earlier (possibly hostile) owner would work against the next owner.
+    private readonly ConcurrentDictionary<string, (string ClientId, string ServerId, byte[]? OwnerHash, DateTime ExpiresAt)> _resumeTokens = new();
     private static readonly TimeSpan ResumeTokenLifetime = TimeSpan.FromMinutes(15);
 
     // ServerId ownership claims (trust on first use): ServerId -> (SHA256 of owner secret, last successful registration).
@@ -40,10 +43,19 @@ public sealed class ConnectionManager : IDisposable
     private readonly ConcurrentDictionary<string, (byte[] SecretHash, DateTime LastSeen)> _ownerClaims = new();
     private static readonly TimeSpan OwnerClaimLifetime = TimeSpan.FromMinutes(10);
 
+    // Serializes everything that reads or changes "who owns a ServerId" together with that owner's session:
+    // claiming, registering, claim expiry, viewer authentication (incl. granting trust). These are a few calls per
+    // second at most, so one lock is enough; lock-free dictionaries alone cannot keep claim and session consistent.
+    // ponytail: one global lock, switch to per-ServerId locks if registration volume ever makes it contended.
+    private readonly object _ownershipLock = new();
+
     // Connection limits
     private int _maxConnections = 100;
     private int _idleTimeoutSeconds = 300;
     private bool _requireHmacSignature;
+
+    // Security:AllowLegacyConnections (Development only). Also lets senders without an owner secret register.
+    private bool _allowLegacyConnections;
 
     // Aggregate statistics
     private long _totalConnectionsEver;
@@ -78,7 +90,8 @@ public sealed class ConnectionManager : IDisposable
     /// <param name="webSocket">WebSocket connection.</param>
     /// <param name="remoteAddress">Client's remote address (optional).</param>
     /// <returns>True if registered successfully, false if client ID already exists.</returns>
-    public bool RegisterClient(string clientId, WebSocket webSocket, string remoteAddress = "unknown")
+    /// <param name="scope">Who this socket may exchange messages with; null only for legacy token-less sockets.</param>
+    public bool RegisterClient(string clientId, WebSocket webSocket, string remoteAddress = "unknown", SocketScope? scope = null)
     {
         Guard.NotNullOrWhiteSpace(clientId, nameof(clientId));
         Guard.NotNull(webSocket, nameof(webSocket));
@@ -88,6 +101,7 @@ public sealed class ConnectionManager : IDisposable
             ClientId = clientId,
             WebSocket = webSocket,
             RemoteAddress = remoteAddress,
+            Scope = scope,
             ConnectedAt = DateTime.UtcNow,
             LastActivityAt = DateTime.UtcNow
         };
@@ -113,9 +127,15 @@ public sealed class ConnectionManager : IDisposable
     /// </summary>
     /// <param name="clientId">Client identifier to unregister.</param>
     /// <param name="reason">Reason for disconnection (optional).</param>
-    public void UnregisterClient(string clientId, string reason = "")
+    /// <param name="socket">
+    /// The socket that is going away. When given, the entry is removed only if it belongs to that very socket:
+    /// a second socket that failed to register under the same ClientId must not remove the first one's entry.
+    /// </param>
+    public void UnregisterClient(string clientId, string reason = "", WebSocket? socket = null)
     {
-        if (_connections.TryRemove(clientId, out var connection))
+        if (_connections.TryGetValue(clientId, out var connection) &&
+            (socket == null || connection.WebSocket == socket) &&
+            _connections.TryRemove(new KeyValuePair<string, ClientConnection>(clientId, connection)))
         {
             Interlocked.Increment(ref _totalDisconnectsEver);
 
@@ -133,12 +153,34 @@ public sealed class ConnectionManager : IDisposable
     }
 
     /// <summary>
-    /// Sends a signaling message to a specific client.
+    /// Routes a message received on <paramref name="source"/> to its target (or, without a TargetId, to its peers),
+    /// applying the scope of that connection itself. A message from a socket that is not the registered one for
+    /// <paramref name="clientId"/> is dropped: the scope must come from the connection instance, never from
+    /// whichever connection currently holds the same ClientId string.
     /// </summary>
-    /// <param name="message">Message to send.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>Task representing the async operation.</returns>
-    public async Task SendMessageAsync(SignalingMessage message, CancellationToken cancellationToken = default)
+    public async Task RouteMessageAsync(string clientId, WebSocket source, SignalingMessage message, CancellationToken cancellationToken = default)
+    {
+        if (!_connections.TryGetValue(clientId, out var from) || from.WebSocket != source)
+        {
+            _logger.LogWarning("Message dropped, source socket is not the registered connection | ClientId: {ClientId} | Type: {Type}",
+                clientId, message.Type);
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(message.TargetId))
+            await SendCoreAsync(message, from, cancellationToken);
+        else
+            await BroadcastCoreAsync(from, clientId, message, cancellationToken);
+    }
+
+    /// <summary>
+    /// Sends a server-originated signaling message to a specific client (no sender connection, so no scope check).
+    /// Messages from sockets go through <see cref="RouteMessageAsync"/>.
+    /// </summary>
+    public Task SendMessageAsync(SignalingMessage message, CancellationToken cancellationToken = default) =>
+        SendCoreAsync(message, null, cancellationToken);
+
+    private async Task SendCoreAsync(SignalingMessage message, ClientConnection? from, CancellationToken cancellationToken)
     {
         if (message == null)
             throw new ArgumentNullException(nameof(message));
@@ -153,6 +195,20 @@ public sealed class ConnectionManager : IDisposable
         {
             _logger.LogWarning("Target client {TargetId} not found. Available clients: {AvailableClients}",
                 message.TargetId, string.Join(", ", _connections.Keys));
+            return;
+        }
+
+        // A server ID is a short public address, so the routing rule must not rely on IDs being secret:
+        // a socket may only reach the peers its token authorised (see SocketScope).
+        // Sending to yourself (keep-alive ping) is always fine, but "yourself" means this very connection: another
+        // socket may have taken over the same ClientId since the message was received.
+        if (from?.Scope != null &&
+            connection != from &&
+            !AreAuthorizedPeers(from, connection))
+        {
+            _logger.LogWarning(
+                "Message dropped, target is not an authorized peer | SenderId: {SenderId} | TargetId: {TargetId} | Type: {Type}",
+                message.SenderId, message.TargetId, message.Type);
             return;
         }
 
@@ -186,16 +242,21 @@ public sealed class ConnectionManager : IDisposable
     }
 
     /// <summary>
-    /// Broadcasts a message to all connected clients except the sender.
+    /// Broadcasts a server-originated message to all connected clients except <paramref name="senderId"/>.
+    /// Messages from sockets go through <see cref="RouteMessageAsync"/>, which limits a scoped sender to its peers.
     /// </summary>
     /// <param name="senderId">Sender client ID to exclude.</param>
     /// <param name="message">Message to broadcast.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Task representing the async operation.</returns>
-    public async Task BroadcastAsync(string senderId, SignalingMessage message, CancellationToken cancellationToken = default)
+    public Task BroadcastAsync(string senderId, SignalingMessage message, CancellationToken cancellationToken = default) =>
+        BroadcastCoreAsync(null, senderId, message, cancellationToken);
+
+    private async Task BroadcastCoreAsync(ClientConnection? from, string senderId, SignalingMessage message, CancellationToken cancellationToken)
     {
         var taskList = _connections
             .Where(kvp => kvp.Key != senderId && kvp.Value.WebSocket.State == WebSocketState.Open)
+            .Where(kvp => from?.Scope == null || AreAuthorizedPeers(from, kvp.Value))
             .Select(kvp =>
             {
                 var broadcastMessage = new SignalingMessage
@@ -210,7 +271,7 @@ public sealed class ConnectionManager : IDisposable
                     ErrorMessage = message.ErrorMessage,
                     Timestamp = message.Timestamp
                 };
-                return SendMessageAsync(broadcastMessage, cancellationToken);
+                return SendCoreAsync(broadcastMessage, from, cancellationToken);
             })
             .ToList();
 
@@ -219,6 +280,15 @@ public sealed class ConnectionManager : IDisposable
         _logger.LogDebug("Broadcast message | SenderId: {SenderId} | Type: {Type} | Recipients: {Count}",
             senderId, message.Type, taskList.Count);
     }
+
+    /// <summary>
+    /// Two scoped sockets may talk when one is the sender and the other a viewer authorized for that same ServerId
+    /// under the same owner. Owner claims lapse, so a ServerId can change hands while sockets stay open; without the
+    /// owner check a socket authorized under the previous owner would be accepted as a peer of the new one.
+    /// </summary>
+    private static bool AreAuthorizedPeers(ClientConnection a, ClientConnection b) =>
+        a.Scope is { } sa && b.Scope is { } sb && sa.IsSender != sb.IsSender && sa.ServerId == sb.ServerId &&
+        SameKnownOwner(sa.OwnerSecretHash, sb.OwnerSecretHash);
 
     /// <summary>
     /// Records that a message was received from a client.
@@ -330,7 +400,8 @@ public sealed class ConnectionManager : IDisposable
     /// </summary>
     /// <remarks>
     /// Rules: unclaimed + secret = claim it; claimed + same secret = ok; claimed + missing/different secret = reject;
-    /// unclaimed + no secret = ok (old senders that predate OwnerSecret). A claim lapses 10 minutes after the
+    /// no secret at all = reject, because the ID would stay unowned and anyone could take it over. Only legacy mode
+    /// (Security:AllowLegacyConnections) still accepts unclaimed + no secret. A claim lapses 10 minutes after the
     /// last successful registration so a reinstall that lost its key file can reclaim the ServerId later.
     /// </remarks>
     /// <param name="serverId">The ServerId the registration is for.</param>
@@ -339,10 +410,23 @@ public sealed class ConnectionManager : IDisposable
     /// <param name="now">Injectable clock for tests; defaults to UtcNow.</param>
     public bool AuthorizeServerOwner(string serverId, string? ownerSecret, string remoteIp, DateTime? now = null)
     {
+        lock (_ownershipLock)
+            return AuthorizeServerOwnerCore(serverId, ownerSecret, remoteIp, now);
+    }
+
+    private bool AuthorizeServerOwnerCore(string serverId, string? ownerSecret, string remoteIp, DateTime? now)
+    {
         var time = now ?? DateTime.UtcNow;
 
         if (string.IsNullOrEmpty(ownerSecret))
         {
+            if (!_allowLegacyConnections)
+            {
+                _logger.LogWarning(
+                    "Registration rejected, no owner secret was sent | ServerId: {ServerId} | IP: {IP}", serverId, remoteIp);
+                return false;
+            }
+
             if (_ownerClaims.ContainsKey(serverId))
             {
                 _logger.LogWarning(
@@ -357,6 +441,13 @@ public sealed class ConnectionManager : IDisposable
         }
 
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(ownerSecret));
+
+        // Nobody owns the ID right now, so whoever registers next becomes its owner. A session left over from a
+        // previous owner (with that owner's passkey) must be gone BEFORE the new claim becomes visible: otherwise
+        // /authenticate could verify the old passkey and hand out a token bound to the new owner.
+        if (!_ownerClaims.ContainsKey(serverId))
+            _serverSessions.TryRemove(serverId, out _);
+
         var claim = _ownerClaims.GetOrAdd(serverId, _ => (hash, time));
 
         // Fixed-time compare so response timing cannot be used to guess the secret byte by byte.
@@ -380,10 +471,14 @@ public sealed class ConnectionManager : IDisposable
     /// </summary>
     public void ExpireOwnerClaims(DateTime now)
     {
+        lock (_ownershipLock)
         foreach (var kvp in _ownerClaims)
         {
-            if (now - kvp.Value.LastSeen > OwnerClaimLifetime)
-                _ownerClaims.TryRemove(kvp);
+            if (now - kvp.Value.LastSeen > OwnerClaimLifetime && _ownerClaims.TryRemove(kvp))
+            {
+                // The session (and its passkey) belongs to the owner that just lapsed; it goes with the claim.
+                _serverSessions.TryRemove(kvp.Key, out _);
+            }
         }
     }
 
@@ -392,6 +487,26 @@ public sealed class ConnectionManager : IDisposable
     /// Called when server starts and wants to accept client connections.
     /// </summary>
     public ServerRegistrationResponse RegisterServer(ServerRegistrationMessage registration)
+    {
+        lock (_ownershipLock)
+        {
+            // /register authorizes the owner and stores the session in two calls. If the ID got another owner in
+            // between, this registration must not overwrite that owner's session (and passkey).
+            if (_ownerClaims.TryGetValue(registration.ServerId, out var claim) &&
+                !SameKnownOwner(claim.SecretHash, HashOwnerSecret(registration.OwnerSecret)))
+            {
+                _logger.LogWarning("Registration rejected, ServerId belongs to another owner | ServerId: {ServerId}", registration.ServerId);
+                return new ServerRegistrationResponse { Success = false, ErrorMessage = "ServerId is registered by another installation." };
+            }
+
+            return RegisterServerCore(registration);
+        }
+    }
+
+    private static byte[]? HashOwnerSecret(string? ownerSecret) =>
+        string.IsNullOrEmpty(ownerSecret) ? null : SHA256.HashData(Encoding.UTF8.GetBytes(ownerSecret));
+
+    private ServerRegistrationResponse RegisterServerCore(ServerRegistrationMessage registration)
     {
         try
         {
@@ -421,9 +536,9 @@ public sealed class ConnectionManager : IDisposable
             });
 
             _logger.LogInformation(
-                "Server registered | ServerId: {ServerId} | Passkey: {Passkey} | ValidTo: {ValidTo} | RemoteControl: {RemoteControl}",
+                // The passkey is a secret now (it is what lets a viewer in), so it never goes to the server log.
+                "Server registered | ServerId: {ServerId} | ValidTo: {ValidTo} | RemoteControl: {RemoteControl}",
                 registration.ServerId,
-                AuthenticationService.FormatPasskeyForDisplay(registration.Passkey),
                 registration.ValidTo.ToLocalTime(),
                 registration.RemoteControlEnabled);
 
@@ -449,7 +564,17 @@ public sealed class ConnectionManager : IDisposable
     /// Validates HMAC signature, passkey, and checks if server is available.
     /// If client is trusted, skips passkey validation.
     /// </summary>
-    public ClientAuthenticationResponse AuthenticateClient(ClientAuthenticationMessage auth)
+    /// <param name="auth">The viewer's authentication request.</param>
+    /// <param name="now">Injectable clock for the passkey expiry check in tests; defaults to UtcNow.</param>
+    public ClientAuthenticationResponse AuthenticateClient(ClientAuthenticationMessage auth, DateTime? now = null)
+    {
+        // One lock for the whole decision, including granting trust: the session, its passkey and the owner
+        // claim are read as one consistent state (see _ownershipLock).
+        lock (_ownershipLock)
+            return AuthenticateClientCore(auth, now);
+    }
+
+    private ClientAuthenticationResponse AuthenticateClientCore(ClientAuthenticationMessage auth, DateTime? now)
     {
         // === STEP 1: HMAC SIGNATURE VALIDATION (if provided) ===
         // This MUST be checked BEFORE passkey validation to prevent timing attacks
@@ -563,8 +688,12 @@ public sealed class ConnectionManager : IDisposable
 
         if (!isTrusted)
         {
-            // Not trusted - validate passkey
-            if (!AuthenticationService.ValidatePasskey(auth.ServerId, auth.Passkey, DateTime.UtcNow))
+            // Not trusted - compare with the passkey the sender registered. It is random, so knowing the
+            // ServerId is not enough; a session without a stored passkey fails closed. The passkey also has to
+            // be unexpired: session.IsValid ignores ValidTo for a Connected session (it only looks at activity),
+            // so a leaked passkey would otherwise stay usable for as long as someone is connected.
+            if ((now ?? DateTime.UtcNow) >= session.ValidTo ||
+                !AuthenticationService.PasskeyMatches(session.Passkey, auth.Passkey))
             {
                 _logger.LogWarning("Client authentication failed - invalid passkey | ServerId: {ServerId} | ClientId: {ClientId}",
                     auth.ServerId, auth.ClientId);
@@ -600,7 +729,9 @@ public sealed class ConnectionManager : IDisposable
         return new ClientAuthenticationResponse
         {
             Success = true,
-            RemoteControlEnabled = session.RemoteControlEnabled
+            RemoteControlEnabled = session.RemoteControlEnabled,
+            // Read under the same lock as the passkey/trust check above, so it is the owner that was verified.
+            VerifiedOwnerHash = CurrentOwnerHash(auth.ServerId)
         };
     }
 
@@ -616,6 +747,10 @@ public sealed class ConnectionManager : IDisposable
             ExpireResumeTokens(now);
             var sessionsToRemove = new List<string>();
 
+            // Same lock as registration: otherwise a session judged invalid here could be refreshed by its sender
+            // (or replaced by a new owner) before the removal below, and we would delete a live registration.
+            lock (_ownershipLock)
+            {
             foreach (var kvp in _serverSessions)
             {
                 var session = kvp.Value;
@@ -638,6 +773,7 @@ public sealed class ConnectionManager : IDisposable
             {
                 _serverSessions.TryRemove(serverId, out _);
             }
+            }
 
             if (sessionsToRemove.Count > 0)
             {
@@ -657,15 +793,19 @@ public sealed class ConnectionManager : IDisposable
     public void TrustClient(string serverId, string clientId)
     {
         var key = GetTrustKey(serverId, clientId);
+        // Trust is granted by whoever owns the ServerId right now; remember which owner secret that was.
+        var ownerHash = CurrentOwnerHash(serverId);
         var trust = new TrustedConnection
         {
             ServerId = serverId,
             ClientId = clientId,
+            OwnerSecretHash = ownerHash,
             EstablishedAt = DateTime.UtcNow
         };
 
         _trustedConnections.AddOrUpdate(key, trust, (k, existing) =>
         {
+            existing.OwnerSecretHash = ownerHash;
             existing.EstablishedAt = DateTime.UtcNow;
             existing.LastUsed = DateTime.UtcNow;
             return existing;
@@ -677,12 +817,19 @@ public sealed class ConnectionManager : IDisposable
     }
 
     /// <summary>
-    /// Checks if a client is permanently trusted by a server.
+    /// Checks if a client is permanently trusted by a server, as long as the ServerId is still owned by the
+    /// installation that granted the trust.
     /// </summary>
+    /// <remarks>
+    /// Owner claims are in memory and lapse after 10 minutes, so someone else can temporarily own a ServerId.
+    /// Trust they create (or trust the real owner created earlier) must not be honoured under a different owner,
+    /// otherwise a ClientId trusted by one owner would bypass the passkey of the next one.
+    /// </remarks>
     public bool IsTrustedClient(string serverId, string clientId)
     {
         var key = GetTrustKey(serverId, clientId);
-        if (_trustedConnections.TryGetValue(key, out var trust))
+        if (_trustedConnections.TryGetValue(key, out var trust) &&
+            SameOwner(trust.OwnerSecretHash, CurrentOwnerHash(serverId)))
         {
             // Update last used timestamp
             trust.LastUsed = DateTime.UtcNow;
@@ -705,6 +852,38 @@ public sealed class ConnectionManager : IDisposable
         }
     }
 
+    private byte[]? CurrentOwnerHash(string serverId) =>
+        _ownerClaims.TryGetValue(serverId, out var claim) ? claim.SecretHash : null;
+
+    /// <summary>
+    /// The owner (secret hash) of <paramref name="serverId"/> right now. Endpoints capture it BEFORE they check a
+    /// viewer's credentials and issue tokens with that captured value, so a token can never end up bound to an
+    /// owner that took the ID over between the check and the issuance.
+    /// </summary>
+    public byte[]? CaptureOwner(string serverId)
+    {
+        lock (_ownershipLock)
+            return CurrentOwnerHash(serverId);
+    }
+
+    /// <summary>
+    /// True when <paramref name="serverId"/> still has the owner that <see cref="CaptureOwner"/> returned. Checked
+    /// after a successful credential check: a session only ever exists under the owner that registered it, so an
+    /// unchanged owner before and after means the verified passkey was that owner's.
+    /// </summary>
+    public bool IsStillOwnedBy(string serverId, byte[]? capturedOwner) =>
+        SameOwner(capturedOwner, CaptureOwner(serverId));
+
+    /// <summary>Both hashes exist and are equal: a missing owner (absent claim) never matches anything.</summary>
+    private static bool SameKnownOwner(byte[]? a, byte[]? b) =>
+        a != null && b != null && CryptographicOperations.FixedTimeEquals(a, b);
+
+    /// <summary>Both unowned (legacy registrations) or both the same owner secret hash.</summary>
+    private static bool SameOwner(byte[]? granted, byte[]? current) =>
+        granted == null || current == null
+            ? granted == null && current == null
+            : CryptographicOperations.FixedTimeEquals(granted, current);
+
     private static string GetTrustKey(string serverId, string clientId)
     {
         return $"{serverId}:{clientId}";
@@ -718,27 +897,47 @@ public sealed class ConnectionManager : IDisposable
     /// Configures connection limits and token settings from configuration.
     /// Call this during startup before accepting connections.
     /// </summary>
-    public void Configure(int maxConnections = 100, int idleTimeoutSeconds = 300, int tokenExpirationSeconds = 30, bool requireHmacSignature = false)
+    public void Configure(int maxConnections = 100, int idleTimeoutSeconds = 300, int tokenExpirationSeconds = 30, bool requireHmacSignature = false, bool allowLegacyConnections = false)
     {
         _maxConnections = maxConnections;
         _idleTimeoutSeconds = idleTimeoutSeconds;
         _tokenExpirationSeconds = tokenExpirationSeconds;
         _requireHmacSignature = requireHmacSignature;
+        _allowLegacyConnections = allowLegacyConnections;
         _logger.LogInformation(
             "ConnectionManager configured | MaxConnections: {Max} | IdleTimeout: {Idle}s | TokenExpiry: {Token}s | RequireHmac: {Hmac}",
             _maxConnections, _idleTimeoutSeconds, _tokenExpirationSeconds, _requireHmacSignature);
     }
 
     /// <summary>
-    /// Issues a one-time WebSocket upgrade token for an authenticated client.
-    /// The token must be used within the configured expiration window.
+    /// Issues a one-time WebSocket upgrade token for a sender that registered <paramref name="serverId"/>.
+    /// The socket is the sender's own (its connection id is the ServerId) and may talk to that server's viewers only.
     /// </summary>
-    /// <param name="clientId">The authenticated client ID.</param>
-    /// <returns>A short-lived single-use token string.</returns>
-    public string IssueWebSocketToken(string clientId)
+    public string IssueServerWebSocketToken(string serverId) =>
+        IssueToken(serverId, new SocketScope(IsSender: true, serverId, CurrentOwnerHash(serverId)));
+
+    /// <summary>
+    /// Same, bound to the owner secret this very registration proved, not to whoever owns the ID when the token
+    /// is issued. A registration that lost a race for the ID then gets a token no viewer of the new owner accepts.
+    /// </summary>
+    public string IssueServerWebSocketToken(string serverId, string? ownerSecret) =>
+        IssueToken(serverId, new SocketScope(IsSender: true, serverId, HashOwnerSecret(ownerSecret)));
+
+    /// <summary>
+    /// Issues a one-time WebSocket upgrade token for a viewer that authenticated against <paramref name="serverId"/>.
+    /// The socket may talk to that one server only.
+    /// </summary>
+    public string IssueViewerWebSocketToken(string clientId, string serverId) =>
+        IssueViewerWebSocketToken(clientId, serverId, CurrentOwnerHash(serverId));
+
+    /// <summary>Same, bound to the owner captured when the viewer's credentials were checked (see <see cref="CaptureOwner"/>).</summary>
+    public string IssueViewerWebSocketToken(string clientId, string serverId, byte[]? ownerHash) =>
+        IssueToken(clientId, new SocketScope(IsSender: false, serverId, ownerHash));
+
+    private string IssueToken(string clientId, SocketScope scope)
     {
         var token = Guid.NewGuid().ToString("N");
-        _wsTokens[token] = (clientId, DateTime.UtcNow);
+        _wsTokens[token] = (clientId, DateTime.UtcNow, scope);
 
         _logger.LogDebug("WebSocket token issued | ClientId: {ClientId} | Token: {Token}", clientId, token[..8]);
         return token;
@@ -750,10 +949,12 @@ public sealed class ConnectionManager : IDisposable
     /// </summary>
     /// <param name="token">The token to validate.</param>
     /// <param name="clientId">Output: the authenticated client ID if valid.</param>
+    /// <param name="scope">Output: who the socket may talk to (null if the token is invalid).</param>
     /// <returns>True if the token is valid, not expired, and not already used.</returns>
-    public bool ValidateAndConsumeToken(string token, out string clientId)
+    public bool ValidateAndConsumeToken(string token, out string clientId, out SocketScope? scope)
     {
         clientId = string.Empty;
+        scope = null;
 
         if (string.IsNullOrWhiteSpace(token))
             return false;
@@ -775,6 +976,7 @@ public sealed class ConnectionManager : IDisposable
         }
 
         clientId = tokenData.ClientId;
+        scope = tokenData.Scope;
         return true;
     }
 
@@ -785,10 +987,14 @@ public sealed class ConnectionManager : IDisposable
     /// <param name="serverId">The server the viewer authenticated against.</param>
     /// <param name="now">Injectable clock for tests; defaults to UtcNow.</param>
     /// <returns>32 random bytes, base64url encoded (URL and JSON safe).</returns>
-    public string IssueResumeToken(string clientId, string serverId, DateTime? now = null)
+    public string IssueResumeToken(string clientId, string serverId, DateTime? now = null) =>
+        IssueResumeToken(clientId, serverId, CurrentOwnerHash(serverId), now);
+
+    /// <summary>Same, bound to the owner captured when the viewer's credentials were checked (see <see cref="CaptureOwner"/>).</summary>
+    public string IssueResumeToken(string clientId, string serverId, byte[]? ownerHash, DateTime? now = null)
     {
         var token = Base64UrlEncode(RandomNumberGenerator.GetBytes(32));
-        _resumeTokens[token] = (clientId, serverId, (now ?? DateTime.UtcNow) + ResumeTokenLifetime);
+        _resumeTokens[token] = (clientId, serverId, ownerHash, (now ?? DateTime.UtcNow) + ResumeTokenLifetime);
 
         _logger.LogDebug("Resume token issued | ClientId: {ClientId} | ServerId: {ServerId} | Token: {Token}",
             clientId, serverId, token[..8]);
@@ -800,9 +1006,14 @@ public sealed class ConnectionManager : IDisposable
     /// so it can never be tried twice.
     /// </summary>
     /// <returns>True if the token existed and had not expired.</returns>
-    public bool TryConsumeResumeToken(string token, out string clientId, out string serverId, DateTime? now = null)
+    public bool TryConsumeResumeToken(string token, out string clientId, out string serverId, DateTime? now = null) =>
+        TryConsumeResumeToken(token, out clientId, out serverId, out _, now);
+
+    /// <summary>Same, also returning the owner the token was issued under, so follow-up tokens stay bound to it.</summary>
+    public bool TryConsumeResumeToken(string token, out string clientId, out string serverId, out byte[]? ownerHash, DateTime? now = null)
     {
         clientId = serverId = string.Empty;
+        ownerHash = null;
 
         if (string.IsNullOrWhiteSpace(token) || !_resumeTokens.TryRemove(token, out var data))
         {
@@ -816,8 +1027,17 @@ public sealed class ConnectionManager : IDisposable
             return false;
         }
 
+        // The owner of the ServerId must be the one the token was issued under; no current owner never matches.
+        if (!SameKnownOwner(data.OwnerHash, CaptureOwner(data.ServerId)))
+        {
+            _logger.LogWarning("Resume token rejected, the ServerId changed owner | ClientId: {ClientId} | ServerId: {ServerId}",
+                data.ClientId, data.ServerId);
+            return false;
+        }
+
         clientId = data.ClientId;
         serverId = data.ServerId;
+        ownerHash = data.OwnerHash;
         return true;
     }
 
@@ -888,8 +1108,11 @@ public sealed class ConnectionManager : IDisposable
     /// </summary>
     public async Task DisconnectClientAsync(string clientId, string reason, CancellationToken cancellationToken = default)
     {
-        if (_connections.TryGetValue(clientId, out var connection) &&
-            connection.WebSocket.State == WebSocketState.Open)
+        // Unregister exactly the connection we close: a newer socket may register under the same id meanwhile.
+        if (!_connections.TryGetValue(clientId, out var connection))
+            return;
+
+        if (connection.WebSocket.State == WebSocketState.Open)
         {
             try
             {
@@ -903,7 +1126,7 @@ public sealed class ConnectionManager : IDisposable
                 _logger.LogDebug(ex, "Error closing WebSocket for {ClientId}", clientId);
             }
         }
-        UnregisterClient(clientId, reason);
+        UnregisterClient(clientId, reason, connection.WebSocket);
     }
 
     #endregion
@@ -919,6 +1142,14 @@ public sealed class ConnectionManager : IDisposable
 }
 
 /// <summary>
+/// What a WebSocket may exchange signaling messages with, fixed when its token is issued.
+/// A sender (<paramref name="IsSender"/>) talks to viewers authorized for its ServerId; a viewer talks to exactly
+/// that one ServerId's sender. <paramref name="OwnerSecretHash"/> is the hash of the owner secret in force when the
+/// token was issued; peers must share it.
+/// </summary>
+public sealed record SocketScope(bool IsSender, string ServerId, byte[]? OwnerSecretHash);
+
+/// <summary>
 /// Represents a single client connection with statistics.
 /// </summary>
 internal sealed class ClientConnection
@@ -926,6 +1157,7 @@ internal sealed class ClientConnection
     public string ClientId { get; set; } = string.Empty;
     public WebSocket WebSocket { get; set; } = null!;
     public string RemoteAddress { get; set; } = string.Empty;
+    public SocketScope? Scope { get; set; }
     public DateTime ConnectedAt { get; set; }
     public DateTime LastActivityAt { get; set; }
 
@@ -1017,6 +1249,9 @@ internal sealed class TrustedConnection
     /// <summary>Server ID in the trust relationship.</summary>
     public required string ServerId { get; set; }
 
+    /// <summary>SHA256 of the owner secret in force when trust was granted (null for unowned legacy servers).</summary>
+    public byte[]? OwnerSecretHash { get; set; }
+
     /// <summary>Client ID in the trust relationship.</summary>
     public required string ClientId { get; set; }
 
@@ -1045,7 +1280,12 @@ public sealed class ServerStatusInfo
     /// <summary>Last activity timestamp (UTC).</summary>
     public DateTime LastActivity { get; set; }
 
-    /// <summary>ID of connected client (null if no client connected).</summary>
+    /// <summary>
+    /// ID of connected client (null if no client connected). Never serialized: the ClientId is the bearer
+    /// credential for the trusted-client passkey bypass, and the status endpoints may be reachable without an API
+    /// key. Server code (e.g. /resume) reads it in-process.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
     public string? ConnectedClientId { get; set; }
 
     /// <summary>Whether remote control is enabled on this server.</summary>

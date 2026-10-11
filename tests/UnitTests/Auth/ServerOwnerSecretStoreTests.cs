@@ -20,6 +20,21 @@ public class ServerOwnerSecretStoreTests : IDisposable
         Assert.True(File.Exists(path));
     }
 
+    [Fact]
+    public void GetOrCreate_WhenTheFileCannotBeWritten_UsesAnInMemorySecretForTheProcess()
+    {
+        // The "directory" is a regular file, so creating the key file below it must fail.
+        Directory.CreateDirectory(_dir);
+        var blocker = Path.Combine(_dir, "blocker");
+        File.WriteAllText(blocker, "x");
+        var store = new ServerOwnerSecretStore(Path.Combine(blocker, "server-owner.key"));
+
+        var first = store.GetOrCreate();
+
+        Assert.Equal(32, Convert.FromBase64String(first).Length);
+        Assert.Equal(first, store.GetOrCreate()); // stable for the life of the process
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_dir))
