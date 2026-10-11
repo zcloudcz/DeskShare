@@ -146,16 +146,50 @@
             color: #4a9eff;
         }
 
-        /* Focus mode: the shared screen is the point of the page, so everything around it can be hidden.
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+        }
+
+        /* Shown next to the title only while the panels are hidden (see body.focus below). */
+        #showPanelsBtn {
+            display: none;
+            margin: 0;
+        }
+
+        /* Connection info lives in the same panel as the login form, above the shared screen. */
+        /* Kept compact (one row on a desktop window) so the panel does not push the screen far down. */
+        .controls .stats {
+            padding: 12px 0 0;
+            margin-top: 15px;
+            border-top: 1px solid #444;
+            border-radius: 0;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 8px;
+        }
+
+        .controls .stat-label {
+            font-size: 11px;
+        }
+
+        /* Long values (the client ID) are cut with an ellipsis instead of wrapping and growing the row. */
+        .controls .stat-value {
+            font-size: 15px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* Panels hidden ("Hide panels"): only the title and the shared screen stay.
            The video is sized by max-width/max-height (not object-fit), so the element's box is exactly the
            picture; remote control maps mouse positions from that box and would be off with letterboxing. */
         body.focus {
-            padding: 0;
+            padding: 0 10px;
         }
 
-        body.focus h1,
-        body.focus .controls,
-        body.focus .stats {
+        body.focus .controls {
             display: none;
         }
 
@@ -163,45 +197,41 @@
             max-width: none;
         }
 
-        /* A slim strip above the picture is kept free for the toggle button. The button must never lie over
-           the picture: with remote control on, a click there has to reach the shared screen (the top right
-           corner is where its window close buttons are). */
+        body.focus .header {
+            height: 48px;
+        }
+
+        body.focus h1 {
+            display: block; /* mobile.css hides the title on landscape phones; here it is the only chrome left */
+            font-size: 20px;
+            margin: 0;
+        }
+
+        body.focus #showPanelsBtn {
+            display: inline-block;
+            width: auto; /* mobile.css stretches buttons to full width on small phones */
+            min-height: 0;
+            padding: 6px 12px;
+        }
+
+        /* 58px = the 48px title row plus a little air, so title and screen fit the window without scrolling. */
         body.focus .video-container {
-            margin-top: 36px;
-            min-height: calc(100vh - 36px);
-            border-radius: 0;
+            min-height: calc(100vh - 58px);
         }
 
         body.focus video {
             width: auto;
-            max-width: 100vw;
-            max-height: calc(100vh - 36px);
-        }
-
-        /* Always reachable, but faint so it does not distract from the shared screen. */
-        #focusBtn {
-            position: fixed;
-            top: 4px;
-            right: 4px;
-            z-index: 10;
-            width: auto; /* mobile.css stretches buttons to full width on small phones */
-            min-height: 0; /* and makes them 44-48 px tall, which would not fit the strip */
-            height: 28px;
-            margin: 0;
-            padding: 0 10px;
-            opacity: 0.35;
-        }
-
-        #focusBtn:hover,
-        #focusBtn:focus-visible {
-            opacity: 1;
+            max-width: 100%;
+            max-height: calc(100vh - 58px);
         }
     </style>
 </head>
 <body>
-    <button id="focusBtn" onclick="toggleFocus()" title="Show or hide everything except the shared screen">Hide panels</button>
     <div class="container">
-        <h1>🖥️ RemoteDesktop WebClient</h1>
+        <div class="header">
+            <h1>🖥️ RemoteDesktop WebClient</h1>
+            <button id="showPanelsBtn" onclick="setFocus(false)">Show panels</button>
+        </div>
 
         <div class="controls">
             <div class="control-group">
@@ -226,55 +256,56 @@
                 <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
                 <button id="fullscreenBtn" onclick="toggleFullscreen()" disabled>Fullscreen</button>
                 <button id="controlBtn" onclick="toggleControl()" disabled title="Available when the host allowed remote control">Enable control</button>
+                <button id="hidePanelsBtn" onclick="setFocus(true)" title="Hide everything except the title and the shared screen">Hide panels</button>
             </div>
 
             <div id="status" class="status info" style="display: none;">
                 <strong>Status:</strong> <span id="statusText">Ready</span>
+            </div>
+
+            <div class="stats">
+                <div class="stat-item">
+                    <div class="stat-label">Connection</div>
+                    <div class="stat-value" id="connectionState">Disconnected</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Client ID</div>
+                    <div class="stat-value" id="clientId" style="font-size: 16px;">-</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">WebRTC State</div>
+                    <div class="stat-value" id="webrtcState">New</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Bitrate</div>
+                    <div class="stat-value" id="bitrate">- Kbps</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Framerate</div>
+                    <div class="stat-value" id="fps">- fps</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Packet Loss</div>
+                    <div class="stat-value" id="packetLoss">-%</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Latency (RTT)</div>
+                    <div class="stat-value" id="latency">- ms</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Route</div>
+                    <div class="stat-value" id="connectionType">-</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Resolution</div>
+                    <div class="stat-value" id="resolution">-</div>
+                </div>
             </div>
         </div>
 
         <div class="video-container" id="videoContainer">
             <video id="remoteVideo" autoplay playsinline></video>
             <div id="placeholder" class="placeholder">No video stream. Click Connect to start.</div>
-        </div>
-
-        <div class="stats">
-            <div class="stat-item">
-                <div class="stat-label">Connection</div>
-                <div class="stat-value" id="connectionState">Disconnected</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Client ID</div>
-                <div class="stat-value" id="clientId" style="font-size: 16px;">-</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">WebRTC State</div>
-                <div class="stat-value" id="webrtcState">New</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Bitrate</div>
-                <div class="stat-value" id="bitrate">- Kbps</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Framerate</div>
-                <div class="stat-value" id="fps">- fps</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Packet Loss</div>
-                <div class="stat-value" id="packetLoss">-%</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Latency (RTT)</div>
-                <div class="stat-value" id="latency">- ms</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Route</div>
-                <div class="stat-value" id="connectionType">-</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Resolution</div>
-                <div class="stat-value" id="resolution">-</div>
-            </div>
         </div>
     </div>
 
