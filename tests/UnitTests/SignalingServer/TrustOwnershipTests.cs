@@ -108,6 +108,22 @@ public class TrustOwnershipTests
     }
 
     [Fact]
+    public void SuccessfulAuthentication_ReportsTheOwnerItWasVerifiedAgainst()
+    {
+        using var manager = CreateManager();
+        Register(manager, "secret-A", "OWNERAPK2", T0);
+
+        var response = manager.AuthenticateClient(
+            new ClientAuthenticationMessage { ServerId = ServerId, ClientId = "client-1", Passkey = "OWNERAPK2" });
+
+        Assert.True(response.Success);
+        Assert.NotNull(response.VerifiedOwnerHash);
+        Assert.Equal(manager.CaptureOwner(ServerId), response.VerifiedOwnerHash);
+        // Server-side detail: it must never be serialized to the viewer.
+        Assert.DoesNotContain("VerifiedOwnerHash", System.Text.Json.JsonSerializer.Serialize(response));
+    }
+
+    [Fact]
     public void Passkey_IsRejectedAfterItsValidTo_EvenWhileTheSessionIsConnected()
     {
         using var manager = CreateManager();

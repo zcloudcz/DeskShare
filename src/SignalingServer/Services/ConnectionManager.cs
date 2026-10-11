@@ -729,7 +729,9 @@ public sealed class ConnectionManager : IDisposable
         return new ClientAuthenticationResponse
         {
             Success = true,
-            RemoteControlEnabled = session.RemoteControlEnabled
+            RemoteControlEnabled = session.RemoteControlEnabled,
+            // Read under the same lock as the passkey/trust check above, so it is the owner that was verified.
+            VerifiedOwnerHash = CurrentOwnerHash(auth.ServerId)
         };
     }
 
@@ -745,6 +747,10 @@ public sealed class ConnectionManager : IDisposable
             ExpireResumeTokens(now);
             var sessionsToRemove = new List<string>();
 
+            // Same lock as registration: otherwise a session judged invalid here could be refreshed by its sender
+            // (or replaced by a new owner) before the removal below, and we would delete a live registration.
+            lock (_ownershipLock)
+            {
             foreach (var kvp in _serverSessions)
             {
                 var session = kvp.Value;
@@ -766,6 +772,7 @@ public sealed class ConnectionManager : IDisposable
             foreach (var serverId in sessionsToRemove)
             {
                 _serverSessions.TryRemove(serverId, out _);
+            }
             }
 
             if (sessionsToRemove.Count > 0)

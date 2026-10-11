@@ -635,6 +635,9 @@ app.MapPost("/authenticate", async (HttpContext context, IServerSessionStorage s
         {
             cm.RecordAuthSuccess();
 
+            // Prefer the owner reported by the credential check itself (in-memory backend); the captured one is the
+            // fallback for backends that do not report it and is guarded by the IsStillOwnedBy check above.
+            owner = response.VerifiedOwnerHash ?? owner;
             var token = cm.IssueViewerWebSocketToken(authRequest.ClientId, authRequest.ServerId, owner);
 
             return Results.Ok(new

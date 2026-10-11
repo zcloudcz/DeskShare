@@ -217,6 +217,13 @@ public sealed class ClientAuthenticationResponse
     /// STUN/TURN servers (including fresh TURN credentials) the client should use for its peer connection.
     /// </summary>
     public List<IceServerInfo>? IceServers { get; set; }
+
+    /// <summary>
+    /// Server-side only, never sent to the client: hash of the owner secret of the session this authentication was
+    /// verified against. The signaling server binds the tokens it issues to exactly this owner.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public byte[]? VerifiedOwnerHash { get; set; }
 }
 
 /// <summary>
