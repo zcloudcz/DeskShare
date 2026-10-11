@@ -145,9 +145,55 @@
             font-weight: 700;
             color: #4a9eff;
         }
+
+        /* Focus mode: the shared screen is the point of the page, so everything around it can be hidden.
+           The video is sized by max-width/max-height (not object-fit), so the element's box is exactly the
+           picture; remote control maps mouse positions from that box and would be off with letterboxing. */
+        body.focus {
+            padding: 0;
+        }
+
+        body.focus h1,
+        body.focus .controls,
+        body.focus .stats {
+            display: none;
+        }
+
+        body.focus .container {
+            max-width: none;
+        }
+
+        body.focus .video-container {
+            min-height: 100vh;
+            border-radius: 0;
+        }
+
+        body.focus video {
+            width: auto;
+            max-width: 100vw;
+            max-height: 100vh;
+        }
+
+        /* Always reachable, but faint so it does not cover the shared screen. */
+        #focusBtn {
+            position: fixed;
+            top: 8px;
+            right: 8px;
+            z-index: 10;
+            width: auto; /* mobile.css stretches buttons to full width on small phones */
+            margin: 0;
+            padding: 6px 10px;
+            opacity: 0.35;
+        }
+
+        #focusBtn:hover,
+        #focusBtn:focus-visible {
+            opacity: 1;
+        }
     </style>
 </head>
 <body>
+    <button id="focusBtn" onclick="toggleFocus()" title="Show or hide everything except the shared screen">Hide panels</button>
     <div class="container">
         <h1>🖥️ RemoteDesktop WebClient</h1>
 

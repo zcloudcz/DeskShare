@@ -330,6 +330,7 @@ async function handleOffer(message) {
                 placeholder.style.display = 'none';
                 remoteVideo.style.display = 'block';
                 fullscreenBtn.disabled = false; // Enable fullscreen button
+                setFocus(true); // the screen arrived: get the form and stats out of the way
                 updateStatus('Receiving video stream', 'success');
             }
         };
@@ -548,6 +549,7 @@ function cleanup() {
     remoteVideo.style.display = 'none';
     placeholder.style.display = 'block';
     fullscreenBtn.disabled = true; // Disable fullscreen button
+    setFocus(false); // the form and the status line are needed again to see what happened and reconnect
 
     clientId = null;
     senderId = null;
@@ -805,6 +807,18 @@ function stopPingMonitoring() {
  * Toggles fullscreen mode for the video container.
  * Uses the Fullscreen API which is supported in all modern browsers.
  */
+/**
+ * Focus mode hides everything except the shared screen (see body.focus in index.html).
+ */
+function setFocus(on) {
+    document.body.classList.toggle('focus', on);
+    document.getElementById('focusBtn').textContent = on ? 'Show panels' : 'Hide panels';
+}
+
+function toggleFocus() {
+    setFocus(!document.body.classList.contains('focus'));
+}
+
 function toggleFullscreen() {
     if (!document.fullscreenElement) {
         // Enter fullscreen
