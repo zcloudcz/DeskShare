@@ -44,6 +44,11 @@ function updateStatus(message, type = 'info') {
     statusDiv.className = `status ${type}`;
     statusText.textContent = message;
     console.log(`[${type.toUpperCase()}] ${message}`);
+
+    // The status line lives in a panel that focus mode hides; an error must never stay invisible.
+    if (type === 'error') {
+        setFocus(false);
+    }
 }
 
 function updateConnectionState(state) {
@@ -330,7 +335,12 @@ async function handleOffer(message) {
                 placeholder.style.display = 'none';
                 remoteVideo.style.display = 'block';
                 fullscreenBtn.disabled = false; // Enable fullscreen button
-                setFocus(true); // the screen arrived: get the form and stats out of the way
+                // The screen arrived: get the form and stats out of the way. Only once per connection, so a later
+                // track event does not undo the user's own "Show panels".
+                if (event.track.kind === 'video' && !autoFocused) {
+                    autoFocused = true;
+                    setFocus(true);
+                }
                 updateStatus('Receiving video stream', 'success');
             }
         };
@@ -550,6 +560,7 @@ function cleanup() {
     placeholder.style.display = 'block';
     fullscreenBtn.disabled = true; // Disable fullscreen button
     setFocus(false); // the form and the status line are needed again to see what happened and reconnect
+    autoFocused = false;
 
     clientId = null;
     senderId = null;
@@ -810,6 +821,8 @@ function stopPingMonitoring() {
 /**
  * Focus mode hides everything except the shared screen (see body.focus in index.html).
  */
+let autoFocused = false; // focus mode was already entered automatically for the current connection
+
 function setFocus(on) {
     document.body.classList.toggle('focus', on);
     document.getElementById('focusBtn').textContent = on ? 'Show panels' : 'Hide panels';
