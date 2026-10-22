@@ -88,24 +88,25 @@ internal static class Installer
         if (Directory.Exists(live)) MoveWithRetry(live, live + ".failed-" + DateTime.Now.ToString("yyyyMMddHHmmssfff"));
     }
 
-    private static void DeleteQuarantinedFolders(string live)
+    private static void DeleteQuarantinedFolders(string live) => QuarantineCleanup.Delete(live);
+
+    private static MarkerState ReadMarker(string live)
     {
-        var parent = Directory.GetParent(live)!.FullName;
-        foreach (var d in Directory.GetDirectories(parent, Path.GetFileName(live) + ".failed-*"))
-        {
-            try { Directory.Delete(d, true); } catch (IOException) { /* best effort, retried by the next install */ }
-        }
+        var path = MarkerPath(live);
+        if (!File.Exists(path)) return MarkerState.None;
+        return File.ReadAllText(path).StartsWith("confirmed", StringComparison.Ordinal) ? MarkerState.Confirmed : MarkerState.Pending;
     }
 
     private sealed class RecoveryOps(string live, string old) : IRecoveryOps
     {
-        public bool MarkerExists => File.Exists(MarkerPath(live));
+        public MarkerState Marker => ReadMarker(live);
         public bool OldExists => Directory.Exists(old);
         public bool LiveExists => Directory.Exists(live);
         public void StopService() => Installer.StopService();
         public void QuarantineLive() => QuarantineLiveFolder(live);
         public void RestoreOldToLive() => Directory.Move(old, live);
         public bool StartRestored() => RegisterAndStart(live);
+        public void DeleteOld() => DeleteDir(old);
         public void ClearMarker() => File.Delete(MarkerPath(live));
     }
 
@@ -116,7 +117,8 @@ internal static class Installer
         private static readonly TimeSpan MustHoldFor = TimeSpan.FromSeconds(2);
         public bool HadLive { get; } = Directory.Exists(live);
         public void StopService() => Installer.StopService();
-        public void WriteMarker() => File.WriteAllText(MarkerPath(live), "swapping " + DateTime.UtcNow.ToString("O"));
+        public void WriteMarker() => File.WriteAllText(MarkerPath(live), "pending " + DateTime.UtcNow.ToString("O"));
+        public void MarkConfirmed() => File.WriteAllText(MarkerPath(live), "confirmed " + DateTime.UtcNow.ToString("O"));
         public void ClearMarker() => File.Delete(MarkerPath(live));
         public void MoveLiveToOld() => MoveWithRetry(live, old);
         public void MoveStagingToLive() => Directory.Move(staging, live);

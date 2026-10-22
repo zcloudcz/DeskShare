@@ -15,6 +15,7 @@ public class SwapRunnerTests
         private void Do(string name) { Calls.Add(name); if (ThrowAt == name) throw new IOException(name); }
         public void StopService() => Do("stop");
         public void WriteMarker() => Do("marker+");
+        public void MarkConfirmed() => Do("confirmed");
         public void ClearMarker() => Do("marker-");
         public void MoveLiveToOld() => Do("live->old");
         public void MoveStagingToLive() => Do("staging->live");
@@ -33,7 +34,24 @@ public class SwapRunnerTests
     {
         var o = new FakeOps();
         Assert.Equal(SwapResult.Success, Run(o));
-        Assert.Equal(new[] { "stop", "marker+", "live->old", "staging->live", "startNew", "marker-", "deleteOld" }, o.Calls);
+        Assert.Equal(new[] { "stop", "marker+", "live->old", "staging->live", "startNew", "confirmed", "deleteOld", "marker-" }, o.Calls);
+    }
+
+    [Fact]
+    public void InterruptedDeleteOld_KeepsTheMarker_SoRecoveryKnowsItWasConfirmed()
+    {
+        var o = new FakeOps { ThrowAt = "deleteOld" };
+        Assert.Equal(SwapResult.Success, Run(o));
+        Assert.Contains("confirmed", o.Calls);
+        Assert.DoesNotContain("marker-", o.Calls);
+    }
+
+    [Fact]
+    public void MarkConfirmedFails_OldIsKept()
+    {
+        var o = new FakeOps { ThrowAt = "confirmed" };
+        Assert.Equal(SwapResult.Success, Run(o));
+        Assert.DoesNotContain("deleteOld", o.Calls);
     }
 
     [Fact]
@@ -113,8 +131,9 @@ public class RecoveryRunnerTests
 {
     private sealed class FakeRecovery : IRecoveryOps
     {
-        public bool MarkerExists { get; set; }
+        public MarkerState Marker { get; set; }
         public bool OldExists { get; set; }
+        public bool DeleteOldFails;
         public bool LiveExists { get; set; }
         public bool RestoredStarts = true;
         public List<string> Calls = new();
@@ -122,7 +141,8 @@ public class RecoveryRunnerTests
         public void QuarantineLive() { Calls.Add("quarantine"); LiveExists = false; }
         public void RestoreOldToLive() { Calls.Add("old->live"); OldExists = false; LiveExists = true; }
         public bool StartRestored() { Calls.Add("startOld"); return RestoredStarts; }
-        public void ClearMarker() { Calls.Add("marker-"); MarkerExists = false; }
+        public void DeleteOld() { Calls.Add("deleteOld"); if (DeleteOldFails) throw new IOException(); OldExists = false; }
+        public void ClearMarker() { Calls.Add("marker-"); Marker = MarkerState.None; }
     }
 
     [Fact]
@@ -136,7 +156,7 @@ public class RecoveryRunnerTests
     [Fact]
     public void CrashBetweenTheTwoRenames_LiveMissing_OldIsRestored()
     {
-        var r = new FakeRecovery { MarkerExists = true, OldExists = true, LiveExists = false };
+        var r = new FakeRecovery { Marker = MarkerState.Pending, OldExists = true, LiveExists = false };
         Assert.True(RecoveryRunner.Run(r));
         Assert.Equal(new[] { "stop", "old->live", "startOld", "marker-" }, r.Calls);
     }
@@ -145,15 +165,40 @@ public class RecoveryRunnerTests
     public void OldAndLiveBothExist_LiveIsQuarantinedNotDeleted_BeforeOldIsRestored()
     {
         // Previously "live exists" made the next install delete .old, i.e. the last good version.
-        var r = new FakeRecovery { MarkerExists = true, OldExists = true, LiveExists = true };
+        var r = new FakeRecovery { Marker = MarkerState.Pending, OldExists = true, LiveExists = true };
         Assert.True(RecoveryRunner.Run(r));
         Assert.Equal(new[] { "stop", "quarantine", "old->live", "startOld", "marker-" }, r.Calls);
     }
 
     [Fact]
+    public void ConfirmedMarkerWithLeftoverOld_DeletesOld_NeverRestoresIt()
+    {
+        // A half-deleted .old after a CONFIRMED update must not replace the working live version.
+        var r = new FakeRecovery { Marker = MarkerState.Confirmed, OldExists = true, LiveExists = true };
+        Assert.True(RecoveryRunner.Run(r));
+        Assert.Equal(new[] { "deleteOld", "marker-" }, r.Calls);
+    }
+
+    [Fact]
+    public void ConfirmedMarker_DeleteStillFailing_KeepsMarkerForTheNextTry()
+    {
+        var r = new FakeRecovery { Marker = MarkerState.Confirmed, OldExists = true, LiveExists = true, DeleteOldFails = true };
+        Assert.True(RecoveryRunner.Run(r));
+        Assert.Equal(new[] { "deleteOld" }, r.Calls);
+    }
+
+    [Fact]
+    public void LeftoverOldWithoutAnyMarker_IsDeleted_NotRestored()
+    {
+        var r = new FakeRecovery { OldExists = true, LiveExists = true };
+        Assert.True(RecoveryRunner.Run(r));
+        Assert.Equal(new[] { "deleteOld" }, r.Calls);
+    }
+
+    [Fact]
     public void StaleMarkerOnly_IsJustCleared()
     {
-        var r = new FakeRecovery { MarkerExists = true, LiveExists = true };
+        var r = new FakeRecovery { Marker = MarkerState.Pending, LiveExists = true };
         Assert.True(RecoveryRunner.Run(r));
         Assert.Equal(new[] { "marker-" }, r.Calls);
     }
@@ -161,7 +206,7 @@ public class RecoveryRunnerTests
     [Fact]
     public void RestoredVersionNotStarting_BlocksTheInstall_AndKeepsMarker()
     {
-        var r = new FakeRecovery { MarkerExists = true, OldExists = true, RestoredStarts = false };
+        var r = new FakeRecovery { Marker = MarkerState.Pending, OldExists = true, RestoredStarts = false };
         Assert.False(RecoveryRunner.Run(r));
         Assert.DoesNotContain("marker-", r.Calls);
     }
@@ -281,6 +326,35 @@ public class ConfirmationGateTests
         Assert.False(g.Observe(true, T0.AddSeconds(2)));
         Assert.False(g.Observe(true, T0.AddSeconds(3)));
         Assert.True(g.Observe(true, T0.AddSeconds(4)));
+    }
+}
+
+public class QuarantineCleanupTests
+{
+    [Fact]
+    public void FirstInstall_ParentFolderDoesNotExist_DoesNotThrow()
+    {
+        var live = Path.Combine(Path.GetTempPath(), "no-pf-" + Guid.NewGuid().ToString("N"), "DeskShare", "Service");
+        QuarantineCleanup.Delete(live); // the bug: GetDirectories on a missing %ProgramFiles%\DeskShare crashed the very first install
+        Assert.False(Directory.Exists(Path.GetDirectoryName(live)));
+    }
+
+    [Fact]
+    public void RemovesOnlyFailedSiblings()
+    {
+        var parent = Path.Combine(Path.GetTempPath(), "qc-" + Guid.NewGuid().ToString("N"));
+        var live = Path.Combine(parent, "Service");
+        try
+        {
+            Directory.CreateDirectory(live);
+            Directory.CreateDirectory(live + ".failed-1");
+            Directory.CreateDirectory(live + ".old");
+            QuarantineCleanup.Delete(live);
+            Assert.True(Directory.Exists(live));
+            Assert.True(Directory.Exists(live + ".old"));
+            Assert.False(Directory.Exists(live + ".failed-1"));
+        }
+        finally { Directory.Delete(parent, true); }
     }
 }
 

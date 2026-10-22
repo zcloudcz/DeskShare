@@ -65,16 +65,25 @@ try
     using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, ctx => { ctx.Cancel = true; stop.Cancel(); });
 
     await service.StartAsync(stop.Token);
-    // Unattended service: tell the installer this agent really came up (it only trusts this file when the install id matches).
-    var installId = configuration["install-id"];
-    if (dataDir != null && !string.IsNullOrEmpty(installId))
+    try
     {
-        var readyPath = Path.Combine(dataDir, "agent-ready.json");
-        File.WriteAllText(readyPath + ".tmp", System.Text.Json.JsonSerializer.Serialize(new { InstallId = installId, Pid = Environment.ProcessId, UpdatedUtc = DateTime.UtcNow }));
-        File.Move(readyPath + ".tmp", readyPath, overwrite: true);
+        // StartAsync returns at the first await; "ready" means frames are really flowing (throws if startup fails).
+        await service.Streaming.WaitAsync(stop.Token);
+
+        // Unattended service: tell the installer this agent really came up (it only trusts this file when the install id matches).
+        var installId = configuration["install-id"];
+        if (dataDir != null && !string.IsNullOrEmpty(installId))
+        {
+            var readyPath = Path.Combine(dataDir, "agent-ready.json");
+            File.WriteAllText(readyPath + ".tmp", System.Text.Json.JsonSerializer.Serialize(new { InstallId = installId, Pid = Environment.ProcessId, UpdatedUtc = DateTime.UtcNow }));
+            File.Move(readyPath + ".tmp", readyPath, overwrite: true);
+        }
+        Console.WriteLine("Streaming. Press Ctrl+C to stop.");
+
+        // Runs until Ctrl+C; if the service dies on its own this throws, the host exits non-zero and the supervisor restarts it.
+        await service.Execution.WaitAsync(stop.Token);
     }
-    Console.WriteLine("Streaming. Press Ctrl+C to stop.");
-    await Task.Delay(Timeout.Infinite, stop.Token).ContinueWith(_ => { }); // completes on cancel, no exception
+    catch (OperationCanceledException) when (stop.IsCancellationRequested) { } // Ctrl+C / SIGTERM: normal shutdown
     await service.StopAsync(CancellationToken.None);
     return 0;
 }

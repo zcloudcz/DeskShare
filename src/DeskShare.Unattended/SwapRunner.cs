@@ -73,6 +73,20 @@ public static class StagingCheck
         Required.Where(f => !File.Exists(Path.Combine(root, f))).ToList();
 }
 
+public static class QuarantineCleanup
+{
+    /// <summary>Best-effort removal of "&lt;live&gt;.failed-*" siblings. A first install has no parent folder yet, which is fine.</summary>
+    public static void Delete(string live)
+    {
+        var parent = Directory.GetParent(live)?.FullName;
+        if (parent == null || !Directory.Exists(parent)) return;
+        foreach (var d in Directory.GetDirectories(parent, Path.GetFileName(live) + ".failed-*"))
+        {
+            try { Directory.Delete(d, true); } catch (IOException) { /* retried by the next install */ }
+        }
+    }
+}
+
 public enum SwapResult { Success, FailedRolledBack, FailedRollbackFailed, FailedNothingToRestore }
 
 /// <summary>File-system / SCM operations of an update, abstracted so the rollback decisions can be unit-tested.</summary>
@@ -80,8 +94,10 @@ public interface ISwapOps
 {
     bool HadLive { get; }
     void StopService();
-    /// <summary>Persists "a swap is in flight" (install.pending) so a crash mid-swap is repaired by the next install.</summary>
+    /// <summary>Persists state "pending" in install.pending so a crash mid-swap is repaired by the next install.</summary>
     void WriteMarker();
+    /// <summary>Marker state "confirmed": the new version works, a leftover .old is garbage and must never be restored.</summary>
+    void MarkConfirmed();
     void ClearMarker();
     void MoveLiveToOld();
     void MoveStagingToLive();
@@ -117,8 +133,10 @@ public static class SwapRunner
             liveIsNew = true;
             if (ops.StartNewAndConfirm())
             {
-                try { ops.ClearMarker(); } catch (Exception ex) { log("Could not clear the install marker: " + ex.Message); }
-                try { ops.DeleteOld(); } catch (Exception ex) { log("Could not remove the previous version: " + ex.Message); }
+                // The marker outlives .old: if deleting .old is interrupted, recovery sees "confirmed" and just finishes the delete.
+                // If MarkConfirmed itself fails, .old is kept untouched (a pending marker + intact .old is still a safe state).
+                try { ops.MarkConfirmed(); ops.DeleteOld(); ops.ClearMarker(); }
+                catch (Exception ex) { log("Could not finish cleaning up the previous version: " + ex.Message); }
                 return SwapResult.Success;
             }
             log("New version did not confirm a working agent.");
@@ -152,15 +170,18 @@ public static class SwapRunner
 }
 
 /// <summary>Operations of the crash-repair step that runs before every install.</summary>
+public enum MarkerState { None, Pending, Confirmed }
+
 public interface IRecoveryOps
 {
-    bool MarkerExists { get; }
+    MarkerState Marker { get; }
     bool OldExists { get; }
     bool LiveExists { get; }
     void StopService();
     void QuarantineLive();
     void RestoreOldToLive();
     bool StartRestored();
+    void DeleteOld();
     void ClearMarker();
 }
 
@@ -173,15 +194,26 @@ public static class RecoveryRunner
     /// </summary>
     public static bool Run(IRecoveryOps ops)
     {
-        if (!ops.MarkerExists && !ops.OldExists) return true;
+        if (ops.Marker == MarkerState.None && !ops.OldExists) return true;
+        if (ops.Marker == MarkerState.Pending)
+        {
+            if (ops.OldExists)
+            {
+                ops.StopService();
+                if (ops.LiveExists) ops.QuarantineLive();
+                ops.RestoreOldToLive();
+                if (!ops.StartRestored()) return false;
+            }
+            ops.ClearMarker();
+            return true;
+        }
+        // Confirmed (or no marker at all): live is the good version, a leftover .old is a half-deleted backup. Finish deleting it;
+        // keep a "confirmed" marker until that worked so the next install retries.
         if (ops.OldExists)
         {
-            ops.StopService();
-            if (ops.LiveExists) ops.QuarantineLive();
-            ops.RestoreOldToLive();
-            if (!ops.StartRestored()) return false;
+            try { ops.DeleteOld(); } catch (IOException) { return true; }
         }
-        ops.ClearMarker();
+        if (ops.Marker == MarkerState.Confirmed) ops.ClearMarker();
         return true;
     }
 }

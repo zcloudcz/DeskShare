@@ -122,6 +122,23 @@ public class ScreenSenderService : IHostedService, IDisposable
     /// </summary>
     public event EventHandler<string>? ServerIdChanged;
 
+    private readonly TaskCompletionSource _streaming = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Completes when capture + WebRTC are up and frames are flowing; faults/cancels if the service stops before that.</summary>
+    public Task Streaming => _streaming.Task;
+
+    /// <summary>The running service task (faults when the service dies); completed task before StartAsync.</summary>
+    public Task Execution => _executingTask ?? Task.CompletedTask;
+
+    internal void SignalStreaming() => _streaming.TrySetResult();
+
+    /// <summary>If the service ends before it ever streamed, <see cref="Streaming"/> must not stay pending forever.</summary>
+    internal void WireStreamingSignal(Task execution) => execution.ContinueWith(t =>
+    {
+        if (t.IsFaulted) _streaming.TrySetException(t.Exception!.InnerExceptions);
+        else _streaming.TrySetCanceled();
+    }, TaskScheduler.Default);
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
         _logger.LogInformation("Starting ScreenSenderService with Server ID: {ServerId}", ServerId);
@@ -129,6 +146,7 @@ public class ScreenSenderService : IHostedService, IDisposable
         _stoppingCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         _executingTask = ExecuteAsync(_stoppingCts.Token);
+        WireStreamingSignal(_executingTask);
 
         if (_executingTask.IsCompleted)
         {
@@ -311,6 +329,7 @@ public class ScreenSenderService : IHostedService, IDisposable
             {
                 _logger.LogInformation("Capture pipeline started successfully");
                 _logger.LogInformation("ScreenSenderService is now streaming. Waiting for clients to connect...");
+                SignalStreaming();
 
                 // Keep service running until cancellation
                 while (!stoppingToken.IsCancellationRequested)
