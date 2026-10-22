@@ -52,4 +52,33 @@ public sealed class DisplaySwitchManagerTests
 
         Assert.Equal(0, count);
     }
+
+    [Fact]
+    public async Task Manager_CancelsASwitchWhenControlIsRevokedWhileItRuns()
+    {
+        var controller = Substitute.For<IInputController>();
+        controller.IsEnabled.Returns(true);
+        var manager = new DataChannelManager(Substitute.For<ILogger>(), controller);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var proceed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowedAtCommit = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = new DisplaySwitchService(TwoDisplays, 0, async (_, stillAllowed) =>
+        {
+            entered.SetResult();
+            await proceed.Task; // the new capturer is "starting"
+            allowedAtCommit.SetResult(stillAllowed());
+            return stillAllowed();
+        });
+        manager.DisplaySwitcher = service;
+
+        manager.ProcessInputMessage("""{"type":"switch_display","index":1}""");
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        // The host revokes control (or the user toggles it off and on) before the switch is committed.
+        controller.AuthorizationStateChanged += Raise.Event<EventHandler<InputAuthorizationState>>(controller, InputAuthorizationState.Revoked);
+        proceed.SetResult();
+
+        Assert.False(await allowedAtCommit.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        await Task.Delay(50);
+        Assert.Equal(0, service.Current); // the switch did not count
+    }
 }

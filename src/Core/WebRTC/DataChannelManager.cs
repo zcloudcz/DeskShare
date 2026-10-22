@@ -152,6 +152,8 @@ public sealed class DataChannelManager : IDisposable
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _inputController = inputController;
+        if (_inputController != null)
+            _inputController.AuthorizationStateChanged += OnAuthorizationStateChanged;
         _logger.Information("DataChannelManager initialized");
     }
 
@@ -391,6 +393,7 @@ public sealed class DataChannelManager : IDisposable
 
             using var doc = JsonDocument.Parse(message);
             var privacyEpoch = PrivacyScreen?.Epoch ?? 0; // before the policy check: see PrivacyScreenController.Epoch
+            var epoch = Volatile.Read(ref _controlEpoch); // likewise for display switches
 
             // Default deny: an unknown type, or a capability the session lacks, never reaches a handler.
             if (!DataChannelPolicy.TryGetRequiredCapability(doc.RootElement, out var typeName, out var required))
@@ -438,7 +441,7 @@ public sealed class DataChannelManager : IDisposable
                 if (messageType == "switch_display")
                 {
                     // Passed the policy: only sessions with Control get here.
-                    _ = SwitchDisplayAsync(doc.RootElement.Clone());
+                    _ = SwitchDisplayAsync(doc.RootElement.Clone(), epoch);
                     return;
                 }
 
@@ -514,7 +517,12 @@ public sealed class DataChannelManager : IDisposable
         }
     }
 
-    private async Task SwitchDisplayAsync(JsonElement message)
+    // Bumped whenever the control authorization changes, so a display switch that was requested under an earlier grant can be cancelled.
+    private int _controlEpoch;
+
+    private void OnAuthorizationStateChanged(object? sender, InputAuthorizationState state) => Interlocked.Increment(ref _controlEpoch);
+
+    private async Task SwitchDisplayAsync(JsonElement message, int epoch)
     {
         try
         {
@@ -527,7 +535,9 @@ public sealed class DataChannelManager : IDisposable
                 return;
             }
 
-            var result = await displays.SwitchAsync(index);
+            // Control is checked again when the switch is about to take effect: it may have been revoked while the new capturer started.
+            var result = await displays.SwitchAsync(index,
+                () => epoch == Volatile.Read(ref _controlEpoch) && (GrantedCapabilities & SessionCapabilities.Control) != 0);
             if (result is Displays.DisplaySwitchResult.InvalidIndex or Displays.DisplaySwitchResult.RateLimited or Displays.DisplaySwitchResult.Failed)
                 LogRejection("switch_display", result.ToString());
 
@@ -598,6 +608,8 @@ public sealed class DataChannelManager : IDisposable
             return;
         }
 
+        if (_inputController != null)
+            _inputController.AuthorizationStateChanged -= OnAuthorizationStateChanged;
         DetachDataChannel();
         _disposed = true;
 
