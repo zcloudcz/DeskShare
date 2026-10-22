@@ -492,12 +492,11 @@ public sealed class WebRTCSessionWithInput : IDisposable
         _dataChannelManager.Dispose();
         _dataChannelManager.FileReceiver?.Dispose();
         _dataChannelManager.PrivacyScreen?.Dispose(); // overlay off (and input unblocked) before the controller goes
+        // Owned like the clipboard manager: on Wayland it holds a desktop portal session (and its D-Bus connection),
+        // on Windows the injection thread; both would otherwise stay alive after sharing stops.
         _inputController?.Dispose();
         _baseSession.Dispose();
         _clipboardManager?.Dispose();
-        // Owned like the clipboard manager: on Wayland it holds a desktop portal session (and its D-Bus connection)
-        // that would otherwise stay open after sharing stops.
-        _inputController?.Dispose();
 
         _disposed = true;
 
