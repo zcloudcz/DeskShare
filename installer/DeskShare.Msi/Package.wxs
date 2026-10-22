@@ -4,19 +4,50 @@
   <Package Name="DeskShare" Manufacturer="Martin Zahálka" Version="$(ProductVersion)"
            UpgradeCode="8534abe6-50a9-4de8-a2ec-25effcae36c3" Scope="perMachine" Language="1033">
 
-    <!-- Same UpgradeCode + higher version replaces the old install in one step. Pass the same properties again on upgrade. -->
-    <MajorUpgrade DowngradeErrorMessage="A newer version of DeskShare is already installed." />
+    <!-- Same UpgradeCode + higher version replaces the old install. afterInstallInitialize = the old version is removed INSIDE
+         the same transaction as the new install, so a failure rolls back to the old version instead of leaving nothing. -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of DeskShare is already installed." Schedule="afterInstallInitialize" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <!-- Public properties for silent deployment (documented in docs/deployment.md).
-         ALLOW_*: 1 = enabled and locked, 0 = disabled and locked, anything else (e.g. "user") = not set, the user decides. -->
-    <Property Id="SIGNALING_URL" Value="wss://app.deskshare.zcloud.cz/signal" Secure="yes" />
-    <Property Id="ENABLE_UNATTENDED" Value="0" Secure="yes" />
-    <Property Id="ALLOW_REMOTE_CONTROL" Value="0" Secure="yes" />
-    <Property Id="ALLOW_CLIPBOARD" Value="0" Secure="yes" />
-    <Property Id="ALLOW_FILES" Value="0" Secure="yes" />
-    <Property Id="ALLOW_PRIVACY_SCREEN" Value="0" Secure="yes" />
-    <Property Id="DISABLE_AUTOUPDATE" Value="1" Secure="yes" />
+         ALLOW_*: 1 = enabled and locked, 0 = disabled and locked, anything else (e.g. "user") = not set, the user decides.
+         "Remember property" pattern, so repair / upgrade without arguments keeps the deployed values: the real property has NO
+         default; AppSearch reads the value stored by the last install (HKLM\SOFTWARE\DeskShare\Msi) into X_SAVED, a default
+         fills X_SAVED when nothing is stored, and X takes X_SAVED unless it was given on the command line. -->
+    <Property Id="SIGNALING_URL" Secure="yes" />
+    <Property Id="ENABLE_UNATTENDED" Secure="yes" />
+    <Property Id="ALLOW_REMOTE_CONTROL" Secure="yes" />
+    <Property Id="ALLOW_CLIPBOARD" Secure="yes" />
+    <Property Id="ALLOW_FILES" Secure="yes" />
+    <Property Id="ALLOW_PRIVACY_SCREEN" Secure="yes" />
+    <Property Id="DISABLE_AUTOUPDATE" Secure="yes" />
+
+    <Property Id="SIGNALING_URL_SAVED" Secure="yes"><RegistrySearch Id="SavedSignalingUrl" Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="SIGNALING_URL" Type="raw" Bitness="always64" /></Property>
+    <Property Id="ENABLE_UNATTENDED_SAVED" Secure="yes"><RegistrySearch Id="SavedEnableUnattended" Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="ENABLE_UNATTENDED" Type="raw" Bitness="always64" /></Property>
+    <Property Id="ALLOW_REMOTE_CONTROL_SAVED" Secure="yes"><RegistrySearch Id="SavedAllowRemoteControl" Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="ALLOW_REMOTE_CONTROL" Type="raw" Bitness="always64" /></Property>
+    <Property Id="ALLOW_CLIPBOARD_SAVED" Secure="yes"><RegistrySearch Id="SavedAllowClipboard" Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="ALLOW_CLIPBOARD" Type="raw" Bitness="always64" /></Property>
+    <Property Id="ALLOW_FILES_SAVED" Secure="yes"><RegistrySearch Id="SavedAllowFiles" Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="ALLOW_FILES" Type="raw" Bitness="always64" /></Property>
+    <Property Id="ALLOW_PRIVACY_SCREEN_SAVED" Secure="yes"><RegistrySearch Id="SavedAllowPrivacyScreen" Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="ALLOW_PRIVACY_SCREEN" Type="raw" Bitness="always64" /></Property>
+    <Property Id="DISABLE_AUTOUPDATE_SAVED" Secure="yes"><RegistrySearch Id="SavedDisableAutoupdate" Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="DISABLE_AUTOUPDATE" Type="raw" Bitness="always64" /></Property>
+
+    <SetProperty Action="DefaultSignalingUrl" Id="SIGNALING_URL_SAVED" Value="wss://app.deskshare.zcloud.cz/signal" Sequence="both" After="AppSearch" Condition="NOT SIGNALING_URL_SAVED" />
+    <SetProperty Action="DefaultEnableUnattended" Id="ENABLE_UNATTENDED_SAVED" Value="0" Sequence="both" After="AppSearch" Condition="NOT ENABLE_UNATTENDED_SAVED" />
+    <SetProperty Action="DefaultAllowRemoteControl" Id="ALLOW_REMOTE_CONTROL_SAVED" Value="0" Sequence="both" After="AppSearch" Condition="NOT ALLOW_REMOTE_CONTROL_SAVED" />
+    <SetProperty Action="DefaultAllowClipboard" Id="ALLOW_CLIPBOARD_SAVED" Value="0" Sequence="both" After="AppSearch" Condition="NOT ALLOW_CLIPBOARD_SAVED" />
+    <SetProperty Action="DefaultAllowFiles" Id="ALLOW_FILES_SAVED" Value="0" Sequence="both" After="AppSearch" Condition="NOT ALLOW_FILES_SAVED" />
+    <SetProperty Action="DefaultAllowPrivacyScreen" Id="ALLOW_PRIVACY_SCREEN_SAVED" Value="0" Sequence="both" After="AppSearch" Condition="NOT ALLOW_PRIVACY_SCREEN_SAVED" />
+    <SetProperty Action="DefaultDisableAutoupdate" Id="DISABLE_AUTOUPDATE_SAVED" Value="1" Sequence="both" After="AppSearch" Condition="NOT DISABLE_AUTOUPDATE_SAVED" />
+
+    <SetProperty Action="UseSavedSignalingUrl" Id="SIGNALING_URL" Value="[SIGNALING_URL_SAVED]" Sequence="both" After="DefaultSignalingUrl" Condition="NOT SIGNALING_URL" />
+    <SetProperty Action="UseSavedEnableUnattended" Id="ENABLE_UNATTENDED" Value="[ENABLE_UNATTENDED_SAVED]" Sequence="both" After="DefaultEnableUnattended" Condition="NOT ENABLE_UNATTENDED" />
+    <SetProperty Action="UseSavedAllowRemoteControl" Id="ALLOW_REMOTE_CONTROL" Value="[ALLOW_REMOTE_CONTROL_SAVED]" Sequence="both" After="DefaultAllowRemoteControl" Condition="NOT ALLOW_REMOTE_CONTROL" />
+    <SetProperty Action="UseSavedAllowClipboard" Id="ALLOW_CLIPBOARD" Value="[ALLOW_CLIPBOARD_SAVED]" Sequence="both" After="DefaultAllowClipboard" Condition="NOT ALLOW_CLIPBOARD" />
+    <SetProperty Action="UseSavedAllowFiles" Id="ALLOW_FILES" Value="[ALLOW_FILES_SAVED]" Sequence="both" After="DefaultAllowFiles" Condition="NOT ALLOW_FILES" />
+    <SetProperty Action="UseSavedAllowPrivacyScreen" Id="ALLOW_PRIVACY_SCREEN" Value="[ALLOW_PRIVACY_SCREEN_SAVED]" Sequence="both" After="DefaultAllowPrivacyScreen" Condition="NOT ALLOW_PRIVACY_SCREEN" />
+    <SetProperty Action="UseSavedDisableAutoupdate" Id="DISABLE_AUTOUPDATE" Value="[DISABLE_AUTOUPDATE_SAVED]" Sequence="both" After="DefaultDisableAutoupdate" Condition="NOT DISABLE_AUTOUPDATE" />
+
+    <!-- Is the service already registered (by an earlier install or by the app)? Decides whether the rollback may remove it. -->
+    <Property Id="SERVICE_EXISTS" Secure="yes"><RegistrySearch Id="ExistingService" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\DeskShareService" Name="ImagePath" Type="raw" Bitness="always64" /></Property>
 
     <Icon Id="deskshare.ico" SourceFile="$(IconFile)" />
     <Property Id="ARPPRODUCTICON" Value="deskshare.ico" />
@@ -33,6 +64,7 @@
     <Feature Id="App" Title="DeskShare" Level="1" AllowAdvertise="no">
       <ComponentGroupRef Id="AppFiles" />
       <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="RememberedSettings" />
     </Feature>
 
     <!-- Only the install source for DeskShare.Service.exe: switched on by ENABLE_UNATTENDED=1 so the default install stays small. -->
@@ -58,6 +90,17 @@
       </File>
     </Component>
 
+    <!-- The values this install ran with, read back by the RegistrySearches above on repair / upgrade. -->
+    <Component Id="RememberedSettings" Directory="INSTALLFOLDER" Guid="{7C1E5D3A-2B94-4F0E-A6D8-3B5F9E1C4A72}">
+      <RegistryValue Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="SIGNALING_URL" Type="string" Value="[SIGNALING_URL]" KeyPath="yes" />
+      <RegistryValue Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="ENABLE_UNATTENDED" Type="string" Value="[ENABLE_UNATTENDED]" />
+      <RegistryValue Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="ALLOW_REMOTE_CONTROL" Type="string" Value="[ALLOW_REMOTE_CONTROL]" />
+      <RegistryValue Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="ALLOW_CLIPBOARD" Type="string" Value="[ALLOW_CLIPBOARD]" />
+      <RegistryValue Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="ALLOW_FILES" Type="string" Value="[ALLOW_FILES]" />
+      <RegistryValue Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="ALLOW_PRIVACY_SCREEN" Type="string" Value="[ALLOW_PRIVACY_SCREEN]" />
+      <RegistryValue Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="DISABLE_AUTOUPDATE" Type="string" Value="[DISABLE_AUTOUPDATE]" />
+    </Component>
+
     <!-- Custom actions: all deferred + Impersonate=no = run elevated as SYSTEM. They reuse the app / service executables
          instead of duplicating their logic here (policy.json writer: PolicyCommand.cs; service install: Installer.cs). -->
     <CustomAction Id="WritePolicy" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="no" Return="check"
@@ -66,17 +109,39 @@
         ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --remove-policy" />
     <CustomAction Id="InstallService" Directory="SERVICEPAYLOAD" Execute="deferred" Impersonate="no" Return="check"
         ExeCommand="&quot;[SERVICEPAYLOAD]DeskShare.Service.exe&quot; install" />
-    <CustomAction Id="UninstallService" Directory="SERVICEPAYLOAD" Execute="deferred" Impersonate="no" Return="ignore"
+    <CustomAction Id="UninstallService" Directory="SERVICEPAYLOAD" Execute="deferred" Impersonate="no" Return="check"
+        ExeCommand="&quot;[SERVICEPAYLOAD]DeskShare.Service.exe&quot; uninstall" />
+
+    <!-- Rollback / commit: the policy verbs move the old folder to DeskShare.Policy.bak first. Rollback puts it back (or
+         removes the new folder when there was none), commit deletes the backup. -->
+    <CustomAction Id="RollbackWritePolicy" Directory="INSTALLFOLDER" Execute="rollback" Impersonate="no" Return="ignore"
+        ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --restore-policy" />
+    <CustomAction Id="RollbackRemovePolicy" Directory="INSTALLFOLDER" Execute="rollback" Impersonate="no" Return="ignore"
+        ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --restore-policy" />
+    <!-- cmd.exe instead of DeskShare.exe: on uninstall the app is already gone when commit scripts run. -->
+    <CustomAction Id="CommitPolicy" Directory="TARGETDIR" Execute="commit" Impersonate="no" Return="ignore"
+        ExeCommand="&quot;[System64Folder]cmd.exe&quot; /c rd /s /q &quot;[CommonAppDataFolder]DeskShare.Policy.bak&quot;" />
+    <!-- Only when the service did not exist before this transaction (SERVICE_EXISTS empty): on an update that fails,
+         Installer.Install restores the previous service itself and it must not be removed again here. -->
+    <CustomAction Id="RollbackInstallService" Directory="SERVICEPAYLOAD" Execute="rollback" Impersonate="no" Return="ignore"
         ExeCommand="&quot;[SERVICEPAYLOAD]DeskShare.Service.exe&quot; uninstall" />
 
     <InstallExecuteSequence>
-      <!-- Not during the removal of the OLD version in a major upgrade (UPGRADINGPRODUCTCODE is set then): the new version
-           writes the policy again and keeps the service. -->
+      <!-- UPGRADINGPRODUCTCODE is set while the OLD version is removed during a major upgrade: it must not remove the policy or
+           the service then, the new version writes the policy again and updates the service. -->
+      <Custom Action="RollbackWritePolicy" Before="WritePolicy" Condition="NOT (REMOVE = &quot;ALL&quot;)" />
       <Custom Action="WritePolicy" After="InstallFiles" Condition="NOT (REMOVE = &quot;ALL&quot;)" />
-      <Custom Action="InstallService" After="WritePolicy" Condition="ENABLE_UNATTENDED = &quot;1&quot; AND NOT (REMOVE = &quot;ALL&quot;)" />
-      <Custom Action="RemovePolicy" Before="RemoveFiles" Condition="REMOVE = &quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
-      <!-- Return="ignore": without the Unattended feature DeskShare.Service.exe is not there and nothing needs removing. -->
-      <Custom Action="UninstallService" Before="RemoveFiles" Condition="REMOVE = &quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="CommitPolicy" After="WritePolicy" />
+      <!-- Last deferred action before InstallFinalize: nothing after it can fail and leave a half-installed service. &amp;Unattended = 3:
+           the feature is being installed (fresh, repair or upgrade), so adding / removing it in Modify mode is handled below. -->
+      <Custom Action="RollbackInstallService" Before="InstallService" Condition="ENABLE_UNATTENDED = &quot;1&quot; AND &amp;Unattended = 3 AND NOT SERVICE_EXISTS" />
+      <Custom Action="InstallService" Before="InstallFinalize" Condition="ENABLE_UNATTENDED = &quot;1&quot; AND &amp;Unattended = 3" />
+
+      <Custom Action="RollbackRemovePolicy" Before="RemovePolicy" Condition="REMOVE = &quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="RemovePolicy" Before="UninstallService" Condition="REMOVE = &quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <!-- The feature goes from installed (!Unattended = 3) to absent (&amp;Unattended = 2): uninstall of the whole product or
+           removal of just the feature. Scheduled before RemoveFiles because the helper exe lives in the feature. -->
+      <Custom Action="UninstallService" Before="RemoveFiles" Condition="(&amp;Unattended = 2) AND (!Unattended = 3) AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
   </Package>
 </Wix>

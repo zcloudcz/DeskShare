@@ -34,9 +34,18 @@ public sealed class MachinePolicy
     /// <summary>The policy of this machine, read once per process.</summary>
     public static MachinePolicy Current => CurrentLazy.Value;
 
-    public static MachinePolicy Load(string path)
+    /// <summary>
+    /// Reads the policy only if <paramref name="trust"/> (default <see cref="PolicyTrust.Problem"/>) finds nothing wrong with
+    /// the folder and file: a policy a standard user could have planted must never steer the SYSTEM agent. Untrusted = ignored + Warning.
+    /// </summary>
+    public static MachinePolicy Load(string path, Func<string, string?>? trust = null)
     {
-        try { return File.Exists(path) ? Parse(File.ReadAllText(path)) : Empty; }
+        try
+        {
+            if (!File.Exists(path)) return Empty;
+            var problem = (trust ?? (p => OperatingSystem.IsWindows() ? PolicyTrust.Problem(p) : null))(path);
+            return problem == null ? Parse(File.ReadAllText(path)) : new MachinePolicy { Warning = $"{path} ignored: {problem}" };
+        }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return new MachinePolicy { Warning = $"Could not read {path}: {ex.Message}" };

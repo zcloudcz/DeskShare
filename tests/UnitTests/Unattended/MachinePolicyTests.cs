@@ -1,3 +1,5 @@
+using System.Security.AccessControl;
+using System.Security.Principal;
 using Microsoft.Extensions.Configuration;
 using DeskShare.Unattended;
 
@@ -85,6 +87,59 @@ public class MachinePolicyTests
         File.WriteAllText(path, "{ broken");
         try { Assert.NotNull(MachinePolicy.Load(path).Warning); }
         finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void Load_UntrustedFile_IsIgnoredWithWarning_TrustedFileIsRead()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".json");
+        File.WriteAllText(path, Full);
+        try
+        {
+            var untrusted = MachinePolicy.Load(path, _ => "Users has write access");
+            Assert.Null(untrusted.RemoteControl);
+            Assert.Contains("Users has write access", untrusted.Warning);
+            Assert.True(MachinePolicy.Load(path, _ => null).RemoteControl);
+        }
+        finally { File.Delete(path); }
+    }
+
+    private static FileSystemAccessRule Allow(WellKnownSidType sid, FileSystemRights rights) =>
+        new(new SecurityIdentifier(sid, null), rights, AccessControlType.Allow);
+
+    private static SecurityIdentifier Sid(WellKnownSidType sid) => new(sid, null);
+
+    [Fact]
+    public void AclProblem_AcceptsAdminOnlyWriteWithUsersReadOnly()
+    {
+        var rules = new[]
+        {
+            Allow(WellKnownSidType.LocalSystemSid, FileSystemRights.FullControl),
+            Allow(WellKnownSidType.BuiltinAdministratorsSid, FileSystemRights.FullControl),
+            Allow(WellKnownSidType.BuiltinUsersSid, FileSystemRights.ReadAndExecute),
+        };
+        Assert.Null(PolicyTrust.AclProblem(Sid(WellKnownSidType.BuiltinAdministratorsSid), true, true, rules));
+    }
+
+    [Theory]
+    [InlineData(WellKnownSidType.BuiltinUsersSid, FileSystemRights.Write)]
+    [InlineData(WellKnownSidType.AuthenticatedUserSid, FileSystemRights.Modify)]
+    [InlineData(WellKnownSidType.WorldSid, FileSystemRights.AppendData)]
+    [InlineData(WellKnownSidType.BuiltinUsersSid, FileSystemRights.FullControl)]
+    public void AclProblem_RejectsWriteForNonAdmins(WellKnownSidType who, FileSystemRights rights)
+    {
+        var rules = new[] { Allow(WellKnownSidType.BuiltinAdministratorsSid, FileSystemRights.FullControl), Allow(who, rights) };
+        Assert.NotNull(PolicyTrust.AclProblem(Sid(WellKnownSidType.BuiltinAdministratorsSid), true, true, rules));
+    }
+
+    [Fact]
+    public void AclProblem_RejectsUserOwnerAndUnprotectedFolder()
+    {
+        var ok = new[] { Allow(WellKnownSidType.BuiltinAdministratorsSid, FileSystemRights.FullControl) };
+        Assert.NotNull(PolicyTrust.AclProblem(Sid(WellKnownSidType.BuiltinUsersSid), true, true, ok));  // owned by a user
+        Assert.NotNull(PolicyTrust.AclProblem(null, true, true, ok));
+        Assert.NotNull(PolicyTrust.AclProblem(Sid(WellKnownSidType.LocalSystemSid), true, false, ok));  // inherits from the parent
+        Assert.Null(PolicyTrust.AclProblem(Sid(WellKnownSidType.LocalSystemSid), false, false, ok));    // a file inherits by design
     }
 
     [Fact]

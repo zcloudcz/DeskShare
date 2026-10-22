@@ -13,5 +13,5 @@ public static class AclSpec
     /// SDDL for %ProgramData%\DeskShare.Policy (the MSI's policy.json): protected DACL, full control for SYSTEM and
     /// Administrators, read + traverse for Users, so the user's app can read the policy but not change it.
     /// </summary>
-    public const string PolicyDirSddl = "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)";
+    public const string PolicyDirSddl = "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)";
 }

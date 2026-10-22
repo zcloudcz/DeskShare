@@ -43,12 +43,24 @@ SYSTEM účtu (UNC share s právem čtení pro počítače, ne jen pro uživatel
 
 ## Aktualizace
 
-Nainstalujte novější MSI **se stejnými vlastnostmi** (stejný `UpgradeCode`, starou verzi nahradí automaticky;
-vlastnosti, které nezadáte, se vrátí na výchozí a `policy.json` se přepíše). Starší verze než nainstalovaná se odmítne.
+Nainstalujte novější MSI (stejný `UpgradeCode`, starou verzi nahradí automaticky, a to v jedné transakci: při chybě
+se vrátí stará verze). Starší verze než nainstalovaná se odmítne.
+
+**Nastavení se pamatují.** Hodnoty vlastností z poslední instalace jsou uložené v `HKLM\SOFTWARE\DeskShare\Msi`. Upgrade,
+oprava (`msiexec /fvomus DeskShare-x64.msi`) i znovunasazení bez argumentů je proto zachovají; vlastnost zadaná na příkazové
+řádce vždy přepíše uloženou hodnotu.
 
 ```cmd
-msiexec /i DeskShare-x64.msi /qn SIGNALING_URL=wss://signal.firma.cz/signal ENABLE_UNATTENDED=1
+msiexec /i DeskShare-x64-novejsi.msi /qn
+msiexec /i DeskShare-x64-novejsi.msi /qn SIGNALING_URL=wss://novy.firma.cz/signal
 ```
+
+**Služba (`ENABLE_UNATTENDED`).** Odebrání služby bez odinstalace aplikace:
+`msiexec /i DeskShare-x64.msi REMOVE=Unattended ENABLE_UNATTENDED=0 /qn` (feature `Unattended` zmizí a MSI zavolá
+`DeskShare.Service.exe uninstall`). Při upgradu s `ENABLE_UNATTENDED=0` se služba z předchozí verze automaticky neodstraní;
+nejdřív proveďte krok výše na staré verzi.
+
+**Selhání je bezpečné.** Při chybě instalace se vrátí předchozí `policy.json` a nová služba (která dřív neexistovala) se odstraní.
 
 ## Odinstalace
 
@@ -106,6 +118,11 @@ SYSTEM. Detekce: existence souboru `%ProgramFiles%\DeskShare\App\DeskShare.exe` 
 
 Složka `%ProgramData%\DeskShare.Policy` má DACL: SYSTEM a Administrators plný přístup, Users jen čtení (aplikace běžícího
 uživatele musí politiku přečíst; `%ProgramData%\DeskShare` tak použít nejde, je jen pro SYSTEM a Administrators).
+Aplikace i služba politiku **přijmou jen když je důvěryhodná**: složka a soubor patří SYSTEM/Administrators, složka má
+chráněné (nedědičné) DACL, nikdo kromě SYSTEM/Administrators nemá právo zápisu a nejde o junction/symlink. Jinak se politika
+ignoruje a do logu přijde varování. Instalace služby navíc takovou cizí složku přejmenuje na `DeskShare.Policy.untrusted-*`.
+Při ruční úpravě tedy soubor upravujte jako administrátor a neměňte práva složky.
+
 Hodnota, která je v souboru, **má přednost** před nastavením uživatele i před `appsettings.json` / `unattended.json`
 (platí pro aplikaci i pro službu/agenta). Chybějící klíč = rozhoduje uživatel. Poškozený soubor se ignoruje (varování v logu).
 
