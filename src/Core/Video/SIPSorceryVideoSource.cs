@@ -147,7 +147,7 @@ public sealed class SIPSorceryVideoSource : IVideoSource
 
         // Create video encoder endpoint
         // Note: We'll force keyframes every 2 frames in PushFrame for low latency
-        _videoEncoder = VideoEncoderFactory.Create();
+        _videoEncoder = new ResizingVideoEncoder(() => VideoEncoderFactory.Create()); // follows display switches that change the size
 
         // Create peer connection with configuration
         var config = new RTCConfiguration { iceServers = new List<RTCIceServer>(IceServers) };
@@ -292,6 +292,9 @@ public sealed class SIPSorceryVideoSource : IVideoSource
             return false;
         }
     }
+
+    /// <inheritdoc/>
+    public void RequestKeyFrame() => _framesSinceKeyframe = KeyframeInterval; // PushFrame forces one on the next frame
 
     /// <inheritdoc/>
     public VideoSourceStatistics GetStatistics()

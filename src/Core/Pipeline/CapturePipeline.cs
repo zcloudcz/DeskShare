@@ -17,14 +17,22 @@ public sealed class CapturePipeline : IDisposable
     private const int MaxQueueSize = 3; // Limit buffering to prevent memory issues
     private const int CaptureLoopDelayMs = 10; // Small delay between capture attempts
 
-    private readonly IScreenCapturer _capturer;
+    // Replaced by SwitchCapturerAsync; the swap happens on the capture thread only, between two frames.
+    private IScreenCapturer _capturer;
     private readonly IFrameConverter _converter;
     private readonly IVideoSource _videoSource;
     private readonly int _maxOutputWidth;
 
-    // Resolution actually sent; equals the capture size unless downscaling is active. Set in Start.
-    private int _outputWidth;
-    private int _outputHeight;
+    // Resolution actually sent; equals the capture size unless downscaling is active. Set in Start and when the
+    // capturer is switched. One immutable object so the conversion thread never sees a new width with an old height.
+    private sealed record OutputDims(int Width, int Height);
+    private volatile OutputDims _output = new(0, 0);
+
+    // A capturer handed to SwitchCapturerAsync, applied by the capture loop (see ApplyPendingSwitch).
+    private readonly object _switchLock = new();
+    private IScreenCapturer? _pendingCapturer;
+    private TaskCompletionSource<bool>? _pendingSwitch;
+    private int _keyFramePending;
 
     private readonly BlockingCollection<Frame> _captureQueue;
     private readonly BlockingCollection<VideoFrame> _conversionQueue;
@@ -96,13 +104,14 @@ public sealed class CapturePipeline : IDisposable
             return false;
         }
 
-        (_outputWidth, _outputHeight) = OutputSize.Compute(_capturer.Width, _capturer.Height, _maxOutputWidth);
+        var (outputWidth, outputHeight) = OutputSize.Compute(_capturer.Width, _capturer.Height, _maxOutputWidth);
+        _output = new OutputDims(outputWidth, outputHeight);
 
         // Initialize video source only if not already initialized (e.g., StubVideoSource)
         // For WebRTC scenarios, VideoSource is pre-initialized by WebRTCSession
         if (!_videoSource.IsInitialized)
         {
-            if (!_videoSource.Initialize(_outputWidth, _outputHeight, targetFps))
+            if (!_videoSource.Initialize(outputWidth, outputHeight, targetFps))
             {
                 Log.Error("Failed to initialize video source");
                 return false;
@@ -114,7 +123,7 @@ public sealed class CapturePipeline : IDisposable
         }
 
         Log.Information("Starting pipeline: capture {Width}x{Height} -> output {OutWidth}x{OutHeight} @ {TargetFps}fps",
-            _capturer.Width, _capturer.Height, _outputWidth, _outputHeight, targetFps);
+            _capturer.Width, _capturer.Height, outputWidth, outputHeight, targetFps);
 
         _cts = new CancellationTokenSource();
         _isRunning = true;
@@ -175,6 +184,8 @@ public sealed class CapturePipeline : IDisposable
         {
             while (!cancellationToken.IsCancellationRequested)
             {
+                ApplyPendingSwitch();
+
                 // Try to acquire frame. Only successful acquisitions are timed: a failed attempt just
                 // means "no new frame yet" and would skew the average.
                 var acquireStart = Stopwatch.GetTimestamp();
@@ -211,9 +222,89 @@ public sealed class CapturePipeline : IDisposable
         }
         finally
         {
+            // A switch requested right before shutdown will never be applied: release its capturer and its caller.
+            lock (_switchLock)
+            {
+                _pendingCapturer?.Dispose();
+                _pendingSwitch?.TrySetResult(false);
+                (_pendingCapturer, _pendingSwitch) = (null, null);
+            }
+
             _captureQueue.CompleteAdding();
             Log.Information("Capture thread stopped");
         }
+    }
+
+    /// <summary>
+    /// Replaces the capturer while the pipeline keeps running (display switch): the encoder and the peer
+    /// connection stay, the next frames simply come from <paramref name="next"/> and a keyframe is requested.
+    /// The pipeline owns <paramref name="next"/> from here on (it is disposed when the switch fails).
+    /// </summary>
+    /// <returns>True when <paramref name="next"/> initialised and is now the active capturer; false otherwise (the old one keeps running).</returns>
+    public Task<bool> SwitchCapturerAsync(IScreenCapturer next)
+    {
+        ArgumentNullException.ThrowIfNull(next);
+        lock (_switchLock)
+        {
+            if (!_isRunning || _disposed || _cts!.IsCancellationRequested || _pendingCapturer != null)
+            {
+                next.Dispose();
+                return Task.FromResult(false);
+            }
+
+            _pendingCapturer = next;
+            _pendingSwitch = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            return _pendingSwitch.Task;
+        }
+    }
+
+    /// <summary>
+    /// Runs at the top of the capture loop, i.e. when no frame is held, so the old capturer can be disposed safely.
+    /// </summary>
+    private void ApplyPendingSwitch()
+    {
+        IScreenCapturer? next;
+        TaskCompletionSource<bool>? result;
+        lock (_switchLock)
+        {
+            (next, result) = (_pendingCapturer, _pendingSwitch);
+            (_pendingCapturer, _pendingSwitch) = (null, null);
+        }
+
+        if (next == null)
+            return;
+
+        var ok = false;
+        try
+        {
+            ok = next.Initialize();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Switching capturer failed");
+        }
+
+        if (!ok)
+        {
+            Log.Warning("New capturer failed to initialize; keeping the current one");
+            next.Dispose();
+            result!.SetResult(false);
+            return;
+        }
+
+        var old = _capturer;
+        _capturer = next;
+        old.Dispose();
+
+        var (width, height) = OutputSize.Compute(next.Width, next.Height, _maxOutputWidth);
+        _output = new OutputDims(width, height);
+        // Frames of the old display still waiting for conversion would be squeezed into the new size.
+        while (_captureQueue.TryTake(out var stale))
+            stale.Dispose();
+        Interlocked.Exchange(ref _keyFramePending, 1);
+        Log.Information("Capturer switched: capture {Width}x{Height} -> output {OutWidth}x{OutHeight}",
+            next.Width, next.Height, width, height);
+        result!.SetResult(true);
     }
 
     /// <summary>
@@ -230,9 +321,10 @@ public sealed class CapturePipeline : IDisposable
                 try
                 {
                     var convertStart = Stopwatch.GetTimestamp();
-                    var videoFrame = frame.Width == _outputWidth && frame.Height == _outputHeight
+                    var output = _output;
+                    var videoFrame = frame.Width == output.Width && frame.Height == output.Height
                         ? _converter.Convert(frame)
-                        : _converter.ConvertAndScale(frame, _outputWidth, _outputHeight);
+                        : _converter.ConvertAndScale(frame, output.Width, output.Height);
                     _convertTimings.Record(Stopwatch.GetTimestamp() - convertStart);
                     _lastOutputWidth = videoFrame.Width;
                     _lastOutputHeight = videoFrame.Height;
@@ -277,10 +369,19 @@ public sealed class CapturePipeline : IDisposable
 
         try
         {
+            var lastWidth = 0;
+            var lastHeight = 0;
             foreach (var videoFrame in _conversionQueue.GetConsumingEnumerable(cancellationToken))
             {
                 try
                 {
+                    // After a display switch the picture is unrelated to the previous one, and a size change may
+                    // reset the encoder: either way the viewer needs a keyframe to start from.
+                    var sizeChanged = lastWidth != 0 && (videoFrame.Width != lastWidth || videoFrame.Height != lastHeight);
+                    (lastWidth, lastHeight) = (videoFrame.Width, videoFrame.Height);
+                    if (Interlocked.Exchange(ref _keyFramePending, 0) == 1 || sizeChanged)
+                        _videoSource.RequestKeyFrame();
+
                     // PushFrame encodes (software VP8) and sends synchronously, so this is the encode cost.
                     var pushStart = Stopwatch.GetTimestamp();
                     var pushed = _videoSource.PushFrame(videoFrame);
