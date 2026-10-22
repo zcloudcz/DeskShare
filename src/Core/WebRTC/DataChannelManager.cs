@@ -566,7 +566,11 @@ public sealed class DataChannelManager : IDisposable
             {
                 // Passed the policy: only sessions with the FileTransfer grant (and so a receiver) get here.
                 // Replies go to THIS peer's transport, whatever connection is current when they are sent.
-                return () => FileReceiver?.Handle(messageType, root, json => SendOn(peer, json));
+                // The generation is taken now, while the peer is known to be alive: if the peer is replaced before the
+                // effect runs, the replacement aborts the receiver, and the receiver then drops this stale message.
+                var receiver = FileReceiver;
+                var generation = receiver?.Generation;
+                return () => receiver?.Handle(messageType, root, json => SendOn(peer, json), generation);
             }
 
             if (messageType == "clipboard")

@@ -40,6 +40,11 @@ public sealed class FileReceiver : IDisposable
     private long _lastActivity;
     private bool _disposed;
 
+    // Bumped (under _gate) by every Abort. A message judged for a peer carries the generation of that moment; once the
+    // peer is gone (Abort), its late messages carry an old number and are dropped, so they cannot start an orphan
+    // transfer that would answer "busy" to the next viewer.
+    private long _generation;
+
     // Replies and events produced while _gate is held. They are run AFTER the lock is released (Flush): sending goes
     // through the peer's lock, and an event handler can do anything, so neither may run inside _gate.
     private readonly List<Action> _outbox = new();
@@ -77,6 +82,12 @@ public sealed class FileReceiver : IDisposable
     /// <summary>The folder files are saved into (full path).</summary>
     public string Folder => _folder;
 
+    /// <summary>
+    /// Current peer generation. Read it when a message is accepted for a peer and pass it to <see cref="Handle"/>.
+    /// Lock-free read on purpose: callers read it while holding the peer's lock, where taking _gate is not allowed.
+    /// </summary>
+    public long Generation => Interlocked.Read(ref _generation);
+
     /// <summary>Raised after a file was verified and saved.</summary>
     public event EventHandler<ReceivedFile>? FileReceived;
 
@@ -86,13 +97,15 @@ public sealed class FileReceiver : IDisposable
     /// </summary>
     /// <param name="send">Where replies to this message go; defaults to the receiver's own sender. A transfer keeps
     /// the route of the message that started it, so a late timeout reply cannot reach a different viewer.</param>
-    public void Handle(string type, JsonElement root, Func<string, bool>? send = null)
+    /// <param name="generation"><see cref="Generation"/> read when the message was accepted; null skips the check.
+    /// The message is dropped when an <see cref="Abort"/> happened since.</param>
+    public void Handle(string type, JsonElement root, Func<string, bool>? send = null, long? generation = null)
     {
         lock (_gate)
         {
-            if (_disposed)
+            if (_disposed || (generation is { } g && g != _generation))
             {
-                return;
+                return; // disposed, or the peer this message belongs to was aborted meanwhile
             }
 
             _callSend = send ?? _send;
@@ -148,11 +161,16 @@ public sealed class FileReceiver : IDisposable
         _outbox.Add(() => route(json));
     }
 
-    /// <summary>Drops the transfer in flight and deletes its .part file (viewer disconnected).</summary>
+    /// <summary>
+    /// Drops the transfer in flight and deletes its .part file (viewer disconnected), and invalidates every
+    /// <see cref="Generation"/> handed out so far, in one step under the gate: no late message of the old peer can
+    /// slip in between.
+    /// </summary>
     public void Abort()
     {
         lock (_gate)
         {
+            Interlocked.Increment(ref _generation);
             if (_active != null)
             {
                 _logger.Information("File transfer aborted: {Name}", _active.SafeName);
