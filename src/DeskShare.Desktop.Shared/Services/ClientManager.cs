@@ -339,13 +339,14 @@ public class ClientManager : IDisposable
         };
 
         // Handle connection state changes
+        var thisPeerConnection = _peerConnection; // events of a replaced peer connection must not fail or verify the new one
         _peerConnection.onconnectionstatechange += async (state) =>
         {
             _logger.LogInformation("WebRTC connection state: {State}", state);
 
             // The sender drops a viewer whose binding does not verify. Losing the connection after we sent our
             // binding but before the sender's arrived is treated as a failed check, not as a network glitch to retry.
-            if (_bindSent && !_peerVerified && state is RTCPeerConnectionState.failed or RTCPeerConnectionState.closed or RTCPeerConnectionState.disconnected)
+            if (ReferenceEquals(thisPeerConnection, _peerConnection) && _bindSent && !_peerVerified && state is RTCPeerConnectionState.failed or RTCPeerConnectionState.closed or RTCPeerConnectionState.disconnected)
             {
                 await FailBindingAsync();
                 return;
@@ -408,8 +409,10 @@ public class ClientManager : IDisposable
 
         // Setup data channel for remote control input and clipboard
         _dataChannel = await _peerConnection.createDataChannel("input", new RTCDataChannelInit());
+        var thisDataChannel = _dataChannel;
         _dataChannel.onopen += () =>
         {
+            if (!ReferenceEquals(thisDataChannel, _dataChannel)) return; // channel of a replaced connection
             _logger.LogInformation("Data channel opened");
             _clipboardManager?.StartMonitoring();
 
@@ -447,6 +450,10 @@ public class ClientManager : IDisposable
 
     private void OnDataChannelMessage(RTCDataChannel channel, DataChannelPayloadProtocols protocol, byte[] data)
     {
+        // The sender's binding is verified against the CURRENT peer connection's fingerprints, so a message from a
+        // channel of a replaced connection must never reach that check.
+        if (!ReferenceEquals(channel, _dataChannel)) return;
+
         try
         {
             var json = Encoding.UTF8.GetString(data);
@@ -560,7 +567,15 @@ public class ClientManager : IDisposable
         _logger.LogWarning("End-to-end check failed: the sender could not be verified. The connection may be intercepted.");
         _bindSent = false;
         _disconnectReason = BindFailedMessage;
-        await DisconnectAsync();
+        try
+        {
+            await DisconnectAsync();
+        }
+        catch (Exception ex)
+        {
+            // Called from async-void event handlers and timers: an exception here would take the process down.
+            _logger.LogWarning(ex, "Disconnecting after a failed end-to-end check failed");
+        }
     }
 
     private void SetHostAllowsFiles(bool allowed)

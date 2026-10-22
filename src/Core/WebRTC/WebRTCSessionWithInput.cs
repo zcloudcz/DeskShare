@@ -170,6 +170,7 @@ public sealed class WebRTCSessionWithInput : IDisposable
         }
 
         video.RequirePeerVerification = true;
+        video.PeerConnectionReset += _dataChannelManager.DetachDataChannel; // old peer's channel must not reach the new peer
 
         _dataChannelManager.VerifyViewerBind = viewerMac =>
         {

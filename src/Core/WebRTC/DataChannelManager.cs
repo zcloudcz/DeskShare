@@ -336,6 +336,12 @@ public sealed class DataChannelManager : IDisposable
     {
         try
         {
+            // A channel that was replaced or detached no longer counts (its verification belongs to an old peer).
+            if (!ReferenceEquals(dc, _dataChannel))
+            {
+                return;
+            }
+
             Interlocked.Increment(ref _messagesReceived);
             Interlocked.Add(ref _bytesReceived, data.Length);
 
@@ -552,8 +558,10 @@ public sealed class DataChannelManager : IDisposable
     /// <summary>
     /// Detaches from the current data channel and unsubscribes from events.
     /// </summary>
-    private void DetachDataChannel()
+    internal void DetachDataChannel()
     {
+        PeerVerified = false; // also when no channel is attached: verification never outlives its peer
+
         if (_dataChannel == null)
         {
             return;

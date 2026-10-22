@@ -20,6 +20,7 @@ const APP_SHELL_FILES = [
     '/webclient/index.html',
     '/webclient/client.js',
     '/webclient/remote-control.js',
+    '/webclient/bind-gate.js',
     '/webclient/mobile.css',
     '/webclient/manifest.json'
 ];

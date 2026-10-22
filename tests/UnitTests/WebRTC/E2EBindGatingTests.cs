@@ -116,6 +116,21 @@ public sealed class E2EBindGatingTests
     }
 
     [Fact]
+    public void NewPeer_StartsUnverified_EvenIfThePreviousOneWasVerified()
+    {
+        var (manager, controller) = Create(_ => "sender-mac");
+        manager.ProcessInputMessage(BindJson);
+        Assert.True(manager.PeerVerified);
+
+        manager.DetachDataChannel(); // what a peer connection reset does
+
+        Assert.False(manager.PeerVerified);
+        Assert.Equal(SessionCapabilities.None, manager.GrantedCapabilities);
+        manager.ProcessInputMessage(InputJson);
+        controller.DidNotReceive().ApplyInput(Arg.Any<InputMessage>());
+    }
+
+    [Fact]
     public void WithoutBindingConfigured_BehaviourIsUnchanged()
     {
         var controller = Substitute.For<IInputController>();

@@ -137,25 +137,30 @@ function bindData(role, senderFp, viewerFp) {
 }
 
 // Fingerprints as this side sees them: the sender's is in the remote description, ours in the local one.
-function bindFingerprints() {
+// Always for an explicit peer connection (never the global pc, which a new offer may have replaced).
+function bindFingerprints(peer) {
     return {
-        senderFp: getFingerprint(pc?.remoteDescription?.sdp),
-        viewerFp: getFingerprint(pc?.localDescription?.sdp)
+        senderFp: getFingerprint(peer?.remoteDescription?.sdp),
+        viewerFp: getFingerprint(peer?.localDescription?.sdp)
     };
 }
 
-async function sendBind() {
-    const { senderFp, viewerFp } = bindFingerprints();
+// Checked after every await: has a new offer replaced the connection this check started on?
+const bindGate = new BindGate();
+
+async function sendBind(peer, channel, token) {
+    const { senderFp, viewerFp } = bindFingerprints(peer);
     if (!e2eKey || !senderFp || !viewerFp) return false;
     const mac = toHex(await crypto.subtle.sign('HMAC', await bindKey('sign'), bindData('viewer', senderFp, viewerFp)));
-    dataChannel.send(JSON.stringify({ type: 'e2e_bind', v: 1, role: 'viewer', mac }));
+    if (!bindGate.isCurrent(token)) return true; // replaced meanwhile: nothing to send, and not a failure of the new one
+    channel.send(JSON.stringify({ type: 'e2e_bind', v: 1, role: 'viewer', mac }));
     bindSent = true;
     return true;
 }
 
 // crypto.subtle.verify compares in constant time.
-async function verifySenderBind(message) {
-    const { senderFp, viewerFp } = bindFingerprints();
+async function verifySenderBind(message, peer) {
+    const { senderFp, viewerFp } = bindFingerprints(peer);
     if (!e2eKey || !senderFp || !viewerFp || message.v !== 1 || message.role !== 'sender'
         || typeof message.mac !== 'string' || !/^[0-9a-fA-F]{64}$/.test(message.mac)) return false;
     const mac = Uint8Array.from(message.mac.match(/../g), (h) => parseInt(h, 16));
@@ -449,8 +454,23 @@ async function handleOffer(message) {
     try {
         updateStatus('Received offer, creating peer connection...', 'info');
 
+        // A new offer replaces the connection: detach and close the old one first, so none of its late events or
+        // callbacks can act on the new one.
+        if (remoteControl) { remoteControl.disable(); remoteControl = null; }
+        if (dataChannel) {
+            dataChannel.onopen = dataChannel.onclose = dataChannel.onmessage = null;
+            dataChannel.close();
+            dataChannel = null;
+        }
+        if (pc) {
+            pc.ondatachannel = pc.ontrack = pc.onicecandidate = pc.onconnectionstatechange = pc.oniceconnectionstatechange = null;
+            pc.close();
+        }
+        clearTimeout(bindTimer);
+
         // Create peer connection
         pc = new RTCPeerConnection(config);
+        bindGate.reset(pc); // all checks started on the old connection are stale from now on
         peerVerified = false; // every peer connection must pass the end-to-end check again
         bindSent = false;
         pendingStream = null;
@@ -693,6 +713,7 @@ function cleanup() {
     peerVerified = false;
     bindSent = false;
     pendingStream = null;
+    bindGate.reset(null);
     clearTimeout(bindTimer);
 
     remoteVideo.style.display = 'none';
@@ -711,16 +732,20 @@ function cleanup() {
 
 function setupDataChannel(channel) {
     dataChannel = channel;
+    const peer = pc;
     dataChannel.onopen = () => {
+        if (dataChannel !== channel || pc !== peer) return;
+        const token = bindGate.token();
         remoteControl = new RemoteControl(remoteVideo, dataChannel);
         // First message on the channel is our e2e binding. The authorization_request follows only after the
         // sender's binding verified (below); nothing else is sent before that.
-        sendBind().then((sent) => { if (!sent) failBinding(); }, () => failBinding());
+        sendBind(peer, channel, token).then((sent) => { if (!sent && bindGate.isCurrent(token)) failBinding(); }, () => { if (bindGate.isCurrent(token)) failBinding(); });
         updateControlButton();
         // The channel also exists for clipboard-only sessions, so "control available" is only said once the
         // host's authorization_response confirms it.
     };
     dataChannel.onclose = () => {
+        if (dataChannel !== channel) return; // an old channel closing must not tear down the current one
         if (remoteControl) remoteControl.disable();
         remoteControl = null;
         dataChannel = null;
@@ -734,14 +759,16 @@ function setupDataChannel(channel) {
         try { message = JSON.parse(event.data); } catch { return; }
         if (message.type === 'e2e_bind') {
             if (peerVerified) return;
-            verifySenderBind(message).then((ok) => {
-                if (!ok) { failBinding(); return; }
+            if (dataChannel !== channel || pc !== peer) return;
+            const token = bindGate.token();
+            // Success AND failure only count for the connection the check started on.
+            verifySenderBind(message, peer).then((ok) => bindGate.complete(token, ok, () => {
                 peerVerified = true;
                 clearTimeout(bindTimer);
                 showVideo();
                 // The host's authorization_response also tells us whether it shares the clipboard.
-                dataChannel.send(JSON.stringify({ type: 'authorization_request', timestamp: new Date().toISOString() }));
-            }, () => failBinding());
+                channel.send(JSON.stringify({ type: 'authorization_request', timestamp: new Date().toISOString() }));
+            }, failBinding), () => { if (bindGate.isCurrent(token)) failBinding(); });
             return;
         }
         // Until the sender's binding verified, whatever else arrives is ignored (it could come from a man in the middle).

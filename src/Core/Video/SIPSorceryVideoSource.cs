@@ -60,6 +60,12 @@ public sealed class SIPSorceryVideoSource : IVideoSource
 
     private volatile bool _peerVerified;
 
+    /// <summary>
+    /// Raised at the start of <see cref="ResetPeerConnection"/>, before the new peer connection exists. The data channel
+    /// of the old peer must be dropped then, or a late message on it could be verified against the new peer.
+    /// </summary>
+    public event Action? PeerConnectionReset;
+
     /// <summary>Releases video to the current peer connection and makes its first frame a keyframe.</summary>
     public void MarkPeerVerified()
     {
@@ -101,6 +107,7 @@ public sealed class SIPSorceryVideoSource : IVideoSource
 
         // The new peer has not proven anything yet (matters only with RequirePeerVerification).
         _peerVerified = false;
+        PeerConnectionReset?.Invoke();
 
         // Disconnect encoder from old peer connection
         if (_videoEncoder != null && _peerConnection != null)

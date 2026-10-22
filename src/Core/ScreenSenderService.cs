@@ -30,7 +30,6 @@ public class ScreenSenderService : IHostedService, IDisposable
     private readonly SemaphoreSlim _registerLock = new(1, 1);
     private Task? _executingTask;
     private CancellationTokenSource? _stoppingCts;
-    private WebRTCSession? _webrtcSession;
     private WebRTCSessionWithInput? _webrtcSessionWithInput;
     private CapturePipeline? _pipeline;
     private bool _disposed;
@@ -359,9 +358,6 @@ public class ScreenSenderService : IHostedService, IDisposable
             _pipeline?.Dispose();
             _pipeline = null;
 
-            _webrtcSession?.Dispose();
-            _webrtcSession = null;
-
             _webrtcSessionWithInput?.Dispose();
             _webrtcSessionWithInput = null;
 
@@ -450,8 +446,6 @@ public class ScreenSenderService : IHostedService, IDisposable
                     var url = BuildSignalingUrl();
                     if (_webrtcSessionWithInput != null)
                         await _webrtcSessionWithInput.ReconnectSignalingAsync(url, ServerId, stoppingToken);
-                    else if (_webrtcSession != null)
-                        await _webrtcSession.ReconnectSignalingAsync(url, ServerId, stoppingToken);
                     else
                         return; // service is shutting down, sessions are gone
 
@@ -478,7 +472,7 @@ public class ScreenSenderService : IHostedService, IDisposable
 
             // The socket may have dropped again after we connected but before the flag was cleared;
             // that event was ignored, so check once more.
-            var stillConnected = _webrtcSessionWithInput?.IsSignalingConnected ?? _webrtcSession?.IsSignalingConnected ?? true;
+            var stillConnected = _webrtcSessionWithInput?.IsSignalingConnected ?? true;
             if (!stillConnected)
                 OnSignalingConnectionLost();
         }
@@ -601,7 +595,7 @@ public class ScreenSenderService : IHostedService, IDisposable
                         if (mapped.Count > 0)
                         {
                             _iceServers = mapped;
-                            ApplyIceServers(_webrtcSession?.VideoSource ?? _webrtcSessionWithInput?.VideoSource);
+                            ApplyIceServers(_webrtcSessionWithInput?.VideoSource);
                         }
                     }
                     _logger.LogInformation("Successfully registered with SignalingServer | ServerId: {ServerId}", ServerId);
@@ -680,7 +674,6 @@ public class ScreenSenderService : IHostedService, IDisposable
         _stoppingCts?.Dispose();
 
         _pipeline?.Dispose();
-        _webrtcSession?.Dispose();
         _webrtcSessionWithInput?.Dispose();
         _httpClient?.Dispose();
 
