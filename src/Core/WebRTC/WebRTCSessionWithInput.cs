@@ -491,7 +491,8 @@ public sealed class WebRTCSessionWithInput : IDisposable
 
         _dataChannelManager.Dispose();
         _dataChannelManager.FileReceiver?.Dispose();
-        _dataChannelManager.PrivacyScreen?.Dispose();
+        _dataChannelManager.PrivacyScreen?.Dispose(); // overlay off (and input unblocked) before the controller goes
+        _inputController?.Dispose();
         _baseSession.Dispose();
         _clipboardManager?.Dispose();
 

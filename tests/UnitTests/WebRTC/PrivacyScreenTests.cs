@@ -19,16 +19,19 @@ public sealed class PrivacyScreenTests
         public int HideCalls;
         public PrivacyShowResult NextResult = new(true);
         public bool Disposed;
-        public event Action<string>? Failed;
-        public void Fail(string reason) { Visible = false; Failed?.Invoke(reason); }
+        public event Action<int, string>? Failed;
+        public int Generation;
+        public void Fail(string reason) { Visible = false; Failed?.Invoke(Generation, reason); }
+        public void FailOld(int generation) => Failed?.Invoke(generation, "overlay_failed");
         public Action? OnShow; // runs inside TryShow, to interleave events deterministically
 
         public PrivacyShowResult TryShow(bool blockInput)
         {
             OnShow?.Invoke();
             Visible = NextResult.Shown;
+            Generation++;
             BlockRequested = blockInput;
-            return NextResult;
+            return NextResult with { Generation = Generation };
         }
 
         public void Hide() { Visible = false; HideCalls++; }
@@ -202,6 +205,21 @@ public sealed class PrivacyScreenTests
 
         Assert.False(controller.Enabled);
         Assert.Equal((false, "overlay_failed"), states[^1]);
+    }
+
+    [Fact]
+    public void LateFailureOfOlderShow_DoesNotHideTheCurrentOne()
+    {
+        var overlay = new FakeOverlay();
+        var controller = new PrivacyScreenController(overlay, false);
+        controller.Set(true, controller.Epoch); // generation 1
+        var old = overlay.Generation;
+        controller.Set(true, controller.Epoch); // generation 2 replaces it
+
+        overlay.FailOld(old);
+
+        Assert.True(controller.Enabled);
+        Assert.True(overlay.Visible);
     }
 
     [Theory]

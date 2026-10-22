@@ -110,14 +110,16 @@ public sealed class PrivacyOverlay : IPrivacyOverlay
         var result = (int)SendMessageW(_controller, MsgShow, blockInput ? 1 : 0, IntPtr.Zero);
         return result switch
         {
-            1 => new PrivacyShowResult(true),
-            2 => new PrivacyShowResult(true, "input_block_failed"),
+            1 => new PrivacyShowResult(true, null, Volatile.Read(ref _generation)),
+            2 => new PrivacyShowResult(true, "input_block_failed", Volatile.Read(ref _generation)),
             _ => new PrivacyShowResult(false, _reason ?? "overlay_failed")
         };
     }
 
     /// <inheritdoc />
-    public event Action<string>? Failed;
+    public event Action<int, string>? Failed;
+
+    private int _generation; // bumped by every show and hide; a late Failed of an older generation is ignored
 
     public void Hide()
     {
@@ -246,6 +248,7 @@ public sealed class PrivacyOverlay : IPrivacyOverlay
         _reason = null;
         if (_visible)
             HideAll();
+        Interlocked.Increment(ref _generation);
 
         _desktop?.Refresh();
         _blockRequested = blockInput;
@@ -269,6 +272,7 @@ public sealed class PrivacyOverlay : IPrivacyOverlay
 
     private void HideAll()
     {
+        Interlocked.Increment(ref _generation);
         KillTimer(_controller, TimerId);
         SetBlocking(false);
         DestroyOverlayWindows();
@@ -302,10 +306,16 @@ public sealed class PrivacyOverlay : IPrivacyOverlay
             DestroyOverlayWindows();
             if (!CreateOverlayWindows())
             {
+                var failedGeneration = _generation;
                 HideAll(); // cannot cover the new layout safely; fail open and tell the controller
+                var afterHide = _generation;
                 // Queued, not called here: the handler takes the controller's lock, which a thread blocked in TryShow
-                // (waiting for this very thread) may hold.
-                ThreadPool.QueueUserWorkItem(_ => Failed?.Invoke("overlay_failed"));
+                // (waiting for this very thread) may hold. If a newer show/hide happened meanwhile, drop it.
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    if (afterHide == Volatile.Read(ref _generation))
+                        Failed?.Invoke(failedGeneration, "overlay_failed");
+                });
                 return;
             }
             ShowAllWindows(true);

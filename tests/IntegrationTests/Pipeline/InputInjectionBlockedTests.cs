@@ -32,14 +32,15 @@ public sealed class InputInjectionBlockedTests
         var blocked = controller.SetLocalInputBlocked(true);
         try
         {
-            // Two targets far apart, so a lost move cannot pass by luck. Coordinates are normalized over the virtual screen.
+            // Two targets far apart, so a lost move cannot pass by luck. Coordinates are normalized over the primary monitor.
             foreach (var (x, y) in new[] { (0.25, 0.25), (0.75, 0.75) })
             {
                 SetCursorPos(0, 0);
                 Assert.True(controller.ApplyInput(new InputMessage { Type = InputMessageType.MouseMove, X = x, Y = y, Timestamp = DateTime.UtcNow }));
                 await Task.Delay(100);
                 GetCursorPos(out var p);
-                var width = GetSystemMetrics(78);
+                // The controller maps to the primary monitor (no VIRTUALDESK), so compare with its size.
+                var width = GetSystemMetrics(0); // SM_CXSCREEN
                 Assert.True(p.X > width * (x - 0.1), $"cursor did not move (blocked={blocked}, x={p.X})");
             }
         }

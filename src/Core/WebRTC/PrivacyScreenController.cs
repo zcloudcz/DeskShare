@@ -18,6 +18,7 @@ public sealed class PrivacyScreenController : IDisposable
     private readonly bool _blockInput;
     private readonly object _gate = new();
     private long _epoch;
+    private int _shownGeneration;
 
     public PrivacyScreenController(IPrivacyOverlay overlay, bool blockInput)
     {
@@ -52,6 +53,7 @@ public sealed class PrivacyScreenController : IDisposable
             {
                 var result = _overlay.TryShow(_blockInput);
                 Enabled = result.Shown;
+                _shownGeneration = result.Generation;
                 reason = result.Reason;
             }
             else
@@ -79,12 +81,12 @@ public sealed class PrivacyScreenController : IDisposable
     }
 
     // The overlay removed itself (and released input). Mirror that and tell the viewer.
-    private void OnOverlayFailed(string reason)
+    private void OnOverlayFailed(int generation, string reason)
     {
         lock (_gate)
         {
-            if (!Enabled)
-                return;
+            if (!Enabled || generation != _shownGeneration)
+                return; // a failure of an earlier show must not hide the current one
             _overlay.Hide();
             Enabled = false;
         }
