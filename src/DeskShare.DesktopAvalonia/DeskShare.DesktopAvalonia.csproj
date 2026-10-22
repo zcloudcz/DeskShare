@@ -4,6 +4,7 @@
   <ItemGroup>
     <ProjectReference Include="..\DeskShare.Desktop.Shared\DeskShare.Desktop.Shared.csproj" />
     <ProjectReference Include="..\Core\DeskShare.Core.csproj" />
+    <ProjectReference Include="..\DeskShare.Unattended\DeskShare.Unattended.csproj" />
   </ItemGroup>
 
   <!-- NuGet packages: Avalonia UI + platform-specific packages only -->
@@ -31,6 +32,8 @@
     <PackageReference Include="SIPSorcery" Version="10.0.16" />
     <PackageReference Include="SIPSorceryMedia.FFmpeg" Version="10.0.16" />
     <PackageReference Include="Velopack" Version="1.2.161" />
+    <!-- Status of the unattended-access Windows service (Server Mode tab) -->
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.1" />
   </ItemGroup>
 
   <!-- Window/taskbar icon (Window.Icon="/deskshare.png"); the exe icon comes from ApplicationIcon -->
