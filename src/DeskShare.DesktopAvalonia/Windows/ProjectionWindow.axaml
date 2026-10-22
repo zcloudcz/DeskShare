@@ -147,6 +147,17 @@
                                   Cursor="Hand"
                                   Click="ToggleFullscreen_Click"/>
 
+                            <Button x:Name="CtrlAltDelButton"
+                                  Content="Ctrl+Alt+Del"
+                                  Background="#444444"
+                                  Foreground="White"
+                                  BorderThickness="0"
+                                  Padding="12,8"
+                                  Margin="5,0"
+                                  Cursor="Hand"
+                                  IsEnabled="False"
+                                  Click="CtrlAltDel_Click"/>
+
                             <Button Content="Disconnect"
                                   Background="#D13438"
                                   Foreground="White"
