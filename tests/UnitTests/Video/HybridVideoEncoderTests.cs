@@ -182,6 +182,79 @@ public sealed class HybridVideoEncoderTests
         Push();                                // after giving up nothing is encoded or retried
         Assert.Equal(before, sent);
         Assert.Equal(2, contexts.Count);
+        HardwareH264Encoder.HardwareDisabled = false; // process-wide flag, do not leak into other tests
+    }
+
+    [Fact]
+    public void NullOutputAfterRebuild_IsNotRecovery_SoTheEncoderEventuallyGivesUp()
+    {
+        // Every new context buffers one frame (null) and then keeps throwing.
+        using var encoder = new HardwareH264Encoder("fake", (_, _) =>
+        {
+            var first = true;
+            return new FakeContext(() =>
+            {
+                if (!first) throw new InvalidOperationException("gpu gone");
+                first = false;
+                return null;
+            });
+        });
+
+        for (var i = 0; i < HardwareH264Encoder.FailuresBeforeRecreate * 3 + 5; i++)
+            encoder.ExternalVideoSourceRawSample(33, 64, 64, new byte[64 * 64 * 3 / 2], VideoPixelFormatsEnum.I420);
+
+        try { Assert.True(encoder.Failed); }
+        finally { HardwareH264Encoder.HardwareDisabled = false; }
+    }
+
+    [Fact]
+    public void TruncatedI420Buffer_IsDroppedWithoutTouchingTheEncoder()
+    {
+        var created = 0;
+        using var encoder = new HardwareH264Encoder("fake", (_, _) => { created++; return new FakeContext(() => new byte[] { 1 }); });
+        var sent = 0;
+        encoder.OnVideoSourceEncodedSample += (_, _) => sent++;
+
+        encoder.ExternalVideoSourceRawSample(33, 64, 64, new byte[64 * 64], VideoPixelFormatsEnum.I420);   // Y plane only
+        encoder.ExternalVideoSourceRawSample(33, 63, 64, new byte[64 * 64 * 2], VideoPixelFormatsEnum.I420); // odd width
+        encoder.ExternalVideoSourceRawSample(33, 0, 0, Array.Empty<byte>(), VideoPixelFormatsEnum.I420);
+
+        Assert.Equal(0, sent);
+        Assert.Equal(0, created);
+    }
+
+    [RequiresFfmpegFact]
+    public void NativeContext_RejectsTruncatedBuffer_InsteadOfReadingPastIt()
+    {
+        VideoEncoderFactory.Create(true, FindFfmpegFolder(), VideoCodecPreference.Vp8); // initialises FFmpeg
+        var name = HardwareH264Encoder.FindAvailable();
+        if (name == null)
+            return;
+        using var ctx = new NativeH264Context(name, HardwareH264Encoder.OptionsFor(name), 320, 192, 1_000_000);
+        Assert.Throws<ArgumentException>(() => ctx.Encode(new byte[320 * 192], false));
+    }
+
+    [RequiresFfmpegFact]
+    public void AfterPermanentGpuFailure_NewEncodersAdvertiseVp8Only()
+    {
+        try
+        {
+            using var broken = new HardwareH264Encoder("fake", (_, _) => new FakeContext(() => throw new InvalidOperationException("gpu gone")));
+            for (var i = 0; i < HardwareH264Encoder.FailuresBeforeRecreate * 2; i++)
+                broken.ExternalVideoSourceRawSample(33, 64, 64, new byte[64 * 64 * 3 / 2], VideoPixelFormatsEnum.I420);
+            Assert.True(broken.Failed);
+
+            // Default probe: must not hand out the GPU encoder again, whatever the cached probe result was.
+            var next = VideoEncoderFactory.Create(true, FindFfmpegFolder(), VideoCodecPreference.H264);
+            using var _ = (IDisposable)next;
+            Assert.Equal(VideoCodecsEnum.VP8, Assert.Single(VideoEncoderFactory.AdvertisedFormats(next)).Codec);
+
+            // An encoder that already exists (second client of MultiClientVideoSource) stops offering H.264 too.
+            var existing = new HybridVideoEncoder(VideoEncoderFactory.Create(true, FindFfmpegFolder(), VideoCodecPreference.Vp8), new HardwareH264Encoder("h264_amf"));
+            using var __ = existing;
+            Assert.Equal(VideoCodecsEnum.VP8, Assert.Single(existing.GetVideoSourceFormats()).Codec);
+        }
+        finally { HardwareH264Encoder.HardwareDisabled = false; }
     }
 
     [Fact]

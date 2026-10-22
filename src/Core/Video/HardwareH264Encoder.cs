@@ -31,6 +31,7 @@ internal sealed class HardwareH264Encoder : IVideoSource, IDisposable
     private int _width, _height;
     private bool _forceKeyFrame;
     private int _failures;
+    private int _invalidFrames;
     private bool _recreated;
 
     public HardwareH264Encoder(string encoderName, Func<int, int, IH264Context>? createContext = null)
@@ -44,13 +45,22 @@ internal sealed class HardwareH264Encoder : IVideoSource, IDisposable
     /// True once the encoder failed again right after its context was rebuilt. From then on frames are dropped and
     /// <see cref="HybridVideoEncoder"/> stops advertising H.264, so the next viewer negotiates VP8.
     /// </summary>
-    public bool Failed { get; private set; }
+    public bool Failed => _failed || HardwareDisabled;
+
+    private bool _failed;
+
+    /// <summary>
+    /// Set when any encoder gave up: the GPU encoder is not used again by this process, so encoders created later
+    /// (a new viewer, a reconnect) advertise VP8 only instead of negotiating H.264 and sending nothing.
+    /// Cleared only by restarting the app.
+    /// </summary>
+    internal static volatile bool HardwareDisabled;
 
     /// <summary>Raised once, when <see cref="Failed"/> becomes true.</summary>
     public event Action? HardwareFailed;
 
     /// <summary>Name of the first hardware encoder that really initialises on this machine, or null. Probed once.</summary>
-    public static string? FindAvailable() => Available.Value;
+    public static string? FindAvailable() => HardwareDisabled ? null : Available.Value;
 
     /// <summary>
     /// "Listed in FFmpeg" is not enough (h264_nvenc exists in every build, but fails without an NVIDIA driver),
@@ -111,6 +121,14 @@ internal sealed class HardwareH264Encoder : IVideoSource, IDisposable
         if (pixelFormat != VideoPixelFormatsEnum.I420)
             throw new NotSupportedException("The H.264 encoder takes I420 input only.");
 
+        // VideoFrame planes can be shorter than width x height; native code must never read past the array.
+        if (width <= 0 || height <= 0 || width % 2 != 0 || height % 2 != 0 || sample.Length < (long)width * height * 3 / 2)
+        {
+            if (_invalidFrames++ % 100 == 0)
+                Log.Warning("Dropping invalid I420 frame: {Width}x{Height}, {Length} bytes", width, height, sample.Length);
+            return;
+        }
+
         byte[]? encoded;
         lock (_lock)
         {
@@ -120,7 +138,9 @@ internal sealed class HardwareH264Encoder : IVideoSource, IDisposable
             {
                 encoded = Encode(width, height, sample);
                 _failures = 0;
-                _recreated = false;
+                // A null (hardware still buffering its first frame) is no proof the context works.
+                if (encoded is { Length: > 0 })
+                    _recreated = false;
             }
             catch (Exception ex)
             {
@@ -150,7 +170,8 @@ internal sealed class HardwareH264Encoder : IVideoSource, IDisposable
             Log.Warning("H.264 encoder {Encoder} keeps failing, rebuilding it", _name);
             return;
         }
-        Failed = true;
+        _failed = true;
+        HardwareDisabled = true;
         Log.Error("H.264 encoder {Encoder} failed again after a rebuild, giving up: new viewers will get VP8", _name);
         HardwareFailed?.Invoke();
     }

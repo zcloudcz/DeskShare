@@ -28,6 +28,8 @@ internal sealed unsafe class NativeH264Context : IH264Context
 
     public NativeH264Context(string encoderName, Dictionary<string, string> options, int width, int height, long bitrate)
     {
+        if (width <= 0 || height <= 0 || width % 2 != 0 || height % 2 != 0)
+            throw new ArgumentException("Width and height must be positive and even.");
         _width = width;
         _height = height;
 
@@ -70,6 +72,8 @@ internal sealed unsafe class NativeH264Context : IH264Context
 
     public byte[]? Encode(byte[] i420, bool forceKeyFrame)
     {
+        if (i420.Length < (long)_width * _height * 3 / 2)
+            throw new ArgumentException("I420 buffer is shorter than width x height x 1.5.", nameof(i420));
         Check(ffmpeg.av_frame_make_writable(_frame), "av_frame_make_writable");
         FillNv12(i420);
         _frame->pts = _pts++;
