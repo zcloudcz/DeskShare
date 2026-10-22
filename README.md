@@ -337,7 +337,7 @@ dotnet test
 - ✅ WebSocketSignaler connectivity
 - ✅ Pipeline construction
 
-**Linux E2E test (Docker):** skutečný headless sender na virtuálním X displeji (Xvfb), signaling server a .NET viewer. Ověřuje video, ovládání myší, vypnuté ovládání a odmítnutí špatného passkey. Vyžaduje Docker:
+**Linux E2E test (Docker):** skutečný headless sender na virtuálním X displeji (Xvfb), signaling server a .NET viewer. Ověřuje video, ovládání myší, psaní z klávesnice (xterm), vypnuté ovládání a odmítnutí špatného passkey. Vyžaduje Docker:
 
 ```bash
 docker compose -f docker-compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e
@@ -346,7 +346,7 @@ docker compose -f docker-compose.e2e.yml up --build --abort-on-container-exit --
 
 **Výkonnostní měření (FPS, latence, časy odesílatele)** při 1280x720 a 1920x1080 běží ve stejném E2E; jen ty spustíš přes `E2E_FILTER=FullyQualifiedName~LinuxE2EPerfTests`. Report skončí v `TestResults/e2e/perf.md` a `perf.json` (v CI jako artefakt `e2e-perf` a v souhrnu jobu). Prahy jsou záměrně hrubé (720p: FPS >= 10, medián latence <= 1000 ms); 1080p se jen reportuje.
 
-**Linux Wayland E2E (Docker):** sender v čistě Wayland session (headless sway, bez `DISPLAY`) snímá přes ScreenCast portál (xdg-desktop-portal-wlr) a PipeWire. Ověřuje video, uložený restore token a to, že zapnuté ovládání bez RemoteDesktop portálu nerozbije streamování. Pohyb myši na Waylandu se v kontejneru neověřuje (wlr portál RemoteDesktop nemá, GNOME/KDE vyžadují potvrzovací dialog); mapování vstupu pokrývají unit testy `WaylandPortalTests`.
+**Linux Wayland E2E (Docker):** sender v čistě Wayland session (headless sway, bez `DISPLAY`) snímá přes ScreenCast portál (xdg-desktop-portal-wlr) a PipeWire. Před E2E pustí linuxové unit testy `WaylandPortal*` (práva a symlinky u restore tokenu). Ověřuje video, uložený restore token a to, že zapnuté ovládání bez RemoteDesktop portálu nerozbije streamování. Pohyb myši na Waylandu se v kontejneru neověřuje (wlr portál RemoteDesktop nemá, GNOME/KDE vyžadují potvrzovací dialog); mapování vstupu pokrývají unit testy `WaylandPortalTests`.
 
 ```bash
 docker compose -f docker-compose.e2e-wayland.yml up --build --abort-on-container-exit --exit-code-from e2e-wayland

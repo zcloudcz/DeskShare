@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using DeskShare.Core;
 using DeskShare.Core.Models;
@@ -74,6 +75,56 @@ public class LinuxE2ETests
             () => client.SendInputAsync(new InputMessage { Type = InputMessageType.MouseMove, X = 0.25, Y = 0.75 }));
 
         Assert.True(moved, $"Pointer at {XServer.PointerLocation()}, expected ~(320, 540)\n{sender.Output}\n{Viewer.LogText()}");
+    }
+
+    [E2EFact]
+    public async Task RemoteControlEnabled_Typing_ArrivesInTheFocusedWindow()
+    {
+        // A small xterm in the top-left corner writes what it receives to a file once Enter is pressed. Without a
+        // window manager X gives the keyboard to the window under the pointer, so the viewer first moves the
+        // pointer onto it. Keys are Windows virtual-key codes, as the web client (event.keyCode) and the
+        // Avalonia viewer (KeyMapper.ToVirtualKey) send them, including separate Shift down/up events.
+        var typedFile = $"/tmp/typed-{Guid.NewGuid():N}";
+        var title = "typing-target";
+        var psi = new ProcessStartInfo("xterm") { UseShellExecute = false };
+        foreach (var arg in new[] { "-T", title, "-geometry", "40x4+0+0", "-e", "sh", "-c", $"cat > {typedFile}" })
+            psi.ArgumentList.Add(arg);
+        using var xterm = Process.Start(psi)!;
+        try
+        {
+            Assert.True(await XServer.WaitUntilAsync(() => XServer.HasWindow(title), TimeSpan.FromSeconds(10)), "xterm did not start");
+
+            using var sender = await SenderProcess.StartAsync(remoteControl: true);
+            var connected = false;
+            using var client = await Viewer.ConnectAsync(sender, (_, _) => connected = true);
+            Assert.True(await XServer.WaitUntilAsync(() => connected, TimeSpan.FromSeconds(45)), "No video, so no connection\n" + sender.Output + "\n" + Viewer.LogText());
+
+            // Pointer onto the xterm (normalized 0.05/0.03 -> 64/21); repeated until the data channel delivers it.
+            var onXterm = await XServer.WaitUntilAsync(
+                () => Math.Abs(XServer.PointerLocation().X - 64) <= 3 && Math.Abs(XServer.PointerLocation().Y - 21) <= 3,
+                TimeSpan.FromSeconds(20),
+                () => client.SendInputAsync(new InputMessage { Type = InputMessageType.MouseMove, X = 0.05, Y = 0.03 }));
+            Assert.True(onXterm, $"Pointer at {XServer.PointerLocation()}\n{sender.Output}");
+
+            const int Shift = 0x10, Enter = 0x0D;
+            async Task Key(int vk, bool down) =>
+                await client.SendInputAsync(new InputMessage { Type = down ? InputMessageType.KeyDown : InputMessageType.KeyUp, KeyCode = vk });
+            async Task Tap(int vk) { await Key(vk, true); await Key(vk, false); }
+
+            await Key(Shift, true); await Tap('H'); await Key(Shift, false);
+            foreach (var c in "ELLO1") await Tap(c);
+            await Key(Shift, true); await Tap('1'); await Key(Shift, false); // '!'
+            await Tap(Enter);
+
+            string Typed() => File.Exists(typedFile) ? File.ReadAllText(typedFile) : "";
+            Assert.True(await XServer.WaitUntilAsync(() => Typed() == "Hello1!\n", TimeSpan.FromSeconds(10)),
+                $"Typed: '{Typed()}'\n{sender.Output}");
+        }
+        finally
+        {
+            try { xterm.Kill(entireProcessTree: true); } catch { /* already gone */ }
+            File.Delete(typedFile);
+        }
     }
 
     [E2EFact]
