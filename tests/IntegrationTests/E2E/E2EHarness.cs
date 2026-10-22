@@ -1,3 +1,4 @@
+using System.Net;
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text.RegularExpressions;
@@ -110,7 +111,9 @@ public sealed class SenderProcess : IDisposable
 /// <summary>Authenticates like the Avalonia app does (signed POST /authenticate) and builds the real ClientManager.</summary>
 public static class Viewer
 {
-    public static async Task<ClientAuthenticationResponse?> AuthenticateAsync(string serverId, string passkey, string clientId)
+    /// <returns>The HTTP status, so callers can tell a real rejection (401) from a server error or rate limit,
+    /// and the parsed response when the call succeeded.</returns>
+    public static async Task<(HttpStatusCode Status, ClientAuthenticationResponse? Response)> AuthenticateAsync(string serverId, string passkey, string clientId)
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         var timestamp = DateTime.UtcNow;
@@ -125,9 +128,9 @@ public static class Viewer
                 Nonce = nonce,
                 Signature = RequestSigningService.SignRequest(serverId, passkey, timestamp, nonce)
             });
-        return response.IsSuccessStatusCode
+        return (response.StatusCode, response.IsSuccessStatusCode
             ? await response.Content.ReadFromJsonAsync<ClientAuthenticationResponse>()
-            : null; // wrong passkey etc.: the server answers with an error status
+            : null);
     }
 
     /// <summary>Viewer log lines, appended to failure messages so a failed run explains itself.</summary>
@@ -138,7 +141,7 @@ public static class Viewer
         lock (Log) Log.Clear();
         var loggers = LoggerFactory.Create(b => b.SetMinimumLevel(LogLevel.Information).AddProvider(new ListLoggerProvider(Log)));
         var clientId = ServerIdGenerator.GenerateClientId();
-        var auth = await AuthenticateAsync(sender.ServerId, sender.Passkey, clientId);
+        var (_, auth) = await AuthenticateAsync(sender.ServerId, sender.Passkey, clientId);
         Assert.True(auth?.Success, $"authenticate failed (passkey used: {sender.Passkey})\n{sender.Output}");
 
         var client = new ClientManager(

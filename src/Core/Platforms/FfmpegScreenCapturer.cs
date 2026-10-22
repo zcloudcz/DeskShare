@@ -112,6 +112,7 @@ public sealed class FfmpegScreenCapturer : IScreenCapturer
     [DllImport("libX11.so.6")] private static extern int XDisplayWidth(IntPtr display, int screen);
     [DllImport("libX11.so.6")] private static extern int XDisplayHeight(IntPtr display, int screen);
     [DllImport("libX11.so.6")] private static extern int XCloseDisplay(IntPtr display);
+    [DllImport("libX11.so.6")] private static extern int XDefaultScreen(IntPtr display);
 
     /// <summary>The whole default X screen of $DISPLAY as a single "monitor"; empty when the display cannot be opened.</summary>
     private static List<SIPSorceryMedia.FFmpeg.Monitor> GetX11Screen()
@@ -122,13 +123,15 @@ public sealed class FfmpegScreenCapturer : IScreenCapturer
 
         try
         {
+            // $DISPLAY may select a screen other than 0 (e.g. ":0.1"); FFmpeg grabs that screen, so size it the same.
+            var screen = XDefaultScreen(display);
             return new()
             {
                 new SIPSorceryMedia.FFmpeg.Monitor
                 {
                     Name = "X11 screen",
                     Path = Environment.GetEnvironmentVariable("DISPLAY") ?? ":0",
-                    Rect = new Rectangle(0, 0, XDisplayWidth(display, 0), XDisplayHeight(display, 0)),
+                    Rect = new Rectangle(0, 0, XDisplayWidth(display, screen), XDisplayHeight(display, screen)),
                     Primary = true
                 }
             };

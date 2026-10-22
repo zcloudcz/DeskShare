@@ -1,3 +1,4 @@
+using System.Net;
 using DeskShare.Core;
 using DeskShare.Core.Models;
 using DeskShare.Desktop.Shared.Services;
@@ -98,8 +99,9 @@ public class LinuxE2ETests
     {
         using var sender = await SenderProcess.StartAsync(remoteControl: false);
 
-        var auth = await Viewer.AuthenticateAsync(sender.ServerId, "WRONGKEY9", ServerIdGenerator.GenerateClientId());
+        var (status, _) = await Viewer.AuthenticateAsync(sender.ServerId, "WRONGKEY9", ServerIdGenerator.GenerateClientId());
 
-        Assert.True(auth == null || !auth.Success);
+        // Only 401 proves the passkey was checked; a 500 or 429 would also "reject" without proving anything.
+        Assert.Equal(HttpStatusCode.Unauthorized, status);
     }
 }
