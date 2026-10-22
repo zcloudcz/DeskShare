@@ -59,25 +59,20 @@ public sealed class PipeWireScreenCapturer : IScreenCapturer
             for (int attempt = 1; ; attempt++)
             {
                 var stream = Streams.Acquire(Stream.Open);
-                if (stream.Ended)
-                {
-                    // The portal ended the kept stream (e.g. sharing stopped from the desktop): start over.
-                    stream.Discard();
-                    stream = Streams.Acquire(Stream.Open);
-                }
                 _stream = stream;
-                stream.Subscribe(OnSample);
-
-                var error = WaitForFirstFrame(stream);
+                // A kept stream may have ended or failed meanwhile (e.g. sharing stopped from the desktop); then
+                // Subscribe refuses it and the retry below opens a new one.
+                var error = stream.Subscribe(OnSample) ? WaitForFirstFrame(stream) : "the kept stream has ended";
                 if (error == null)
                 {
                     Logger.Information("[PipeWireScreenCapturer] Capturing PipeWire node {Node} at {Width}x{Height}", stream.NodeId, Width, Height);
                     return true;
                 }
 
-                stream.Unsubscribe(OnSample);
+                stream.Unsubscribe(OnSample); // after this no callback of that stream runs any more
                 stream.Discard(); // never hand a stream that delivers nothing to the next capturer
                 _stream = null;
+                ResetFrameState(); // a late frame of the failed attempt must not satisfy the next one
                 if (attempt == 2)
                 {
                     Logger.Error("[PipeWireScreenCapturer] No frame from the PipeWire stream: {Error}", error);
@@ -98,7 +93,7 @@ public sealed class PipeWireScreenCapturer : IScreenCapturer
         }
     }
 
-    /// <summary>Null once the first frame arrived, otherwise why not (fails fast on a pipeline error).</summary>
+    /// <summary>Null once the first frame arrived, otherwise why not (fails fast when the stream fails).</summary>
     private string? WaitForFirstFrame(Stream stream)
     {
         var deadline = DateTime.UtcNow + FirstFrameTimeout;
@@ -106,11 +101,24 @@ public sealed class PipeWireScreenCapturer : IScreenCapturer
         {
             if (_firstFrame.Wait(TimeSpan.FromMilliseconds(100)))
                 return null;
-            var error = stream.PopError();
-            if (error != "none")
-                return error;
+            if (stream.Ended)
+                return stream.Error ?? "stream ended";
         }
         return $"no frame within {FirstFrameTimeout.TotalSeconds:0} s";
+    }
+
+    private void ResetFrameState()
+    {
+        Frame? stale;
+        lock (_lock)
+        {
+            stale = _latest;
+            _latest = null;
+        }
+        stale?.Dispose();
+        _firstFrame.Reset();
+        Width = Height = 0;
+        _sizeMismatchLogged = false;
     }
 
     /// <summary>
@@ -131,8 +139,11 @@ public sealed class PipeWireScreenCapturer : IScreenCapturer
 
         public uint NodeId => _session.NodeId;
 
-        /// <summary>True once the stream stopped delivering (end of stream from the portal side).</summary>
+        /// <summary>True once the stream stopped delivering: end of stream or a pipeline error (set under the subscribers lock).</summary>
         public volatile bool Ended;
+
+        /// <summary>The pipeline error that ended the stream, if any.</summary>
+        public volatile string? Error;
 
         private Stream(WaylandPortalSession session, SafeHandle pipeWireFd, IntPtr pipeline)
         {
@@ -188,13 +199,20 @@ public sealed class PipeWireScreenCapturer : IScreenCapturer
             }
         }
 
-        /// <summary>Adds a frame consumer; it gets the newest frame at once, so it never waits for screen damage.</summary>
-        public void Subscribe(Action<IntPtr> onSample)
+        /// <summary>
+        /// Adds a frame consumer; it gets the newest frame at once, so it never waits for screen damage. Returns
+        /// false (and adds nothing) when the stream has ended or failed or the portal closed its session: the
+        /// cached frame would then be the last picture of a dead stream.
+        /// </summary>
+        public bool Subscribe(Action<IntPtr> onSample)
         {
             lock (_subscribersLock)
             {
+                if (Ended || _session.IsClosed)
+                    return false;
                 _subscribers.Add(onSample);
                 if (_lastSample != IntPtr.Zero) Deliver(onSample, _lastSample);
+                return true;
             }
         }
 
@@ -240,9 +258,12 @@ public sealed class PipeWireScreenCapturer : IScreenCapturer
                 {
                     if (sample == IntPtr.Zero)
                     {
-                        if (Gst.gst_app_sink_is_eos(_appSink))
+                        // A pipeline error (e.g. "target not found") does not always end in EOS, so check both.
+                        var error = PopError();
+                        if (error != "none" || Gst.gst_app_sink_is_eos(_appSink))
                         {
-                            Logger.Error("[PipeWireScreenCapturer] Stream ended: {Error}", PopError());
+                            Logger.Error("[PipeWireScreenCapturer] Stream ended: {Error}", error);
+                            Error = error != "none" ? error : null;
                             Ended = true;
                             return;
                         }
