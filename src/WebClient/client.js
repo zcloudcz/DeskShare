@@ -38,6 +38,7 @@ const placeholder = document.getElementById('placeholder');
 const statusDiv = document.getElementById('status');
 const statusText = document.getElementById('statusText');
 const controlBtn = document.getElementById('controlBtn');
+const ctrlAltDelBtn = document.getElementById('ctrlAltDelBtn');
 const sendClipboardBtn = document.getElementById('sendClipboardBtn');
 const copyHostClipboardBtn = document.getElementById('copyHostClipboardBtn');
 const sendFileBtn = document.getElementById('sendFileBtn');
@@ -791,6 +792,15 @@ function updateControlButton() {
     if (!controlBtn) return;
     controlBtn.disabled = !remoteControl || (!hostAllowsControl && !remoteControl.enabled);
     controlBtn.textContent = remoteControl && remoteControl.enabled ? 'Disable control' : 'Enable control';
+    // Only while the host has authorized control: the host rejects the message otherwise.
+    if (ctrlAltDelBtn) ctrlAltDelBtn.disabled = !(remoteControl && remoteControl.enabled && remoteControl.authorized);
+}
+
+// Ctrl+Alt+Del cannot be typed through the browser; the Windows host injects it as a secure attention sequence.
+function sendCtrlAltDel() {
+    if (remoteControl && remoteControl.authorized) {
+        remoteControl.sendInputMessage({ Type: 'SecureAttention', Timestamp: new Date().toISOString() });
+    }
 }
 
 // ---- Clipboard sharing (text only, only when the host allowed it) ----
