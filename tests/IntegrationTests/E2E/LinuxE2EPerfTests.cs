@@ -75,29 +75,40 @@ public class LinuxE2EPerfTests(ITestOutputHelper output)
         // Sender stage timings are logged every 10 s; read the lines that appear from here to the end of the run.
         var logLinesBefore = sender.Output.Split('\n').Length;
 
+        // Divide by the measured window, not the requested one: on a loaded runner Task.Delay can overrun,
+        // and the extra frames counted meanwhile would inflate the FPS and hide a regression.
+        var window = Stopwatch.StartNew();
         counting = true;
         await Task.Delay(TimeSpan.FromSeconds(FpsWindowSeconds));
         counting = false;
-        var fps = frames / (double)FpsWindowSeconds;
+        var fps = frames / window.Elapsed.TotalSeconds;
 
         // Glass-to-glass: switch the screen colour from here and time the first frame that shows it.
         var latencies = new List<double>();
-        for (var i = 0; i < LatencySamples; i++)
+        try
         {
-            var (target, targetId, current) = i % 2 == 0 ? (Alt, altId, Base) : (Base, baseId, Alt);
-            Assert.True(await WaitForColourAsync(current, TimeSpan.FromSeconds(10)), "Screen was not stable before the switch");
-            await Task.Delay(300); // let the encoder settle after the previous change (test code, not product code)
+            for (var i = 0; i < LatencySamples; i++)
+            {
+                var (target, targetId, current) = i % 2 == 0 ? (Alt, altId, Base) : (Base, baseId, Alt);
+                Assert.True(await WaitForColourAsync(current, TimeSpan.FromSeconds(10)), "Screen was not stable before the switch");
+                await Task.Delay(300); // let the encoder settle after the previous change (test code, not product code)
 
-            var tcs = new TaskCompletionSource<long>(TaskCreationOptions.RunContinuationsAsynchronously);
-            wanted = target;
-            hit = tcs;
-            var start = Stopwatch.GetTimestamp();
-            Raise(display, targetId);
-            var end = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
-            hit = null;
-            latencies.Add(Stopwatch.GetElapsedTime(start, end).TotalMilliseconds);
+                var tcs = new TaskCompletionSource<long>(TaskCreationOptions.RunContinuationsAsynchronously);
+                wanted = target;
+                hit = tcs;
+                var start = Stopwatch.GetTimestamp();
+                Raise(display, targetId);
+                var end = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                hit = null;
+                latencies.Add(Stopwatch.GetElapsedTime(start, end).TotalMilliseconds);
+            }
         }
-        Raise(display, baseId); // leave the screen in its original state
+        finally
+        {
+            // Always leave the shared display in its original colour, also after a failed sample: the functional
+            // tests run on the same display and expect the base colour. A failure here must not hide the original one.
+            try { Raise(display, baseId); } catch { /* keep the original exception */ }
+        }
 
         var timings = ParseTimings(string.Join('\n', sender.Output.Split('\n').Skip(logLinesBefore)));
         latencies.Sort();
