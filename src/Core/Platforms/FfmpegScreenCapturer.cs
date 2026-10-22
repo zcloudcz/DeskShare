@@ -1,4 +1,6 @@
 using System.Buffers;
+using System.Drawing;
+using System.Runtime.InteropServices;
 using DeskShare.Core.Interfaces;
 using DeskShare.Core.Models;
 using FFmpeg.AutoGen;
@@ -65,7 +67,12 @@ public sealed class FfmpegScreenCapturer : IScreenCapturer
             if (Directory.Exists(_ffmpegFolder))
                 FFmpegInit.Initialise(FfmpegLogLevelEnum.AV_LOG_WARNING, _ffmpegFolder);
 
-            var monitors = FFmpegMonitorManager.GetMonitorDevices();
+            // Linux: FFmpegMonitorManager.GetMonitorDevices() reads the RandR monitor name atom as a char* and
+            // crashes (NullReferenceException) on any X server that names its monitors. Capture the whole X
+            // screen instead, which is also what XTestInputController maps pointer coordinates to.
+            IReadOnlyList<SIPSorceryMedia.FFmpeg.Monitor>? monitors = OperatingSystem.IsLinux()
+                ? GetX11Screen()
+                : FFmpegMonitorManager.GetMonitorDevices();
             if (monitors == null || monitors.Count == 0)
             {
                 Logger.Error("[FfmpegScreenCapturer] FFmpeg found no monitors to capture");
@@ -98,6 +105,40 @@ public sealed class FfmpegScreenCapturer : IScreenCapturer
         {
             Logger.Error(ex, "[FfmpegScreenCapturer] Initialization failed");
             return false;
+        }
+    }
+
+    [DllImport("libX11.so.6")] private static extern IntPtr XOpenDisplay(IntPtr display);
+    [DllImport("libX11.so.6")] private static extern int XDisplayWidth(IntPtr display, int screen);
+    [DllImport("libX11.so.6")] private static extern int XDisplayHeight(IntPtr display, int screen);
+    [DllImport("libX11.so.6")] private static extern int XCloseDisplay(IntPtr display);
+    [DllImport("libX11.so.6")] private static extern int XDefaultScreen(IntPtr display);
+
+    /// <summary>The whole default X screen of $DISPLAY as a single "monitor"; empty when the display cannot be opened.</summary>
+    private static List<SIPSorceryMedia.FFmpeg.Monitor> GetX11Screen()
+    {
+        var display = XOpenDisplay(IntPtr.Zero); // null = use $DISPLAY
+        if (display == IntPtr.Zero)
+            return new();
+
+        try
+        {
+            // $DISPLAY may select a screen other than 0 (e.g. ":0.1"); FFmpeg grabs that screen, so size it the same.
+            var screen = XDefaultScreen(display);
+            return new()
+            {
+                new SIPSorceryMedia.FFmpeg.Monitor
+                {
+                    Name = "X11 screen",
+                    Path = Environment.GetEnvironmentVariable("DISPLAY") ?? ":0",
+                    Rect = new Rectangle(0, 0, XDisplayWidth(display, screen), XDisplayHeight(display, screen)),
+                    Primary = true
+                }
+            };
+        }
+        finally
+        {
+            XCloseDisplay(display);
         }
     }
 

@@ -210,6 +210,12 @@ public class ClientManager : IDisposable
 
             _clientId = clientId ?? Guid.NewGuid().ToString();
 
+            // The peer connection must exist before we ask for an offer and before the receive loop runs:
+            // an offer that arrives earlier is dropped ("peer connection not initialized") and never answered.
+            // Setup (FFmpeg init) can take longer than the sender needs to build its offer, e.g. on first start.
+            // The reconnect path below uses the same order.
+            await SetupWebRtcConnectionAsync();
+
             // Send connection request
             var joinMessage = new SignalingMessage
             {
@@ -223,9 +229,6 @@ public class ClientManager : IDisposable
             // Start receiving messages
             _receiveCts = new CancellationTokenSource();
             _ = ReceiveSignalingMessagesAsync(_receiveCts.Token);
-
-            // Setup WebRTC peer connection
-            await SetupWebRtcConnectionAsync();
 
             _isConnected = true;
             Connected?.Invoke(this, EventArgs.Empty);
@@ -267,7 +270,17 @@ public class ClientManager : IDisposable
                     SdpMLineIndex = candidate.sdpMLineIndex,
                     SdpMid = candidate.sdpMid
                 };
-                await SendSignalingMessageAsync(msg);
+                // SIPSorcery calls this handler as async void: an exception here (e.g. the socket closed while
+                // the viewer disconnects) would crash the whole process, so log it instead. A lost candidate
+                // only matters while connecting, and then the connection state handler reports the failure.
+                try
+                {
+                    await SendSignalingMessageAsync(msg);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not send ICE candidate");
+                }
             }
         };
 

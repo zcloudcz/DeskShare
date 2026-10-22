@@ -299,6 +299,15 @@ public sealed class WebRTCSessionWithInput : IDisposable
             // Create the data channel (this will also attach it to the manager)
             var dataChannel = await _dataChannelManager.CreateDataChannelAsync(peerConnection, label);
 
+            // The .NET viewer (ClientManager) does not use this channel: it creates its own channel with the same
+            // label and sends input on that one. Such a channel reaches us here; without attaching it, the input
+            // messages arrive on a channel nobody listens to. (The web client uses the channel above.)
+            peerConnection.ondatachannel += remoteChannel =>
+            {
+                if (remoteChannel.label == label)
+                    _dataChannelManager.AttachDataChannel(remoteChannel);
+            };
+
             _logger.Information("DataChannel created: Label={Label}, ID={Id}",
                 dataChannel.label, dataChannel.id);
 
