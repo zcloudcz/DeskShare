@@ -1,0 +1,61 @@
+# Flutter mobile app (mobile/): analyze + unit/widget tests + debug APK on Linux,
+# iOS build on macOS. The iOS job cannot be verified locally (no Xcode on the dev PC), so it is
+# non-blocking (continue-on-error) until it has been green once.
+name: Mobile
+
+on:
+  push:
+    branches: [ main ]
+    paths: [ 'mobile/**', '.github/workflows/mobile.yml' ]
+  pull_request:
+    branches: [ main ]
+    paths: [ 'mobile/**', '.github/workflows/mobile.yml' ]
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.41.2'
+          cache: true
+
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - run: flutter build apk --debug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deskshare-debug-apk
+          path: mobile/build/app/outputs/flutter-apk/app-debug.apk
+          retention-days: 14
+
+  ios:
+    runs-on: macos-latest
+    continue-on-error: true   # unverified: see header comment
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.41.2'
+          cache: true
+
+      - run: flutter pub get
+      - run: flutter build ios --no-codesign
