@@ -9,9 +9,14 @@ using Serilog.Extensions.Logging;
 // run in-process. Intended for machines without a UI (CLI, service, container).
 // Any appsettings.json key can be overridden on the command line, e.g.:
 //   --Signaling:ServerUrl=wss://host/signal --Capture:TargetFps=15 --Security:EnableRemoteControl=true
+//   --config <file.json> (unattended service): extra JSON config; Server ID and owner secret are then kept next to it
+//   instead of in the per-user %APPDATA%, because the agent runs as SYSTEM.
+var configFile = new ConfigurationBuilder().AddCommandLine(args).Build()["config"];
+string? dataDir = null; // set when --config is used
 var configuration = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
     .AddJsonFile("appsettings.json", optional: true)
+    .AddJsonFile(configFile ?? "unused.json", optional: configFile is null)
     .AddCommandLine(args)
     .Build();
 
@@ -33,10 +38,22 @@ try
         EnableClipboard = configuration.GetValue("Security:EnableClipboard", false),
         TrustClientPermanent = configuration.GetValue("Security:TrustClientPermanent", false)
     };
-    config.EnsureServerId(); // empty ServerId -> derived from the machine
-
     var logger = new SerilogLoggerFactory(Log.Logger).CreateLogger<ScreenSenderService>();
-    using var service = new ScreenSenderService(logger, config);
+    ScreenSenderService service;
+    if (configFile is null)
+    {
+        config.EnsureServerId(); // empty ServerId -> persisted per-user id
+        service = new ScreenSenderService(logger, config);
+    }
+    else
+    {
+        dataDir = Path.GetDirectoryName(Path.GetFullPath(configFile))!;
+        var idPath = Path.Combine(dataDir, "server-id");
+        if (string.IsNullOrEmpty(config.ServerId))
+            config.ServerId = ServerIdGenerator.GetOrCreateServerId(idPath);
+        service = new ScreenSenderService(logger, config, idPath, new DeskShare.Core.Auth.ServerOwnerSecretStore(Path.Combine(dataDir, "server-owner.key")));
+    }
+    using var serviceLifetime = service;
 
     // Subscribe before StartAsync, otherwise the first passkey would be missed.
     service.PasskeyChanged += (_, e) =>
@@ -50,8 +67,25 @@ try
     using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, ctx => { ctx.Cancel = true; stop.Cancel(); });
 
     await service.StartAsync(stop.Token);
-    Console.WriteLine("Streaming. Press Ctrl+C to stop.");
-    await Task.Delay(Timeout.Infinite, stop.Token).ContinueWith(_ => { }); // completes on cancel, no exception
+    try
+    {
+        // StartAsync returns at the first await; "ready" means frames are really flowing (throws if startup fails).
+        await service.Streaming.WaitAsync(stop.Token);
+
+        // Unattended service: tell the installer this agent really came up (it only trusts this file when the install id matches).
+        var installId = configuration["install-id"];
+        if (dataDir != null && !string.IsNullOrEmpty(installId))
+        {
+            var readyPath = Path.Combine(dataDir, "agent-ready.json");
+            File.WriteAllText(readyPath + ".tmp", System.Text.Json.JsonSerializer.Serialize(new { InstallId = installId, Pid = Environment.ProcessId, UpdatedUtc = DateTime.UtcNow }));
+            File.Move(readyPath + ".tmp", readyPath, overwrite: true);
+        }
+        Console.WriteLine("Streaming. Press Ctrl+C to stop.");
+
+        // Runs until Ctrl+C; if the service dies on its own this throws, the host exits non-zero and the supervisor restarts it.
+        await service.Execution.WaitAsync(stop.Token);
+    }
+    catch (OperationCanceledException) when (stop.IsCancellationRequested) { } // Ctrl+C / SIGTERM: normal shutdown
     await service.StopAsync(CancellationToken.None);
     return 0;
 }
