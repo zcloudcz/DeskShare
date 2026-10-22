@@ -256,6 +256,9 @@
                 <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
                 <button id="fullscreenBtn" onclick="toggleFullscreen()" disabled>Fullscreen</button>
                 <button id="controlBtn" onclick="toggleControl()" disabled title="Available when the host allowed remote control">Enable control</button>
+                <!-- Shown only when the host allowed clipboard sharing (see setClipboardAllowed in client.js). -->
+                <button id="sendClipboardBtn" onclick="sendClipboard()" hidden title="Send the text in your clipboard to the host">Send clipboard</button>
+                <button id="copyHostClipboardBtn" onclick="copyHostClipboard()" hidden disabled title="Enabled when the host sent new text">Copy host clipboard</button>
                 <button id="hidePanelsBtn" onclick="setFocus(true)" title="Hide everything except the title and the shared screen">Hide panels</button>
             </div>
 

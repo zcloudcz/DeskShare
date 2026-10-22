@@ -362,7 +362,9 @@ public sealed class DataChannelManager : IDisposable
                     // it got authorized = true.
                     bool authorized = _inputController?.IsEnabled ?? false;
                     _logger.Information("Remote control requested by viewer, authorized: {Authorized}", authorized);
-                    SendJson(new { type = "authorization_response", authorized, timestamp = DateTime.UtcNow });
+                    // "clipboard" tells the viewer whether the host shares the text clipboard (only then its buttons are usable).
+                    var clipboard = (GrantedCapabilities & SessionCapabilities.Clipboard) != 0;
+                    SendJson(new { type = "authorization_response", authorized, clipboard, timestamp = DateTime.UtcNow });
                     return;
                 }
 

@@ -128,6 +128,15 @@
                         <StackPanel Grid.Column="2"
                                   Orientation="Horizontal"
                                   VerticalAlignment="Center">
+                            <CheckBox x:Name="ShareClipboardCheckBox"
+                                    Content="Share my clipboard with the host"
+                                    Foreground="White"
+                                    FontSize="12"
+                                    Margin="5,0"
+                                    IsEnabled="False"
+                                    IsChecked="False"
+                                    IsCheckedChanged="ShareClipboard_Changed"/>
+
                             <Button x:Name="FullscreenButton"
                                   Content="Fullscreen"
                                   Background="#444444"

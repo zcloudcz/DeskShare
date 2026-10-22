@@ -317,6 +317,12 @@
                                          Margin="25,0,0,15"
                                          TextWrapping="Wrap"/>
 
+                                <CheckBox x:Name="EnableClipboardCheckBox"
+                                        Content="Allow clipboard sharing (text)"
+                                        Margin="0,0,0,15"
+                                        FontSize="14"
+                                        IsChecked="False"/>
+
                                 <CheckBox x:Name="TrustClientPermanentCheckBox"
                                         Content="Trust connected client permanently"
                                         Margin="0,0,0,5"

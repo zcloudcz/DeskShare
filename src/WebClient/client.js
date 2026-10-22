@@ -38,6 +38,8 @@ const placeholder = document.getElementById('placeholder');
 const statusDiv = document.getElementById('status');
 const statusText = document.getElementById('statusText');
 const controlBtn = document.getElementById('controlBtn');
+const sendClipboardBtn = document.getElementById('sendClipboardBtn');
+const copyHostClipboardBtn = document.getElementById('copyHostClipboardBtn');
 
 function updateStatus(message, type = 'info') {
     statusDiv.style.display = 'block';
@@ -539,6 +541,7 @@ function cleanup() {
         dataChannel = null;
     }
     updateControlButton();
+    setClipboardAllowed(false);
 
     if (pc) {
         pc.close();
@@ -567,6 +570,8 @@ function setupDataChannel(channel) {
     dataChannel = channel;
     dataChannel.onopen = () => {
         remoteControl = new RemoteControl(remoteVideo, dataChannel);
+        // The host's authorization_response also tells us whether it shares the clipboard.
+        dataChannel.send(JSON.stringify({ type: 'authorization_request', timestamp: new Date().toISOString() }));
         updateControlButton();
         updateStatus('Remote control is available. Click "Enable control".', 'success');
     };
@@ -575,15 +580,23 @@ function setupDataChannel(channel) {
         remoteControl = null;
         dataChannel = null;
         updateControlButton();
+        setClipboardAllowed(false);
     };
     dataChannel.onmessage = (event) => {
         let message;
         try { message = JSON.parse(event.data); } catch { return; }
-        if (message.type === 'authorization_response' && remoteControl) {
-            remoteControl.handleAuthorizationResponse(message);
-            updateStatus(message.authorized ? 'Remote control active' : 'The host did not allow remote control',
-                message.authorized ? 'success' : 'error');
-            updateControlButton();
+        if (message.type === 'authorization_response') {
+            setClipboardAllowed(message.clipboard === true);
+            // The automatic request on open is only about the clipboard: ignore its control answer
+            // until the user clicked "Enable control".
+            if (remoteControl && remoteControl.enabled) {
+                remoteControl.handleAuthorizationResponse(message);
+                updateStatus(message.authorized ? 'Remote control active' : 'The host did not allow remote control',
+                    message.authorized ? 'success' : 'error');
+                updateControlButton();
+            }
+        } else if (message.type === 'clipboard') {
+            receiveHostClipboard(message);
         } else if (message.type === 'authorization_revoked' && remoteControl) {
             remoteControl.disable();
             updateStatus('The host revoked remote control', 'error');
@@ -608,6 +621,76 @@ function updateControlButton() {
     if (!controlBtn) return;
     controlBtn.disabled = !remoteControl;
     controlBtn.textContent = remoteControl && remoteControl.enabled ? 'Disable control' : 'Enable control';
+}
+
+// ---- Clipboard sharing (text only, only when the host allowed it) ----
+
+const CLIPBOARD_MAX_BYTES = 60000; // keep in sync with ClipboardSync.MaxTextBytes
+const MAX_MESSAGE_BYTES = 64 * 1024; // the host drops larger data channel messages
+let hostClipboardText = null;
+let clipboardSequence = 0;
+
+function setClipboardAllowed(allowed) {
+    sendClipboardBtn.hidden = !allowed;
+    copyHostClipboardBtn.hidden = !allowed;
+    if (!allowed) hostClipboardText = null;
+    copyHostClipboardBtn.disabled = hostClipboardText === null;
+}
+
+// Needs a user gesture (the button click), otherwise the browser refuses to read the clipboard.
+async function sendClipboard() {
+    if (!dataChannel || dataChannel.readyState !== 'open') return;
+    let text;
+    try {
+        text = await navigator.clipboard.readText();
+    } catch {
+        updateStatus('Cannot read your clipboard (permission denied)', 'error');
+        return;
+    }
+    if (!text) {
+        updateStatus('Your clipboard has no text', 'info');
+        return;
+    }
+    const bytes = new TextEncoder().encode(text).length;
+    if (bytes > CLIPBOARD_MAX_BYTES) {
+        updateStatus(`Clipboard text is too large (${bytes} bytes, max ${CLIPBOARD_MAX_BYTES}); not sent`, 'error');
+        return;
+    }
+    // Same shape as the .NET ClipboardMessage (ContentType 0 = Text).
+    const json = JSON.stringify({
+        type: 'clipboard',
+        data: { ContentType: 0, TextContent: text, SizeBytes: bytes, Timestamp: new Date().toISOString(), SequenceNumber: ++clipboardSequence }
+    });
+    if (new TextEncoder().encode(json).length > MAX_MESSAGE_BYTES) {
+        updateStatus('Clipboard text is too large once encoded; not sent', 'error');
+        return;
+    }
+    dataChannel.send(json);
+    updateStatus(`Clipboard sent to the host (${bytes} bytes)`, 'success');
+}
+
+function receiveHostClipboard(message) {
+    const data = message.data;
+    if (copyHostClipboardBtn.hidden || !data || data.ContentType !== 0 || typeof data.TextContent !== 'string' || !data.TextContent) return;
+    if (new TextEncoder().encode(data.TextContent).length > CLIPBOARD_MAX_BYTES) {
+        updateStatus('The host sent clipboard text that is too large; ignored', 'error');
+        return;
+    }
+    hostClipboardText = data.TextContent;
+    copyHostClipboardBtn.disabled = false;
+    updateStatus('The host sent clipboard text. Click "Copy host clipboard".', 'info');
+}
+
+async function copyHostClipboard() {
+    if (hostClipboardText === null) return;
+    try {
+        await navigator.clipboard.writeText(hostClipboardText);
+        hostClipboardText = null;
+        copyHostClipboardBtn.disabled = true;
+        updateStatus('Host clipboard copied to your clipboard', 'success');
+    } catch {
+        updateStatus('Cannot write to your clipboard (permission denied)', 'error');
+    }
 }
 
 // Handle page unload

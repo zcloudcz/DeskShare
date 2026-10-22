@@ -29,6 +29,7 @@ try
         AdapterIndex = configuration.GetValue("Capture:AdapterIndex", 0),
         OutputIndex = configuration.GetValue("Capture:OutputIndex", 0),
         EnableRemoteControl = configuration.GetValue("Security:EnableRemoteControl", false),
+        EnableClipboard = configuration.GetValue("Security:EnableClipboard", false),
         TrustClientPermanent = configuration.GetValue("Security:TrustClientPermanent", false)
     };
     config.EnsureServerId(); // empty ServerId -> derived from the machine

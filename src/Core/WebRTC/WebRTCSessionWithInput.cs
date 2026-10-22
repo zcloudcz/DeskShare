@@ -27,6 +27,7 @@ public sealed class WebRTCSessionWithInput : IDisposable
     private readonly DataChannelManager _dataChannelManager;
     private readonly IInputController? _inputController;
     private readonly IClipboardManager? _clipboardManager;
+    private readonly ClipboardSync? _clipboardSync;
     private readonly ILogger _logger;
     private bool _disposed;
 
@@ -140,77 +141,55 @@ public sealed class WebRTCSessionWithInput : IDisposable
         _baseSession.BeforeOfferAsync = () => CreateDataChannelAsync();
         _dataChannelManager = new DataChannelManager(logger, inputController);
 
-        // Subscribe to clipboard changes to forward to remote peer
+        // Clipboard text sync. Off until the host grants it (ClipboardSharingEnabled).
         if (_clipboardManager != null)
         {
-            _clipboardManager.ClipboardChanged += OnLocalClipboardChanged;
-        }
+            _clipboardSync = new ClipboardSync(_clipboardManager, json => _dataChannelManager.IsOpen && _dataChannelManager.SendMessage(json));
+            _clipboardSync.Rejected += (_, reason) => _logger.Warning("Clipboard: {Reason}", reason);
 
-        // Subscribe to incoming clipboard messages from remote peer
-        _dataChannelManager.ClipboardMessageReceived += OnRemoteClipboardMessageReceived;
+            // Incoming messages already passed the capability policy in DataChannelManager.
+            _dataChannelManager.ClipboardMessageReceived += OnRemoteClipboardMessageReceived;
+        }
 
         _logger.Information("WebRTCSessionWithInput initialized with input controller: {HasInput}, clipboard: {HasClipboard}",
             inputController != null, clipboardManager != null);
     }
 
     /// <summary>
-    /// Called when local clipboard content changes.
-    /// Forwards the clipboard content to the remote peer via data channel.
+    /// Whether the host shares the text clipboard with the connected viewer. Grants
+    /// <see cref="SessionCapabilities.Clipboard"/> on the data channel and starts watching the local clipboard.
+    /// No-op without a clipboard manager.
     /// </summary>
-    private void OnLocalClipboardChanged(object? sender, ClipboardChangedEventArgs e)
+    public bool ClipboardSharingEnabled
     {
-        try
+        get => _clipboardSync?.Enabled == true;
+        set
         {
-            _logger.Information("Local clipboard changed, forwarding to remote peer: Text length={Length}",
-                e.Text?.Length ?? 0);
-
-            // Send clipboard message via data channel
-            var success = _dataChannelManager.SendJson(new
+            if (_clipboardSync == null)
             {
-                type = "clipboard",
-                text = e.Text,
-                timestamp = e.Timestamp
-            });
-
-            if (!success)
-            {
-                _logger.Warning("Failed to send clipboard message to remote peer");
+                return;
             }
-        }
-        catch (Exception ex)
-        {
-            _logger.Error(ex, "Error forwarding clipboard change");
+
+            _clipboardSync.Enabled = value;
+            if (value)
+            {
+                _dataChannelManager.HostGrantedCapabilities |= SessionCapabilities.Clipboard;
+                _clipboardManager!.StartMonitoring();
+            }
+            else
+            {
+                _dataChannelManager.HostGrantedCapabilities &= ~SessionCapabilities.Clipboard;
+                _clipboardManager!.StopMonitoring();
+            }
         }
     }
 
-    /// <summary>
-    /// Called when a clipboard message is received from the remote peer.
-    /// Updates the local clipboard with the received content.
-    /// </summary>
     private async void OnRemoteClipboardMessageReceived(object? sender, ClipboardMessage message)
     {
         try
         {
-            _logger.Information("Received clipboard from remote peer: Type={Type}, Size={Size}",
-                message.ContentType, message.SizeBytes);
-
-            if (_clipboardManager != null && message.TextContent != null)
-            {
-                var success = await _clipboardManager.SetTextAsync(message.TextContent);
-
-                if (success)
-                {
-                    _logger.Information("Successfully updated local clipboard from remote");
-                }
-                else
-                {
-                    _logger.Warning("Failed to update local clipboard from remote");
-                }
-            }
-            else
-            {
-                _logger.Warning("Clipboard manager not available, cannot update clipboard");
-            }
+            var applied = await _clipboardSync!.ApplyAsync(message);
+            _logger.Information("Remote clipboard text ({Size} bytes) applied: {Applied}", message.SizeBytes, applied);
         }
         catch (Exception ex)
         {
@@ -463,10 +442,7 @@ public sealed class WebRTCSessionWithInput : IDisposable
         _logger.Information("Disposing WebRTCSessionWithInput");
 
         // Unsubscribe from events
-        if (_clipboardManager != null)
-        {
-            _clipboardManager.ClipboardChanged -= OnLocalClipboardChanged;
-        }
+        _clipboardSync?.Dispose();
         _dataChannelManager.ClipboardMessageReceived -= OnRemoteClipboardMessageReceived;
 
         // Revoke authorization if active
