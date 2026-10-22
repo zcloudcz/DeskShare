@@ -87,6 +87,33 @@ public class ClientManager : IDisposable
     public event EventHandler<bool>? HostAllowsClipboardChanged;
 
     /// <summary>
+    /// Whether the host accepts files from this viewer (told by the host in its authorization_response).
+    /// </summary>
+    public bool HostAllowsFiles { get; private set; }
+
+    /// <summary>
+    /// Fired when <see cref="HostAllowsFiles"/> changes.
+    /// </summary>
+    public event EventHandler<bool>? HostAllowsFilesChanged;
+
+    private FileUploader? _fileUploader;
+
+    /// <summary>
+    /// Sends a file to the host (viewer to host only). Returns the name it was saved under there.
+    /// Throws <see cref="IOException"/> with a readable reason when the host refuses or fails the transfer.
+    /// The UI only offers this while <see cref="HostAllowsFiles"/>; the host enforces the grant on its side anyway.
+    /// </summary>
+    public Task<string> SendFileAsync(string path, IProgress<double>? progress = null, CancellationToken cancellationToken = default, string? offeredName = null)
+    {
+        if (_fileUploader == null)
+        {
+            throw new InvalidOperationException("Not connected to a host.");
+        }
+
+        return _fileUploader.SendAsync(path, progress, cancellationToken, offeredName);
+    }
+
+    /// <summary>
     /// Fired with a user-visible reason when clipboard text was refused (for example too large).
     /// </summary>
     public event EventHandler<string>? ClipboardRejected;
@@ -357,6 +384,10 @@ public class ClientManager : IDisposable
             _logger.LogInformation("Data channel opened");
             _clipboardManager?.StartMonitoring();
 
+            _fileUploader = new FileUploader(
+                json => { if (_dataChannel?.readyState != RTCDataChannelState.open) return false; _dataChannel.send(json); return true; },
+                () => _dataChannel?.bufferedAmount ?? 0);
+
             // The host answers with authorization_response, which also says whether it shares the clipboard.
             _dataChannel!.send("{\"type\":\"authorization_request\"}");
         };
@@ -365,6 +396,7 @@ public class ClientManager : IDisposable
             _logger.LogInformation("Data channel closed");
             _clipboardManager?.StopMonitoring();
             SetHostAllowsClipboard(false);
+            SetHostAllowsFiles(false);
         };
         _dataChannel.onerror += (error) =>
         {
@@ -395,6 +427,11 @@ public class ClientManager : IDisposable
                 if (messageType == "authorization_response")
                 {
                     SetHostAllowsClipboard(doc.RootElement.TryGetProperty("clipboard", out var clip) && clip.ValueKind == JsonValueKind.True);
+                    SetHostAllowsFiles(doc.RootElement.TryGetProperty("files", out var files) && files.ValueKind == JsonValueKind.True);
+                }
+                else if (messageType is "file_accept" or "file_reject" or "file_done" or "file_error" or "file_cancel")
+                {
+                    _fileUploader?.OnHostMessage(doc.RootElement);
                 }
                 else if (messageType == "clipboard" && doc.RootElement.TryGetProperty("data", out var dataElement))
                 {
@@ -411,6 +448,17 @@ public class ClientManager : IDisposable
         {
             _logger.LogError(ex, "Error processing data channel message");
         }
+    }
+
+    private void SetHostAllowsFiles(bool allowed)
+    {
+        if (HostAllowsFiles == allowed)
+        {
+            return;
+        }
+
+        HostAllowsFiles = allowed;
+        HostAllowsFilesChanged?.Invoke(this, allowed);
     }
 
     private void SetHostAllowsClipboard(bool allowed)

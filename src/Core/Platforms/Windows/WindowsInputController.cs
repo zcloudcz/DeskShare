@@ -112,6 +112,12 @@ public sealed class WindowsInputController : IInputController
     private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
     /// <summary>
+    /// Simulates Ctrl+Alt+Del. Only honoured for SYSTEM/services and when the SoftwareSASGeneration policy allows it.
+    /// </summary>
+    [DllImport("sas.dll")]
+    private static extern void SendSAS([MarshalAs(UnmanagedType.Bool)] bool asUser);
+
+    /// <summary>
     /// Gets the dimensions of the virtual screen (all monitors combined).
     /// Used for converting normalized coordinates to absolute pixel positions.
     /// </summary>
@@ -130,6 +136,10 @@ public sealed class WindowsInputController : IInputController
 
     private readonly ILogger _logger;
     private readonly object _lockObject = new();
+
+    // Follows the input desktop so SendInput also reaches UAC / lock screen / sign-in (SYSTEM agent only).
+    private readonly InputDesktop _desktop = new();
+    private long _nextDesktopCheck;
 
     // Rate limiting: Track recent inputs to prevent abuse
     private readonly Queue<DateTime> _recentInputs = new();
@@ -305,9 +315,18 @@ public sealed class WindowsInputController : IInputController
             _recentInputs.Enqueue(now);
             _lastInputTime = now;
 
+            // SendInput only reaches the desktop the calling thread is attached to; re-check at most every 100 ms.
+            if (Environment.TickCount64 >= _nextDesktopCheck)
+            {
+                _nextDesktopCheck = Environment.TickCount64 + 100;
+                _desktop.Refresh();
+            }
+            using var desktopScope = _desktop.Enter();
+
             // Validate and apply input
             bool success = input.Type switch
             {
+                InputMessageType.SecureAttention => SendSecureAttention(),
                 InputMessageType.MouseMove => ApplyMouseMove(input),
                 InputMessageType.MouseDown => ApplyMouseButton(input, true),
                 InputMessageType.MouseUp => ApplyMouseButton(input, false),
@@ -530,6 +549,33 @@ public sealed class WindowsInputController : IInputController
     /// <param name="input">Input message containing key code.</param>
     /// <param name="isDown">True for key press, false for key release.</param>
     /// <returns>True if successful, false otherwise.</returns>
+    private bool SendSecureAttention()
+    {
+        int? policy;
+        using (var key = Microsoft.Win32.RegistryKey.OpenBaseKey(Microsoft.Win32.RegistryHive.LocalMachine, Microsoft.Win32.RegistryView.Registry64)
+                   .OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"))
+            policy = key?.GetValue("SoftwareSASGeneration") as int?;
+
+        var why = SasAvailability.WhyUnavailable(policy, System.Security.Principal.WindowsIdentity.GetCurrent().IsSystem);
+        if (why != null)
+        {
+            _logger.Warning("Ctrl+Alt+Del is not available: {Reason}", why);
+            return false;
+        }
+
+        try
+        {
+            SendSAS(false); // FALSE = caller is a service/SYSTEM; returns nothing, so success cannot be verified here
+            _logger.Information("Secure attention sequence (Ctrl+Alt+Del) sent");
+            return true;
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+            _logger.Warning(ex, "Ctrl+Alt+Del is not available: sas.dll could not be loaded");
+            return false;
+        }
+    }
+
     private bool ApplyKeyboard(InputMessage input, bool isDown)
     {
         if (!input.KeyCode.HasValue)
@@ -586,6 +632,7 @@ public sealed class WindowsInputController : IInputController
         }
 
         RevokeAuthorization();
+        _desktop.Dispose();
         _disposed = true;
 
         _logger.Information("WindowsInputController disposed. Final statistics: Received={Received}, Applied={Applied}, Rejected={Rejected}",

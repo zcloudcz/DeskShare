@@ -69,6 +69,17 @@ internal static class Installer
         switch (result)
         {
             case SwapResult.Success:
+                // Only after the new version is confirmed running, so a failed or rolled-back install leaves the policy alone.
+                // Lets the agent send Ctrl+Alt+Del to the sign-in screen. Best effort: a failure must not fail the install.
+                try
+                {
+                    if (SasPolicy.EnableForServices(new SasRegistryStore()))
+                        FileLog.Write("Set SoftwareSASGeneration=1 so remote Ctrl+Alt+Del works; it is removed again on uninstall.");
+                }
+                catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or System.Security.SecurityException)
+                {
+                    FileLog.Write("WARNING: could not set SoftwareSASGeneration, remote Ctrl+Alt+Del will not work: " + ex.Message);
+                }
                 FileLog.Write("Installed and started.");
                 return 0;
             case SwapResult.FailedRolledBack:
@@ -184,6 +195,15 @@ internal static class Installer
             catch (IOException ex) { FileLog.Write("Could not remove " + d + ": " + ex.Message); }
         }
         try { DeleteQuarantinedFolders(UnattendedPaths.InstallDir); File.Delete(MarkerPath(UnattendedPaths.InstallDir)); } catch (IOException) { }
+        try
+        {
+            if (SasPolicy.RestoreOnUninstall(new SasRegistryStore()))
+                FileLog.Write("Removed SoftwareSASGeneration that the installer had set.");
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or System.Security.SecurityException)
+        {
+            FileLog.Write("Could not restore SoftwareSASGeneration: " + ex.Message);
+        }
         // %ProgramData%\DeskShare (server id, owner secret, config) is kept on purpose so re-enabling keeps the same identity.
         FileLog.Write("Uninstalled.");
         return 0;

@@ -36,6 +36,9 @@ try
         OutputIndex = configuration.GetValue("Capture:OutputIndex", 0),
         EnableRemoteControl = configuration.GetValue("Security:EnableRemoteControl", false),
         EnableClipboard = configuration.GetValue("Security:EnableClipboard", false),
+        EnableFileReceive = configuration.GetValue("Security:EnableFileReceive", false),
+        FileReceiveFolder = configuration["Security:FileReceiveFolder"] ?? string.Empty,
+        FileReceiveMaxBytes = configuration.GetValue("Security:FileReceiveMaxBytes", DeskShare.Core.WebRTC.FileReceiver.DefaultMaxBytes),
         TrustClientPermanent = configuration.GetValue("Security:TrustClientPermanent", false)
     };
     var logger = new SerilogLoggerFactory(Log.Logger).CreateLogger<ScreenSenderService>();
