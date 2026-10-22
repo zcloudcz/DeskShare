@@ -337,6 +337,15 @@ dotnet test
 - ✅ WebSocketSignaler connectivity
 - ✅ Pipeline construction
 
+**Linux E2E test (Docker):** skutečný headless sender na virtuálním X displeji (Xvfb), signaling server a .NET viewer. Ověřuje video, ovládání myší, vypnuté ovládání a odmítnutí špatného passkey. Vyžaduje Docker:
+
+```bash
+docker compose -f docker-compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e
+# jen jeden test: E2E_FILTER=FullyQualifiedName~RemoteControlEnabled docker compose -f docker-compose.e2e.yml up --build ...
+```
+
+Testy jsou ve `tests/IntegrationTests/E2E` a bez `DESKSHARE_E2E=1` se přeskakují, takže běžné `dotnet test` je neovlivní. V CI běží job `linux-e2e` (`.github/workflows/build-test.yml`).
+
 Performance benchmarky (budoucí):
 
 ```bash

@@ -1,6 +1,7 @@
 # CI/CD Pipeline: Build and Test
 # Runs on every push to main and on pull requests.
-# Uses windows-latest because DXGI Desktop Duplication tests require Windows.
+# The build-and-test job uses windows-latest because DXGI Desktop Duplication tests require Windows;
+# linux-e2e runs the Docker-based Linux end-to-end test on ubuntu-latest.
 
 name: Build and Test
 
@@ -45,3 +46,19 @@ jobs:
           name: test-results
           path: TestResults/
           retention-days: 30
+
+  # Linux end-to-end: real signaling server + headless sender on a virtual X display + .NET viewer,
+  # all in Docker (see docker-compose.e2e.yml). Exit code comes from the test container.
+  linux-e2e:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Linux E2E tests
+        run: docker compose -f docker-compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e
+
+      - name: Stop containers
+        if: always()
+        run: docker compose -f docker-compose.e2e.yml down

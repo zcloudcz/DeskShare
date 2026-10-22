@@ -1,0 +1,29 @@
+# Linux end-to-end test: real signaling server + headless sender on Xvfb + .NET viewer.
+#   docker compose -f docker-compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e
+services:
+  signaling:
+    build: .
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      # Plain HTTP inside the private compose network (no certificate to manage). Auth stays
+      # production-like: appsettings.json has AllowLegacyConnections=false and RequireHmacSignature=true.
+      ASPNETCORE_URLS: http://+:5151
+      # appsettings.Production.json only allows the public hostnames; inside compose the host is "signaling".
+      AllowedHosts: signaling
+      # Every test registers/authenticates from the same IP, so the per-IP limits would trip.
+      RateLimiting__Register__PermitLimit: "1000"
+      RateLimiting__Authenticate__PermitLimit: "1000"
+    # The image's own healthcheck needs curl + https; the e2e entrypoint polls /health itself.
+    healthcheck:
+      disable: true
+
+  e2e:
+    build:
+      context: .
+      dockerfile: docker/e2e/Dockerfile
+    depends_on:
+      - signaling
+    environment:
+      DESKSHARE_E2E_SIGNALING: ws://signaling:5151/signal
+      # Optional dotnet test filter for local runs, e.g. E2E_FILTER=FullyQualifiedName~RemoteControlEnabled
+      E2E_FILTER: ${E2E_FILTER:-}
