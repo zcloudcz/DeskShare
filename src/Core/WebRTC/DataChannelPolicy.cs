@@ -18,7 +18,12 @@ internal static class DataChannelPolicy
     {
         ["authorization_request"] = SessionCapabilities.View,
         ["clipboard"] = SessionCapabilities.Clipboard,
-        ["clipboard_subscribe"] = SessionCapabilities.Clipboard
+        ["clipboard_subscribe"] = SessionCapabilities.Clipboard,
+        // File transfer viewer -> host. file_accept/reject/done/error are host -> viewer and deliberately absent.
+        ["file_offer"] = SessionCapabilities.FileTransfer,
+        ["file_chunk"] = SessionCapabilities.FileTransfer,
+        ["file_end"] = SessionCapabilities.FileTransfer,
+        ["file_cancel"] = SessionCapabilities.FileTransfer
     };
 
     /// <summary>

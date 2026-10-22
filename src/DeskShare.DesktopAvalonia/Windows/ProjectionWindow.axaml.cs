@@ -122,6 +122,7 @@ public partial class ProjectionWindow : Window
             _clientManager.Disconnected += OnDisconnected;
             _clientManager.HostAllowsClipboardChanged += OnHostAllowsClipboardChanged;
             _clientManager.ClipboardRejected += OnClipboardRejected;
+            _clientManager.HostAllowsFilesChanged += OnHostAllowsFilesChanged;
 
             await _clientManager.ConnectAsync(_serverId, _password, null, _webSocketToken, _clientId, _iceServers, _resumeToken);
 
@@ -158,6 +159,60 @@ public partial class ProjectionWindow : Window
             _logger.LogInformation("Connection established, video rendering and input forwarding enabled");
         });
     }
+
+    // The button exists only while the host accepts files.
+    private void OnHostAllowsFilesChanged(object? sender, bool allowed)
+    {
+        Dispatcher.UIThread.Invoke(() => SendFileButton.IsVisible = allowed);
+    }
+
+    private CancellationTokenSource? _fileSendCts;
+
+    // Idle: pick a file and send it. While sending, the same button cancels and shows the progress.
+    private async void SendFile_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_fileSendCts != null)
+        {
+            _fileSendCts.Cancel();
+            return;
+        }
+
+        var picked = await StorageProvider.OpenFilePickerAsync(new Avalonia.Platform.Storage.FilePickerOpenOptions
+        {
+            Title = "Send file to host",
+            AllowMultiple = false
+        });
+        var path = picked.Count == 1 ? picked[0].Path.LocalPath : null;
+        if (path == null)
+        {
+            return;
+        }
+
+        var name = System.IO.Path.GetFileName(path);
+        using var cts = _fileSendCts = new CancellationTokenSource();
+        var progress = new Progress<double>(p => SendFileButton.Content = $"Sending {name} {p:P0} (click to cancel)");
+        try
+        {
+            var savedAs = await _clientManager.SendFileAsync(path, progress, cts.Token);
+            await ShowFileMessage($"Sent {name} (saved on the host as {savedAs}).", MsBoxIcon.Success);
+        }
+        catch (OperationCanceledException)
+        {
+            // the user cancelled: nothing to report
+        }
+        catch (Exception ex)
+        {
+            await ShowFileMessage($"Could not send {name}: {ex.Message}", MsBoxIcon.Warning);
+        }
+        finally
+        {
+            _fileSendCts = null;
+            SendFileButton.Content = "Send file...";
+        }
+    }
+
+    private Task ShowFileMessage(string text, MsBoxIcon icon) =>
+        MessageBoxManager.GetMessageBoxStandard("Send file", text, ButtonEnum.Ok, icon).ShowWindowDialogAsync(this);
 
     private void ShareClipboard_Changed(object? sender, RoutedEventArgs e)
     {
@@ -547,6 +602,8 @@ public partial class ProjectionWindow : Window
         _clientManager.Disconnected -= OnDisconnected;
         _clientManager.HostAllowsClipboardChanged -= OnHostAllowsClipboardChanged;
         _clientManager.ClipboardRejected -= OnClipboardRejected;
+        _clientManager.HostAllowsFilesChanged -= OnHostAllowsFilesChanged;
+        _fileSendCts?.Cancel();
 
         _clientManager.DisconnectAsync().GetAwaiter().GetResult();
 

@@ -40,6 +40,8 @@ const statusText = document.getElementById('statusText');
 const controlBtn = document.getElementById('controlBtn');
 const sendClipboardBtn = document.getElementById('sendClipboardBtn');
 const copyHostClipboardBtn = document.getElementById('copyHostClipboardBtn');
+const sendFileBtn = document.getElementById('sendFileBtn');
+const fileInput = document.getElementById('fileInput');
 
 function updateStatus(message, type = 'info') {
     statusDiv.style.display = 'block';
@@ -542,6 +544,7 @@ function cleanup() {
     }
     updateControlButton();
     setClipboardAllowed(false);
+    setFilesAllowed(false);
 
     if (pc) {
         pc.close();
@@ -583,12 +586,14 @@ function setupDataChannel(channel) {
         hostAllowsControl = false;
         updateControlButton();
         setClipboardAllowed(false);
+        setFilesAllowed(false);
     };
     dataChannel.onmessage = (event) => {
         let message;
         try { message = JSON.parse(event.data); } catch { return; }
         if (message.type === 'authorization_response') {
             setClipboardAllowed(message.clipboard === true);
+            setFilesAllowed(message.files === true);
             // Before the user clicked "Enable control" the answer only tells what the host allows
             // (control and clipboard); afterwards it is the answer to the control request.
             if (!(remoteControl && remoteControl.enabled)) {
@@ -603,6 +608,8 @@ function setupDataChannel(channel) {
             }
         } else if (message.type === 'clipboard') {
             receiveHostClipboard(message);
+        } else if (['file_accept', 'file_reject', 'file_done', 'file_error', 'file_cancel'].includes(message.type)) {
+            onHostFileMessage(message);
         } else if (message.type === 'authorization_revoked' && remoteControl) {
             remoteControl.disable();
             updateStatus('The host revoked remote control', 'error');
@@ -769,6 +776,228 @@ function showFallbackField(kind) {
     (kind === 'input' ? sendClipboardBtn : copyHostClipboardBtn).after(field);
     field.focus();
     if (kind !== 'input') field.select();
+}
+
+// ---- File transfer to the host (viewer -> host only, and only when the host allowed it) ----
+
+const FILE_CHUNK_BYTES = 45000;          // keep in sync with FileReceiver.MaxChunkBytes (base64 must stay < 64 KB)
+const FILE_BUFFER_HIGH = 1024 * 1024;    // stop queuing chunks above this many buffered bytes
+const FILE_REPLY_TIMEOUT_MS = 30000;
+let filesAllowed = false;
+let fileTransfer = null; // { id, replies, waiter, cancelled } while a file is being sent
+
+function setFilesAllowed(allowed) {
+    filesAllowed = allowed;
+    sendFileBtn.hidden = !allowed;
+    if (!allowed && fileTransfer) {
+        fileTransfer.cancelled = true;
+        onHostFileMessage({ type: 'file_error', id: fileTransfer.id, reason: 'connection_closed' }); // wake the sender
+    }
+}
+
+function onSendFileClick() {
+    if (fileTransfer) {
+        fileTransfer.cancelled = true; // second click cancels
+        updateStatus('Cancelling file transfer...', 'info');
+    } else {
+        fileInput.click();
+    }
+}
+
+fileInput.addEventListener('change', () => {
+    const file = fileInput.files[0];
+    fileInput.value = ''; // allow picking the same file again
+    if (file) sendFile(file);
+});
+
+// Drop a file on the video area. Always cancel the default, or the browser would open the file in this tab.
+videoContainer.addEventListener('dragover', (event) => {
+    if (event.dataTransfer && Array.from(event.dataTransfer.types).includes('Files')) event.preventDefault();
+});
+videoContainer.addEventListener('drop', (event) => {
+    if (!event.dataTransfer || event.dataTransfer.files.length === 0) return;
+    event.preventDefault();
+    sendFile(event.dataTransfer.files[0]);
+});
+
+function onHostFileMessage(message) {
+    const t = fileTransfer;
+    if (!t || message.id !== t.id) return;
+    if (t.waiter) {
+        const wake = t.waiter;
+        t.waiter = null;
+        wake(message);
+    } else {
+        t.replies.push(message);
+    }
+}
+
+function nextHostReply(t) {
+    return new Promise((resolve, reject) => {
+        if (t.replies.length) { resolve(t.replies.shift()); return; }
+        const timer = setTimeout(() => { t.waiter = null; reject(new Error('The host did not answer in time')); }, FILE_REPLY_TIMEOUT_MS);
+        t.waiter = (message) => { clearTimeout(timer); resolve(message); };
+    });
+}
+
+// bufferedAmountLowThreshold + event, with a short poll as safety net (the event does not fire on a closed channel).
+async function waitForChannelDrain() {
+    dataChannel.bufferedAmountLowThreshold = FILE_BUFFER_HIGH / 4;
+    while (dataChannel && dataChannel.readyState === 'open' && dataChannel.bufferedAmount > FILE_BUFFER_HIGH) {
+        await new Promise((resolve) => {
+            const done = () => { dataChannel && dataChannel.removeEventListener('bufferedamountlow', done); resolve(); };
+            dataChannel.addEventListener('bufferedamountlow', done, { once: true });
+            setTimeout(done, 200);
+        });
+    }
+}
+
+function newGuid() {
+    const b = crypto.getRandomValues(new Uint8Array(16));
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
+function bytesToBase64(bytes) {
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    return btoa(binary);
+}
+
+async function sendFile(file) {
+    if (!filesAllowed || !dataChannel || dataChannel.readyState !== 'open') {
+        updateStatus('The host does not accept files', 'error');
+        return;
+    }
+    if (fileTransfer) {
+        updateStatus('A file is already being sent', 'info');
+        return;
+    }
+
+    const t = fileTransfer = { id: newGuid(), replies: [], waiter: null, cancelled: false };
+    const send = (obj) => dataChannel.send(JSON.stringify(obj));
+    const abortIfStopped = () => {
+        if (t.cancelled) throw new Error('cancelled');
+        if (t.replies.length) throw new Error(`The host stopped the transfer (${t.replies[0].reason || t.replies[0].type})`);
+        if (!dataChannel || dataChannel.readyState !== 'open') throw new Error('The connection to the host is closed');
+    };
+
+    try {
+        send({ type: 'file_offer', id: t.id, name: file.name, size: file.size });
+        updateStatus(`Offering ${file.name} to the host...`, 'info');
+        const answer = await nextHostReply(t);
+        if (answer.type !== 'file_accept') throw new Error(`The host refused ${file.name}: ${answer.reason || answer.type}`);
+
+        const hash = new Sha256();
+        let seq = 0, sent = 0, lastPercent = -1;
+        for (let offset = 0; offset < file.size; offset += FILE_CHUNK_BYTES) {
+            abortIfStopped();
+            await waitForChannelDrain();
+            abortIfStopped();
+            const bytes = new Uint8Array(await file.slice(offset, offset + FILE_CHUNK_BYTES).arrayBuffer());
+            hash.update(bytes);
+            send({ type: 'file_chunk', id: t.id, seq: seq++, data: bytesToBase64(bytes) });
+            sent += bytes.length;
+            const percent = Math.floor(sent * 100 / file.size);
+            if (percent !== lastPercent) {
+                lastPercent = percent;
+                updateStatus(`Sending ${file.name} ${percent}% (click "Send file" to cancel)`, 'info');
+            }
+        }
+
+        abortIfStopped();
+        send({ type: 'file_end', id: t.id, sha256: hash.hex() });
+        const done = await nextHostReply(t);
+        if (done.type !== 'file_done') throw new Error(`The host could not save ${file.name}: ${done.reason || done.type}`);
+        updateStatus(`Sent ${file.name} (saved on the host as ${done.savedAs})`, 'success');
+    } catch (error) {
+        if (dataChannel && dataChannel.readyState === 'open') {
+            try { send({ type: 'file_cancel', id: t.id }); } catch { /* channel went away */ }
+        }
+        if (error.message === 'cancelled') updateStatus(`Cancelled sending ${file.name}`, 'info');
+        else updateStatus(error.message, 'error');
+    } finally {
+        fileTransfer = null;
+    }
+}
+
+// Incremental SHA-256 (WebCrypto can only hash a whole buffer, which would mean holding a 2 GB file in memory).
+class Sha256 {
+    static K = new Uint32Array([
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2]);
+
+    constructor() {
+        this.h = new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
+        this.block = new Uint8Array(64);
+        this.blockLength = 0;
+        this.total = 0;
+        this.w = new Uint32Array(64);
+    }
+
+    update(bytes) {
+        this.total += bytes.length;
+        let i = 0;
+        if (this.blockLength > 0) {
+            const take = Math.min(64 - this.blockLength, bytes.length);
+            this.block.set(bytes.subarray(0, take), this.blockLength);
+            this.blockLength += take;
+            i = take;
+            if (this.blockLength === 64) { this.compress(this.block, 0); this.blockLength = 0; }
+        }
+        for (; i + 64 <= bytes.length; i += 64) this.compress(bytes, i);
+        if (i < bytes.length) {
+            this.block.set(bytes.subarray(i), 0);
+            this.blockLength = bytes.length - i;
+        }
+    }
+
+    compress(data, pos) {
+        const w = this.w, K = Sha256.K, h = this.h;
+        for (let t = 0; t < 16; t++, pos += 4) {
+            w[t] = (data[pos] << 24) | (data[pos + 1] << 16) | (data[pos + 2] << 8) | data[pos + 3];
+        }
+        for (let t = 16; t < 64; t++) {
+            const a = w[t - 15], b = w[t - 2];
+            const s0 = ((a >>> 7) | (a << 25)) ^ ((a >>> 18) | (a << 14)) ^ (a >>> 3);
+            const s1 = ((b >>> 17) | (b << 15)) ^ ((b >>> 19) | (b << 13)) ^ (b >>> 10);
+            w[t] = (w[t - 16] + s0 + w[t - 7] + s1) | 0;
+        }
+        let a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+        for (let t = 0; t < 64; t++) {
+            const S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
+            const ch = (e & f) ^ (~e & g);
+            const t1 = (hh + S1 + ch + K[t] + w[t]) | 0;
+            const S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
+            const maj = (a & b) ^ (a & c) ^ (b & c);
+            const t2 = (S0 + maj) | 0;
+            hh = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+        }
+        h[0] += a; h[1] += b; h[2] += c; h[3] += d; h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+    }
+
+    hex() {
+        const bits = this.total * 8;
+        const pad = new Uint8Array(((this.blockLength < 56) ? 64 : 128) - this.blockLength);
+        pad[0] = 0x80;
+        const view = new DataView(pad.buffer);
+        view.setUint32(pad.length - 8, Math.floor(bits / 0x100000000));
+        view.setUint32(pad.length - 4, bits >>> 0);
+        const total = this.total;
+        this.update(pad);
+        this.total = total;
+        return Array.from(this.h, (x) => (x >>> 0).toString(16).padStart(8, '0')).join('');
+    }
 }
 
 // Handle page unload

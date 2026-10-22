@@ -323,6 +323,20 @@
                                         FontSize="14"
                                         IsChecked="False"/>
 
+                                <CheckBox x:Name="EnableFileReceiveCheckBox"
+                                        Content="Allow receiving files"
+                                        Margin="0,0,0,5"
+                                        FontSize="14"
+                                        IsChecked="False"/>
+                                <TextBlock Text="saved to Downloads\DeskShare"
+                                         FontSize="11"
+                                         Foreground="#495057"
+                                         Margin="25,0,0,15"/>
+                                <StackPanel x:Name="FileReceivedPanel" Orientation="Horizontal" Margin="25,0,0,15" IsVisible="False">
+                                    <TextBlock x:Name="FileReceivedText" FontSize="12" VerticalAlignment="Center"/>
+                                    <Button Content="Open folder" Margin="10,0,0,0" Padding="8,2" Click="OpenReceivedFolder_Click"/>
+                                </StackPanel>
+
                                 <CheckBox x:Name="TrustClientPermanentCheckBox"
                                         Content="Trust connected client permanently"
                                         Margin="0,0,0,5"

@@ -113,6 +113,9 @@ public class ScreenSenderService : IHostedService, IDisposable
     /// </summary>
     public event EventHandler<string>? ServerIdChanged;
 
+    /// <summary>Raised when a file from the viewer was received and verified (the UI shows a notice).</summary>
+    public event EventHandler<ReceivedFile>? FileReceived;
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
         _logger.LogInformation("Starting ScreenSenderService with Server ID: {ServerId}", ServerId);
@@ -191,8 +194,17 @@ public class ScreenSenderService : IHostedService, IDisposable
             IVideoSource videoSource;
             bool initialized;
 
-            // The data channel session is also needed for clipboard sharing alone; input stays unauthorized then.
-            if (_configuration.EnableRemoteControl || _configuration.EnableClipboard)
+            // File receiving saves into the profile of the process user; as LocalSystem that would be the SYSTEM
+            // profile, not the logged-in user's Downloads. Impersonation is a later task, so refuse it for now.
+            var enableFileReceive = _configuration.EnableFileReceive;
+            if (enableFileReceive && OperatingSystem.IsWindows() && System.Security.Principal.WindowsIdentity.GetCurrent().IsSystem)
+            {
+                _logger.LogWarning("File receiving is disabled: the sender runs as LocalSystem and cannot save into a user's folder yet.");
+                enableFileReceive = false;
+            }
+
+            // The data channel session is also needed for clipboard sharing or file receiving alone; input stays unauthorized then.
+            if (_configuration.EnableRemoteControl || _configuration.EnableClipboard || enableFileReceive)
             {
                 _logger.LogInformation("Creating WebRTC session WITH data channel (remote control: {Control}, clipboard: {Clipboard})", _configuration.EnableRemoteControl, _configuration.EnableClipboard);
 
@@ -211,6 +223,19 @@ public class ScreenSenderService : IHostedService, IDisposable
                 var clipboardManager = _configuration.EnableClipboard ? PlatformServiceFactory.CreateClipboardManager() : null;
                 _webrtcSessionWithInput = new WebRTCSessionWithInput(serilogSessionLogger, inputController, clipboardManager);
                 _webrtcSessionWithInput.ClipboardSharingEnabled = _configuration.EnableClipboard;
+                if (enableFileReceive)
+                {
+                    var folder = string.IsNullOrWhiteSpace(_configuration.FileReceiveFolder)
+                        ? ScreenSenderConfiguration.DefaultFileReceiveFolder
+                        : _configuration.FileReceiveFolder;
+                    _webrtcSessionWithInput.EnableFileReceive(folder, _configuration.FileReceiveMaxBytes);
+                    _webrtcSessionWithInput.FileReceived += (sender, file) =>
+                    {
+                        _logger.LogInformation("Received {Name} ({Size} bytes) from viewer into {Folder}", file.SavedAs, file.SizeBytes, Path.GetDirectoryName(file.FullPath));
+                        FileReceived?.Invoke(this, file);
+                    };
+                    _logger.LogInformation("File receiving enabled, folder: {Folder}, max {Max} bytes", folder, _configuration.FileReceiveMaxBytes);
+                }
                 ApplyIceServers(_webrtcSessionWithInput.VideoSource);
 
                 // Subscribe to events
@@ -724,6 +749,22 @@ public class ScreenSenderConfiguration
     /// Default is false: the clipboard often holds passwords, so the host must opt in.
     /// </summary>
     public bool EnableClipboard { get; set; } = false;
+
+    /// <summary>
+    /// Whether the connected viewer may send files to this machine (viewer to host only).
+    /// Default is false: saving files from a remote peer is something the host must opt in to.
+    /// </summary>
+    public bool EnableFileReceive { get; set; } = false;
+
+    /// <summary>Where received files are saved. Empty means <see cref="DefaultFileReceiveFolder"/>.</summary>
+    public string FileReceiveFolder { get; set; } = string.Empty;
+
+    /// <summary>Largest accepted file in bytes (default 2 GB).</summary>
+    public long FileReceiveMaxBytes { get; set; } = FileReceiver.DefaultMaxBytes;
+
+    /// <summary>"Downloads\DeskShare" in the profile of the user running the sender.</summary>
+    public static string DefaultFileReceiveFolder =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "DeskShare");
 
     /// <summary>
     /// Whether to trust the connected client permanently (no passkey required for reconnection).

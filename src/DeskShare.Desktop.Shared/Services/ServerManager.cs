@@ -37,6 +37,9 @@ public class ServerManager : IDisposable
     public event EventHandler<ServerStats>? StatsUpdated;
     public event EventHandler<PasskeyChangedEventArgs>? PasskeyChanged;
 
+    /// <summary>Raised when a viewer sent a file that was saved on this machine.</summary>
+    public event EventHandler<DeskShare.Core.WebRTC.ReceivedFile>? FileReceived;
+
     public ServerManager(ILogger<ServerManager> logger, IConfiguration configuration, ILoggerFactory loggerFactory)
     {
         _logger = logger;
@@ -47,7 +50,7 @@ public class ServerManager : IDisposable
     /// <summary>
     /// Starts the server with signaling + screen sender services.
     /// </summary>
-    public async Task StartAsync(string serverId, string? password = null, bool enableRemoteControl = false, bool trustClientPermanent = false, bool enableClipboard = false)
+    public async Task StartAsync(string serverId, string? password = null, bool enableRemoteControl = false, bool trustClientPermanent = false, bool enableClipboard = false, bool enableFileReceive = false)
     {
         if (_isRunning)
         {
@@ -88,6 +91,7 @@ public class ServerManager : IDisposable
                 OutputIndex = outputIndex,
                 EnableRemoteControl = enableRemoteControl,
                 EnableClipboard = enableClipboard,
+                EnableFileReceive = enableFileReceive,
                 TrustClientPermanent = trustClientPermanent
             };
 
@@ -105,6 +109,8 @@ public class ServerManager : IDisposable
                 CurrentPasskey = args;
                 PasskeyChanged?.Invoke(this, args);
             };
+
+            _screenSenderService.FileReceived += (sender, file) => FileReceived?.Invoke(this, file);
 
             _screenSenderService.ServerIdChanged += (sender, newId) =>
             {
