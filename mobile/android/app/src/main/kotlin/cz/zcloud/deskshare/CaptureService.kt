@@ -6,6 +6,9 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.hardware.display.DisplayManager
+import android.os.Handler
+import android.os.Looper
 import android.os.Build
 import android.os.IBinder
 
@@ -15,7 +18,15 @@ import android.os.IBinder
  */
 class CaptureService : Service() {
 
+    private var displayListener: DisplayManager.DisplayListener? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onDestroy() {
+        displayListener?.let { getSystemService(DisplayManager::class.java).unregisterDisplayListener(it) }
+        displayListener = null
+        super.onDestroy()
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val manager = getSystemService(NotificationManager::class.java)
@@ -41,10 +52,26 @@ class CaptureService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+        if (displayListener == null) {
+            // Runs while the app is in the background too, which is when the user rotates another app.
+            val listener = object : DisplayManager.DisplayListener {
+                override fun onDisplayAdded(displayId: Int) = Unit
+                override fun onDisplayRemoved(displayId: Int) = Unit
+                override fun onDisplayChanged(displayId: Int) {
+                    CaptureService.onDisplayChanged?.invoke()
+                }
+            }
+            getSystemService(DisplayManager::class.java).registerDisplayListener(listener, Handler(Looper.getMainLooper()))
+            displayListener = listener
+        }
         return START_NOT_STICKY
     }
 
     companion object {
+        /** Set by MainActivity; forwards display size/rotation changes to Dart. */
+        @Volatile
+        var onDisplayChanged: (() -> Unit)? = null
+
         private const val CHANNEL_ID = "deskshare_sharing"
         private const val NOTIFICATION_ID = 4711
     }

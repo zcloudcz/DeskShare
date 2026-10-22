@@ -48,6 +48,13 @@ class TouchMapper {
     }
     _multi = true;
     _lastDistance = _distance();
+    if (_dragging) {
+      // A second finger turns the drag into a pinch/right-click gesture: release the left button first, or
+      // it would stay pressed on the host. The drag was not a right click, so none follows when the fingers lift.
+      _dragging = false;
+      _rightClickDone = true;
+      return const [InputMessage.up(MouseButton.left)];
+    }
     return const [];
   }
 
@@ -135,13 +142,20 @@ class TouchMapper {
   return null;
 }
 
-/// KeyDown+KeyUp pair for one character, or empty when it cannot be typed remotely.
+/// Windows VK_SHIFT. The host injects the exact virtual key it is sent (WindowsInputController ignores the
+/// message's Shift flag), so a shifted character needs a real Shift key press around it.
+const vkShift = 0x10;
+
+/// Key presses for one character, or empty when it cannot be typed remotely. Shifted characters
+/// ("A", "!") are wrapped in Shift down/up; the flag is set too, like the web viewer does.
 List<InputMessage> typeChar(String ch) {
   final k = keyForChar(ch);
   if (k == null) return const [];
   return [
+    if (k.shift) const InputMessage(type: InputType.keyDown, keyCode: vkShift, shift: true),
     InputMessage(type: InputType.keyDown, keyCode: k.vk, shift: k.shift),
     InputMessage(type: InputType.keyUp, keyCode: k.vk, shift: k.shift),
+    if (k.shift) const InputMessage(type: InputType.keyUp, keyCode: vkShift),
   ];
 }
 

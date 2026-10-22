@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 
 import 'core/settings.dart';
@@ -5,8 +6,11 @@ import 'core/signaling_api.dart';
 
 /// Signaling server address: the public one by default, changeable for self-hosting and tests.
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key, required this.settings});
+  const SettingsScreen({super.key, required this.settings, this.allowInsecure = kDebugMode});
   final AppSettings settings;
+
+  /// ws:// is accepted only in debug builds (see [signalingUrlError]).
+  final bool allowInsecure;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -24,9 +28,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _save() async {
     final text = _url.text.trim();
-    final uri = Uri.tryParse(text);
-    if (text.isNotEmpty && (uri == null || !{'ws', 'wss'}.contains(uri.scheme) || uri.host.isEmpty)) {
-      setState(() => _error = 'Use a ws:// or wss:// address, e.g. $defaultSignalingUrl');
+    final error = text.isEmpty ? null : signalingUrlError(text, allowInsecure: widget.allowInsecure);
+    if (error != null) {
+      setState(() => _error = error);
       return;
     }
     final messenger = ScaffoldMessenger.of(context);

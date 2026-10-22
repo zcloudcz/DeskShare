@@ -13,6 +13,7 @@ import '../core/signaling_message.dart';
 import '../core/signaling_socket.dart';
 import 'device_control.dart';
 import 'gesture_mapper.dart';
+import 'rotation.dart';
 
 enum SenderState { idle, starting, sharing, failed }
 
@@ -64,6 +65,10 @@ class WebRtcSenderSession extends SenderSession {
   RTCPeerConnection? _pc;
   RTCDataChannel? _dc;
   Timer? _rotationTimer;
+  int _rotationFailures = 0;
+  Duration? _retryAfter;
+  StreamSubscription<void>? _projectionSub;
+  StreamSubscription<void>? _displaySub;
   bool _reconnecting = false;
   bool _stopping = false;
   String? _viewerId;
@@ -102,6 +107,8 @@ class WebRtcSenderSession extends SenderSession {
   Future<void> start() async {
     if (_state == SenderState.starting || _state == SenderState.sharing) return;
     _stopping = false;
+    _rotationFailures = 0;
+    _retryAfter = null;
     _set(SenderState.starting, 'Asking for screen capture permission...');
     try {
       _controlGrantedForSession = _control && await device.isAccessibilityEnabled();
@@ -117,6 +124,7 @@ class WebRtcSenderSession extends SenderSession {
 
       final size = await device.displaySize();
       _mapper = GestureMapper(width: size.width, height: size.height);
+      _listenToDevice();
 
       _api = SignalingApi(settings.signalingUrl);
       _serverId = settings.serverId;
@@ -169,16 +177,37 @@ class WebRtcSenderSession extends SenderSession {
 
   void _scheduleRotation() {
     _rotationTimer?.cancel();
-    final wait = _validTo!.difference(DateTime.now().toUtc());
-    _rotationTimer = Timer(wait.isNegative ? Duration.zero : wait, () async {
+    final wait = rotationDelay(
+      validTo: _validTo,
+      now: DateTime.now().toUtc(),
+      failures: _rotationFailures,
+      retryAfter: _retryAfter,
+    );
+    _rotationTimer = Timer(wait, () async {
       if (_stopping) return;
       try {
         await _newPasskeyAndRegister();
+        _rotationFailures = 0;
+        _retryAfter = null;
+      } on SignalingException catch (e) {
+        _rotationFailures++;
+        _retryAfter = e.retryAfter;
+        _dropExpiredPasskey();
       } catch (_) {
-        // Server unreachable: keep the old passkey on screen, try again at the next slot.
+        _rotationFailures++;
+        _retryAfter = null;
+        _dropExpiredPasskey();
       }
       if (!_stopping) _scheduleRotation();
     });
+  }
+
+  /// A passkey the server no longer accepts must not stay on screen.
+  void _dropExpiredPasskey() {
+    final validTo = _validTo;
+    if (validTo == null || validTo.isAfter(DateTime.now().toUtc())) return;
+    _passkey = '';
+    _set(_state, 'Cannot reach the signaling server, retrying...');
   }
 
   Future<void> _connectSocket() async {
@@ -321,10 +350,16 @@ class WebRtcSenderSession extends SenderSession {
   static const maxDataChannelBytes = 64 * 1024;
 
   void _onDataChannelMessage(RTCDataChannelMessage msg) {
-    if (msg.isBinary || msg.text.length > maxDataChannelBytes) return;
+    if (msg.isBinary) return;
+    handleDataChannelText(msg.text);
+  }
+
+  @visibleForTesting
+  void handleDataChannelText(String text) {
+    if (text.length > maxDataChannelBytes) return;
     final Object? j;
     try {
-      j = jsonDecode(msg.text);
+      j = jsonDecode(text);
     } on FormatException {
       return;
     }
@@ -346,9 +381,38 @@ class WebRtcSenderSession extends SenderSession {
     final mapper = _mapper;
     if (input == null || mapper == null) return;
     for (final action in mapper.handle(input)) {
-      unawaited(device.perform(action).catchError((Object _) {}));
+      unawaited(device.perform(action).catchError((Object e) => debugPrint('Gesture failed: $e')));
     }
   }
+
+  void _listenToDevice() {
+    _projectionSub ??= device.projectionStopped.listen((_) => onProjectionStopped());
+    _displaySub ??= device.displayChanged.listen((_) async {
+      final size = await device.displaySize();
+      _mapper?.resize(size.width, size.height); // also drops a press that is in progress
+    });
+  }
+
+  /// The user ended screen capture from the system UI. Input must stop at once: the flag and the mapper go
+  /// first (synchronously), everything else is torn down after.
+  @visibleForTesting
+  Future<void> onProjectionStopped() async {
+    _controlGrantedForSession = false;
+    _mapper = null;
+    await _shutdown();
+    _set(SenderState.idle, 'Sharing ended: screen capture was stopped');
+  }
+
+  /// Test hook: behave as if sharing with remote control had started (no WebRTC involved).
+  @visibleForTesting
+  void debugArmControl(double width, double height) {
+    _controlGrantedForSession = true;
+    _mapper = GestureMapper(width: width, height: height);
+    _listenToDevice();
+  }
+
+  @visibleForTesting
+  bool get controlGranted => _controlGrantedForSession;
 
   Future<void> _closePeer() async {
     final dc = _dc;
@@ -364,6 +428,11 @@ class WebRtcSenderSession extends SenderSession {
   Future<void> _shutdown() async {
     _stopping = true;
     _rotationTimer?.cancel();
+    await _projectionSub?.cancel();
+    await _displaySub?.cancel();
+    _projectionSub = _displaySub = null;
+    _controlGrantedForSession = false;
+    _mapper = null;
     await _msgSub?.cancel();
     await _socket?.close();
     _socket = null;

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io' show Platform;
 
 import 'package:flutter/services.dart';
@@ -17,10 +18,34 @@ abstract class DeviceControl {
   /// Must run after the capture permission was granted and before the capture starts (Android 14+).
   Future<void> startCaptureService();
   Future<void> stopCaptureService();
+
+  /// The user ended screen capture from the system UI (MediaProjection stopped).
+  Stream<void> get projectionStopped;
+
+  /// Display size or rotation changed: gesture coordinates must be recomputed.
+  Stream<void> get displayChanged;
 }
 
 class MethodChannelDeviceControl implements DeviceControl {
+  MethodChannelDeviceControl() {
+    _channel.setMethodCallHandler((call) async {
+      switch (call.method) {
+        case 'projectionStopped':
+          _projectionStopped.add(null);
+        case 'displayChanged':
+          _displayChanged.add(null);
+      }
+    });
+  }
+
   static const _channel = MethodChannel('cz.zcloud.deskshare/device');
+  final _projectionStopped = StreamController<void>.broadcast();
+  final _displayChanged = StreamController<void>.broadcast();
+
+  @override
+  Stream<void> get projectionStopped => _projectionStopped.stream;
+  @override
+  Stream<void> get displayChanged => _displayChanged.stream;
 
   /// Remote control and screen sharing exist on Android only.
   static bool get supported => Platform.isAndroid;

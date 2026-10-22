@@ -54,13 +54,27 @@ class GlobalAction extends DeviceAction {
 ///  - wheel -> short swipe (wheel up = finger moves down = content scrolls up, like a mouse wheel)
 ///  - right button -> Back, middle -> Home, extra1 -> Recents, Esc key -> Back
 class GestureMapper {
-  GestureMapper({required this.width, required this.height, int Function()? nowMs})
-      : _now = nowMs ?? (() => DateTime.now().millisecondsSinceEpoch),
+  GestureMapper({required double width, required double height, int Function()? nowMs})
+      : _width = width,
+        _height = height,
+        _now = nowMs ?? (() => DateTime.now().millisecondsSinceEpoch),
         _pos = Offset(width / 2, height / 2);
 
-  final double width;
-  final double height;
+  double _width;
+  double _height;
   final int Function() _now;
+
+  double get width => _width;
+  double get height => _height;
+
+  /// The screen size or rotation changed. The pointer keeps its normalized position, and a press in
+  /// progress is dropped: its recorded pixels belong to the old coordinate space.
+  void resize(double width, double height) {
+    _pos = Offset(_pos.dx / _width * width, _pos.dy / _height * height);
+    _width = width;
+    _height = height;
+    _path = null;
+  }
 
   /// Movement (px) below which a press/release counts as a tap.
   static const slop = 12.0;

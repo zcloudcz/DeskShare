@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import 'signaling_api.dart' show SignalingException, signalingUrlError;
 import 'signaling_message.dart';
 
 /// The `/signal` WebSocket: JSON text frames <-> [SignalingMessage].
@@ -20,7 +21,9 @@ class SignalingSocket {
   final _messages = StreamController<SignalingMessage>.broadcast();
   final _closed = Completer<void>();
 
-  static Future<SignalingSocket> connect(Uri url) async {
+  static Future<SignalingSocket> connect(Uri url, {bool? allowInsecure}) async {
+    final error = allowInsecure == null ? signalingUrlError(url.toString()) : signalingUrlError(url.toString(), allowInsecure: allowInsecure);
+    if (error != null) throw SignalingException(error);
     final channel = WebSocketChannel.connect(url);
     await channel.ready.timeout(const Duration(seconds: 10));
     return SignalingSocket._(channel);

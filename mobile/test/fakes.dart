@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:deskshare/app.dart';
@@ -11,6 +12,14 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class FakeDevice implements DeviceControl {
+  final stopped = StreamController<void>.broadcast();
+  final changed = StreamController<void>.broadcast();
+  Size size = const Size(1080, 2400);
+  @override
+  Stream<void> get projectionStopped => stopped.stream;
+  @override
+  Stream<void> get displayChanged => changed.stream;
+
   bool accessibility = false;
   int settingsOpened = 0;
   final performed = <DeviceAction>[];
@@ -20,7 +29,7 @@ class FakeDevice implements DeviceControl {
   @override
   Future<void> openAccessibilitySettings() async => settingsOpened++;
   @override
-  Future<Size> displaySize() async => const Size(1080, 2400);
+  Future<Size> displaySize() async => size;
   @override
   Future<void> perform(DeviceAction action) async => performed.add(action);
   @override

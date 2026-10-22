@@ -7,6 +7,7 @@ import 'package:deskshare/core/input_message.dart';
 import 'package:deskshare/core/request_signer.dart';
 import 'package:deskshare/core/signaling_api.dart';
 import 'package:deskshare/core/signaling_message.dart';
+import 'package:deskshare/core/signaling_socket.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -223,6 +224,19 @@ void main() {
       expect(api.signalUrl('tok').toString(), 'wss://example.test/signal?token=tok');
     });
 
+    test('release builds only accept wss:// (API and socket)', () async {
+      expect(signalingUrlError('wss://example.test/signal', allowInsecure: false), isNull);
+      expect(signalingUrlError('ws://example.test/signal', allowInsecure: false), contains('wss://'));
+      expect(signalingUrlError('ws://10.0.2.2:5171/signal', allowInsecure: true), isNull);
+      expect(signalingUrlError('http://example.test/signal', allowInsecure: true), isNotNull);
+      expect(signalingUrlError('wss:///signal'), isNotNull);
+      expect(() => SignalingApi('ws://example.test/signal', allowInsecure: false), throwsA(isA<SignalingException>()));
+      await expectLater(
+        SignalingSocket.connect(Uri.parse('ws://example.test/signal'), allowInsecure: false),
+        throwsA(isA<SignalingException>()),
+      );
+    });
+
     test('keeps a non-default port and maps ws to http', () {
       final api = SignalingApi('ws://10.0.2.2:5171/signal');
       expect(api.baseUrl.toString(), 'http://10.0.2.2:5171');
@@ -233,6 +247,21 @@ void main() {
       expect(
         api.authenticate(serverId: 'server-123456789', credential: PasskeyCredential('ABCDEFGHJ'), clientId: 'c'),
         throwsA(isA<SignalingException>().having((e) => e.message, 'message', 'Invalid passkey or server ID')),
+      );
+    });
+
+    test('429 carries Retry-After', () async {
+      final api = SignalingApi('wss://example.test/signal',
+          client: MockClient((_) async => http.Response('', 429, headers: {'retry-after': '7'})));
+      await expectLater(
+        api.register(
+          serverId: 'server-123456789',
+          credential: PasskeyCredential('ABCDEFGHJ'),
+          validTo: DateTime.utc(2026),
+          remoteControlEnabled: false,
+          ownerSecret: 's',
+        ),
+        throwsA(isA<SignalingException>().having((e) => e.retryAfter, 'retryAfter', const Duration(seconds: 7))),
       );
     });
 

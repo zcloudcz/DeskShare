@@ -81,6 +81,20 @@ void main() {
       expect(stroke.points.last, const Offset(1000, 2000));
     });
 
+    test('resize rescales the pointer and drops a press in progress', () {
+      final g = make();
+      g.handle(const InputMessage.move(0.5, 0.5));
+      g.handle(const InputMessage.down(MouseButton.left));
+      g.resize(2000, 1000); // rotated
+      expect(g.handle(const InputMessage.up(MouseButton.left)), isEmpty, reason: 'old-space press is dropped');
+      g.handle(const InputMessage.down(MouseButton.left));
+      final tap = g.handle(const InputMessage.up(MouseButton.left)).single as StrokeAction;
+      expect(tap.points.single, const Offset(1000, 500), reason: 'pointer keeps its normalized position');
+      g.handle(const InputMessage.move(0.1, 0.9));
+      g.handle(const InputMessage.down(MouseButton.left));
+      expect((g.handle(const InputMessage.up(MouseButton.left)).single as StrokeAction).points.single, const Offset(200, 900));
+    });
+
     test('wheel scrolls with a vertical swipe (wheel up moves the finger down)', () {
       final g = make();
       g.handle(const InputMessage.move(0.5, 0.5));
@@ -147,6 +161,16 @@ void main() {
       expect(t.up(1, const Offset(100, 100), area), isEmpty);
     });
 
+    test('second finger during a drag releases the left button first (no stuck button on the host)', () {
+      t.down(1, const Offset(100, 100), area);
+      expect(_summary(t.move(1, const Offset(160, 100), area)), 'down(left) move(0.40,0.50)');
+      expect(_summary(t.down(2, const Offset(300, 100), area)), 'up(left)');
+      // The gesture continues as a pinch; no second release and no right click when the fingers lift.
+      expect(_summary(t.move(2, const Offset(380, 100), area)), 'wheel(120)');
+      expect(t.up(2, const Offset(380, 100), area), isEmpty);
+      expect(t.up(1, const Offset(160, 100), area), isEmpty);
+    });
+
     test('coordinates outside the video are clamped to 0..1', () {
       expect(_summary(t.down(1, const Offset(-20, 500), area)), 'move(0.00,1.00)');
     });
@@ -179,12 +203,19 @@ void main() {
       expect(keyForChar('é'), isNull);
     });
 
-    test('typeChar yields KeyDown then KeyUp, nothing for unsupported characters', () {
-      final m = typeChar('B');
+    test('unshifted character is KeyDown then KeyUp, nothing for unsupported characters', () {
+      final m = typeChar('b');
       expect(m.map((e) => e.type), [InputType.keyDown, InputType.keyUp]);
       expect(m.first.keyCode, 66);
-      expect(m.first.shift, isTrue);
+      expect(m.first.shift, isFalse);
       expect(typeChar('é'), isEmpty);
+    });
+
+    test('shifted characters press a real Shift key around them (the host ignores the Shift flag)', () {
+      String s(List<InputMessage> ms) => ms.map((e) => '${e.type.name}:${e.keyCode}').join(' ');
+      expect(s(typeChar('A')), 'keyDown:16 keyDown:65 keyUp:65 keyUp:16');
+      expect(s(typeChar('!')), 'keyDown:16 keyDown:49 keyUp:49 keyUp:16');
+      expect(s(typeChar('?')), 'keyDown:16 keyDown:191 keyUp:191 keyUp:16');
     });
   });
 }

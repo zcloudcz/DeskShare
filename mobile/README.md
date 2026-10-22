@@ -53,9 +53,22 @@ dotnet run --project src/SignalingServer
   system MediaProjection dialog must be accepted: choose "Share entire screen" in the drop-down, then
   "Share screen" (`adb shell input tap` works).
   `flutter test integration_test/e2e_test.dart -d emulator-5554 --plain-name sender:`
-- Accessibility gestures: enable the service first
-  (`adb shell settings put secure enabled_accessibility_services cz.zcloud.deskshare/cz.zcloud.deskshare.DeskShareAccessibilityService`),
-  otherwise that test is skipped.
+- **Remote control on the phone** (`--plain-name remote`): sender with control on plus an in-app viewer; a viewer
+  tap and a swipe must land at the same normalized position in a full-screen touch recorder. Needs the
+  accessibility service enabled *after* the install (`flutter test` reinstalls the app and that resets it):
+  `adb shell settings put secure enabled_accessibility_services cz.zcloud.deskshare/cz.zcloud.deskshare.DeskShareAccessibilityService`
+  and `adb shell settings put secure accessibility_enabled 1`, plus the MediaProjection dialog.
+- **Viewer control against a Linux sender** (`integration_test/control_e2e_test.dart`): same docker sender as above
+  started with `--Security:EnableRemoteControl=true`; while the test prints `STEP ...` lines the harness polls
+  `docker exec <container> xdotool getmouselocation` (display :99, 1280x720). Verified positions: tap
+  (320,360), tap (960,540), drag ending (480,180).
+
+## Vendored flutter_webrtc
+
+`third_party/flutter_webrtc` is flutter_webrtc 1.6.2+hotfix.4 with one patch: it forwards
+`MediaProjection.onStop` (upstream ignores it) so the app can revoke remote control the moment the user ends
+capture from the system UI. See `third_party/flutter_webrtc/DESKSHARE_PATCH.md`. The owner secret is stored with
+`flutter_secure_storage` (Keystore/Keychain) and backups are disabled (`android:allowBackup="false"`).
 
 ## Follow-ups
 
@@ -65,4 +78,6 @@ dotnet run --project src/SignalingServer
 - iOS sender: ReplayKit Broadcast Upload Extension (new Xcode target + App Group + flutter_webrtc broadcast
   handler); not built, cannot be done without Xcode.
 - Viewer does not auto-reconnect via `/resume` after a lost session (web viewer does).
-- Remote keyboard sends US-layout ASCII only; no clipboard sync, no file transfer.
+- Remote keyboard sends US-layout ASCII only (shifted characters use a real Shift key; the Linux sender's VK table
+  is basic); no clipboard sync, no file transfer.
+- Stopping capture from the system UI is covered by unit tests and the native hook, not yet exercised on a device.

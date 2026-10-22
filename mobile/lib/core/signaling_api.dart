@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:http/http.dart' as http;
 
 import 'credential.dart';
@@ -33,10 +34,26 @@ class IceServer {
       };
 }
 
+/// Why [url] cannot be used as signaling address, or null when it is fine.
+/// The passkey and the owner secret travel over this connection, so release builds accept `wss://` only;
+/// plain `ws://` (and the `http://` REST calls derived from it) is a debug-build convenience for a local server.
+String? signalingUrlError(String url, {bool allowInsecure = kDebugMode}) {
+  final uri = Uri.tryParse(url.trim());
+  if (uri == null || uri.host.isEmpty) return 'Use a wss:// address, e.g. $defaultSignalingUrl';
+  if (uri.scheme == 'wss') return null;
+  if (uri.scheme == 'ws') {
+    return allowInsecure ? null : 'Only secure wss:// servers are allowed (ws:// would send your passkey unencrypted)';
+  }
+  return 'Use a wss:// address, e.g. $defaultSignalingUrl';
+}
+
 class SignalingException implements Exception {
-  SignalingException(this.message, {this.statusCode});
+  SignalingException(this.message, {this.statusCode, this.retryAfter});
   final String message;
   final int? statusCode;
+
+  /// Server's Retry-After (HTTP 429/503), when it sent one.
+  final Duration? retryAfter;
   @override
   String toString() => message;
 }
@@ -72,9 +89,15 @@ class SessionGrant {
 
 /// HTTP side of the signaling server: POST /register (sender) and /authenticate (viewer).
 class SignalingApi {
-  SignalingApi(String signalingUrl, {http.Client? client})
-      : wsUrl = Uri.parse(signalingUrl),
+  SignalingApi(String signalingUrl, {http.Client? client, bool allowInsecure = kDebugMode})
+      : wsUrl = _checked(signalingUrl, allowInsecure),
         _client = client ?? http.Client();
+
+  static Uri _checked(String url, bool allowInsecure) {
+    final error = signalingUrlError(url, allowInsecure: allowInsecure);
+    if (error != null) throw SignalingException(error);
+    return Uri.parse(url.trim());
+  }
 
   /// The `/signal` WebSocket URL.
   final Uri wsUrl;
@@ -107,7 +130,9 @@ class SignalingApi {
       throw SignalingException('Server ID already in use', statusCode: 403);
     }
     if (r.statusCode < 200 || r.statusCode >= 300) {
-      throw SignalingException('Server error (${r.statusCode})', statusCode: r.statusCode);
+      final seconds = int.tryParse(r.headers['retry-after'] ?? '');
+      throw SignalingException('Server error (${r.statusCode})',
+          statusCode: r.statusCode, retryAfter: seconds == null ? null : Duration(seconds: seconds));
     }
     return jsonDecode(r.body) as Map<String, dynamic>;
   }

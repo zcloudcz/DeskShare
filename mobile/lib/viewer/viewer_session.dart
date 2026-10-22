@@ -42,6 +42,12 @@ class WebRtcViewerSession extends ViewerSession {
 
   ViewerState _state = ViewerState.idle;
   String _status = '';
+  bool _disposed = false;
+
+  /// Bumped by every connect/teardown. An async step that resumes after its generation changed (or after
+  /// dispose) must not touch the session: it would store sockets and peers nobody will ever close.
+  int _gen = 0;
+  bool _stale(int gen) => _disposed || gen != _gen;
   bool _controlAvailable = false;
   bool _controlEnabled = false;
   RTCVideoRenderer? _renderer;
@@ -69,10 +75,15 @@ class WebRtcViewerSession extends ViewerSession {
   @override
   RTCVideoRenderer? get renderer => _renderer;
 
+  void _notify() {
+    if (!_disposed) notifyListeners();
+  }
+
   void _set(ViewerState s, String status) {
+    if (_disposed) return;
     _state = s;
     _status = status;
-    notifyListeners();
+    _notify();
   }
 
   @override
@@ -84,6 +95,7 @@ class WebRtcViewerSession extends ViewerSession {
     if (!credential.isComplete) return _set(ViewerState.failed, 'The passkey has 9 characters (XXX-XXX-XXX)');
 
     _serverId = id;
+    final gen = ++_gen;
     _set(ViewerState.connecting, 'Authenticating...');
     try {
       _api = SignalingApi(signalingUrl);
@@ -92,17 +104,24 @@ class WebRtcViewerSession extends ViewerSession {
         credential: credential,
         clientId: generateClientId(),
       );
+      if (_stale(gen)) return;
       _iceServers = grant.iceServers;
 
       _set(ViewerState.connecting, 'Connecting to signaling server...');
       final socket = await SignalingSocket.connect(_api!.signalUrl(grant.webSocketToken));
+      if (_stale(gen)) {
+        await socket.close(); // disposed or cancelled while connecting: nobody owns this socket
+        return;
+      }
       _socket = socket;
       _msgSub = socket.messages.listen(_onSignal);
       unawaited(socket.closed.then((_) => _onSocketClosed(socket)));
     } on SignalingException catch (e) {
+      if (_stale(gen)) return;
       await _teardown();
       _set(ViewerState.failed, e.message);
     } catch (e) {
+      if (_stale(gen)) return;
       await _teardown();
       _set(ViewerState.failed, 'Connection failed: $e');
     }
@@ -178,11 +197,16 @@ class WebRtcViewerSession extends ViewerSession {
   }
 
   Future<void> _handleOffer(SignalingMessage offer) async {
+    final gen = _gen;
     _set(ViewerState.connecting, 'Received offer, creating peer connection...');
     await _closePeer();
 
-    _renderer ??= RTCVideoRenderer();
-    await _renderer!.initialize();
+    final renderer = _renderer ??= RTCVideoRenderer();
+    await renderer.initialize();
+    if (_stale(gen)) {
+      if (_disposed) await renderer.dispose();
+      return;
+    }
 
     final pc = await createPeerConnection({
       'iceServers': _iceServers.isEmpty
@@ -192,12 +216,16 @@ class WebRtcViewerSession extends ViewerSession {
           : _iceServers.map((s) => s.toRtc()).toList(),
       'sdpSemantics': 'unified-plan',
     });
+    if (_stale(gen)) {
+      await pc.close();
+      return;
+    }
     _pc = pc;
 
     pc.onTrack = (e) {
       if (e.track.kind == 'video' && e.streams.isNotEmpty) {
         _renderer!.srcObject = e.streams.first;
-        notifyListeners();
+        _notify();
       }
     };
     pc.onDataChannel = _setupDataChannel;
@@ -227,6 +255,7 @@ class WebRtcViewerSession extends ViewerSession {
     await pc.setRemoteDescription(RTCSessionDescription(offer.sdp, 'offer'));
     final answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
+    if (_stale(gen)) return; // _teardown has closed the peer
     _send(SignalingMessage(type: SignalingType.answer, targetId: _senderId, sdp: answer.sdp));
 
     // ICE candidates that raced ahead of the offer.
@@ -273,7 +302,7 @@ class WebRtcViewerSession extends ViewerSession {
       } else if (s == RTCDataChannelState.RTCDataChannelClosed) {
         _controlAvailable = false;
         _controlEnabled = false;
-        notifyListeners();
+        _notify();
       }
     };
     channel.onMessage = (msg) {
@@ -307,7 +336,7 @@ class WebRtcViewerSession extends ViewerSession {
   void setControl(bool enabled) {
     if (enabled && !_controlAvailable) return;
     _controlEnabled = enabled;
-    notifyListeners();
+    _notify();
   }
 
   @override
@@ -328,6 +357,7 @@ class WebRtcViewerSession extends ViewerSession {
   }
 
   Future<void> _teardown() async {
+    _gen++;
     _pingTimer?.cancel();
     await _msgSub?.cancel();
     final socket = _socket;
@@ -347,6 +377,7 @@ class WebRtcViewerSession extends ViewerSession {
 
   @override
   void dispose() {
+    _disposed = true;
     _teardown();
     _renderer?.dispose();
     super.dispose();

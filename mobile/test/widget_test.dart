@@ -1,5 +1,6 @@
 import 'package:deskshare/app.dart';
 import 'package:deskshare/core/signaling_api.dart';
+import 'package:deskshare/settings_screen.dart';
 import 'package:deskshare/viewer/viewer_session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -39,13 +40,28 @@ void main() {
       await tester.enterText(find.byKey(const Key('signaling-url')), 'http://wrong');
       await tester.tap(find.text('Save'));
       await tester.pump();
-      expect(find.textContaining('ws:// or wss://'), findsOneWidget);
+      expect(find.textContaining('Use a wss:// address'), findsOneWidget);
 
       await tester.enterText(find.byKey(const Key('signaling-url')), 'ws://10.0.2.2:5171/signal');
       await tester.tap(find.text('Save'));
       await tester.pumpAndSettle();
       expect(services.settings.signalingUrl, 'ws://10.0.2.2:5171/signal');
     });
+  });
+
+  testWidgets('release settings refuse cleartext ws:// (passkey would travel unencrypted)', (tester) async {
+    final services = await fakeServices();
+    await tester.pumpWidget(MaterialApp(home: SettingsScreen(settings: services.settings, allowInsecure: false)));
+    await tester.enterText(find.byKey(const Key('signaling-url')), 'ws://10.0.2.2:5171/signal');
+    await tester.tap(find.text('Save'));
+    await tester.pump();
+    expect(find.textContaining('Only secure wss://'), findsOneWidget);
+    expect(services.settings.signalingUrl, defaultSignalingUrl);
+
+    await tester.enterText(find.byKey(const Key('signaling-url')), 'wss://example.test/signal');
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+    expect(services.settings.signalingUrl, 'wss://example.test/signal');
   });
 
   group('Share this phone', () {

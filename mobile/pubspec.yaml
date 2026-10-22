@@ -34,7 +34,12 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
-  flutter_webrtc: ^1.6.2+hotfix.4
+  # Vendored flutter_webrtc 1.6.2+hotfix.4 with one patch (see third_party/flutter_webrtc/DESKSHARE_PATCH.md):
+  # the plugin ignores MediaProjection.onStop, but we must stop remote control the moment the user ends capture.
+  flutter_webrtc:
+    path: third_party/flutter_webrtc
+  # Keystore/Keychain storage for the sender's owner secret (SharedPreferences is plain text and backed up).
+  flutter_secure_storage: ^9.2.4
   http: ^1.6.0
   web_socket_channel: ^3.0.3
   shared_preferences: ^2.5.6

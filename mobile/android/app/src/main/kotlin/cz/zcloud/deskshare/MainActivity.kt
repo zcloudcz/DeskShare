@@ -4,6 +4,9 @@ import android.content.ComponentName
 import android.content.Intent
 import android.os.Build
 import android.provider.Settings
+import android.os.Handler
+import android.os.Looper
+import com.cloudwebrtc.webrtc.GetUserMediaImpl
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
@@ -14,8 +17,23 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "cz.zcloud.deskshare/device")
-            .setMethodCallHandler { call, result -> handle(call, result) }
+        val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "cz.zcloud.deskshare/device")
+        channel.setMethodCallHandler { call, result -> handle(call, result) }
+
+        // The user can end screen capture from the system UI: Dart must revoke remote control right away.
+        // (Upstream flutter_webrtc ignores MediaProjection.onStop; see third_party/flutter_webrtc/DESKSHARE_PATCH.md.)
+        val main = Handler(Looper.getMainLooper())
+        GetUserMediaImpl.projectionStoppedListener = Runnable {
+            main.post { channel.invokeMethod("projectionStopped", null) }
+        }
+        // Rotation / folding changes the pixel space of gestures.
+        CaptureService.onDisplayChanged = { main.post { channel.invokeMethod("displayChanged", null) } }
+    }
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        GetUserMediaImpl.projectionStoppedListener = null
+        CaptureService.onDisplayChanged = null
+        super.cleanUpFlutterEngine(flutterEngine)
     }
 
     private fun handle(call: MethodCall, result: MethodChannel.Result) {
