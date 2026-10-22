@@ -521,8 +521,11 @@ public class ScreenSenderService : IHostedService, IDisposable
             var signalingWsUrl = _configuration.SignalingServerUrl;
             var signalingHttpUrl = signalingWsUrl
                 .Replace("ws://", "http://")
-                .Replace("wss://", "https://")
-                .Replace("/signal", "");
+                .Replace("wss://", "https://");
+            // Strip only the trailing path: a blanket Replace("/signal", "") also mangles hosts such as
+            // "signaling" or "signal.example.com" ("//signaling" contains "/signal").
+            if (signalingHttpUrl.EndsWith("/signal", StringComparison.Ordinal))
+                signalingHttpUrl = signalingHttpUrl[..^"/signal".Length];
 
             var registerUrl = $"{signalingHttpUrl}/register";
 
