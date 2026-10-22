@@ -77,19 +77,17 @@ public sealed class SIPSorceryVideoSource : IVideoSource
         PeerContextChanged?.Invoke(_peer);
     }
 
-    /// <summary>Makes the next frame a keyframe; frames dropped while the peer was unverified left it without one.</summary>
-    public void RequestKeyframe(PeerContext peer)
-    {
-        if (ReferenceEquals(peer, _peer))
-            _framesSinceKeyframe = KeyframeInterval;
-    }
+    private PeerContext? _keyframedPeer; // the peer that already got its first (key)frame
 
     // Every encoded sample passes the gate of the CURRENT peer, so nothing encoded for an old or unverified peer
     // can reach a new connection.
     private void ForwardEncodedSample(uint durationRtpUnits, byte[] sample)
     {
-        if (RequirePeerVerification && !_peer.IsVerified) return;
-        _peerConnection?.SendVideo(durationRtpUnits, sample);
+        // One read of the context; the sample goes out on THAT context's own connection. Reading the mutable
+        // _peerConnection after the check could deliver the frame to a newer, unverified connection.
+        var peer = _peer;
+        if (RequirePeerVerification && !peer.IsVerified) return;
+        peer.Connection?.SendVideo(durationRtpUnits, sample);
     }
 
     /// <summary>
@@ -236,7 +234,8 @@ public sealed class SIPSorceryVideoSource : IVideoSource
             throw new ArgumentNullException(nameof(frame));
 
         // Unverified peer (possibly a man in the middle): it gets no pixels of the screen.
-        if (RequirePeerVerification && !_peer.IsVerified)
+        var peer = _peer; // one read: gate and keyframe decision below concern the same peer
+        if (RequirePeerVerification && !peer.IsVerified)
         {
             lock (_statsLock)
             {
@@ -304,6 +303,15 @@ public sealed class SIPSorceryVideoSource : IVideoSource
             Buffer.BlockCopy(frame.YPlane, 0, _i420Buffer, 0, yLen);
             Buffer.BlockCopy(frame.UPlane, 0, _i420Buffer, yLen, uLen);
             Buffer.BlockCopy(frame.VPlane, 0, _i420Buffer, yLen + uLen, vLen);
+
+            // The first frame a peer ever receives must be a keyframe, or its decoder starts on a delta frame (and can
+            // crash). Tied to the peer's context instead of a "verified" callback, so there is no window between
+            // "verified" and "keyframe requested" in which a delta frame could slip out.
+            if (!ReferenceEquals(_keyframedPeer, peer))
+            {
+                _framesSinceKeyframe = KeyframeInterval;
+                _keyframedPeer = peer;
+            }
 
             // Force keyframe every N frames for low latency decoding
             // This ensures decoder can start displaying video quickly

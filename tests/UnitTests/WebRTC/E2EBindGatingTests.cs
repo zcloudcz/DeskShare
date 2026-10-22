@@ -162,6 +162,82 @@ public sealed class E2EBindGatingTests
         controller.DidNotReceive().ApplyInput(Arg.Any<InputMessage>());
     }
 
+    private static async Task<PeerContext> OpenPeerAsync(bool verified)
+    {
+        var pc = new SIPSorcery.Net.RTCPeerConnection();
+        var peer = new PeerContext(pc)
+        {
+            Channel = await pc.createDataChannel("input"),
+            ChannelOpenForTests = true // a real channel only opens with a network peer
+        };
+        if (verified) peer.TryVerify();
+        return peer;
+    }
+
+    [Fact]
+    public async Task ReplacementBetweenCheckAndSend_NeverRedirectsTheSendToTheNewPeer()
+    {
+        // A is verified; its send is "paused" after the checks passed (inside TrySend). B replaces A meanwhile.
+        var peerA = await OpenPeerAsync(verified: true);
+        var peerB = await OpenPeerAsync(verified: false);
+        var insideSend = new ManualResetEventSlim();
+        var resume = new ManualResetEventSlim();
+        var sentOnA = 0;
+        var sentOnB = 0;
+
+        var send = Task.Run(() => peerA.TrySend(_ => { insideSend.Set(); resume.Wait(); Interlocked.Increment(ref sentOnA); }, requireVerified: true));
+        insideSend.Wait();
+        var replace = Task.Run(peerA.Retire); // what a new peer connection does: it must wait for the running send
+        await Task.Delay(100);
+
+        Assert.False(replace.IsCompleted); // the replacement cannot slip in between check and send
+        resume.Set();
+        Assert.True(await send);
+        await replace;
+
+        // Whatever is attempted after the replacement can only reach the retired A (refused) or the unverified B (refused).
+        Assert.False(peerA.TrySend(_ => Interlocked.Increment(ref sentOnA), requireVerified: true));
+        Assert.False(peerB.TrySend(_ => Interlocked.Increment(ref sentOnB), requireVerified: true));
+        Assert.Equal(1, sentOnA);
+        Assert.Equal(0, sentOnB);
+    }
+
+    [Fact]
+    public async Task Manager_SendsNothingToAnUnverifiedPeer()
+    {
+        var (manager, _) = Create(_ => "sender-mac");
+        var peerB = await OpenPeerAsync(verified: false);
+        manager.BeginPeer(peerB);
+
+        Assert.False(manager.SendMessage("""{"type":"clipboard"}"""));
+        Assert.False(manager.TrySendClipboard("""{"type":"clipboard"}"""));
+    }
+
+    [Fact]
+    public void MessageOfAnUnverifiedPeer_IsJudgedWithItsOwnState_NotWithTheCurrentPeers()
+    {
+        // A's message is "paused"; B replaces A and verifies; then A's message is processed.
+        var (manager, controller) = Create(_ => "sender-mac");
+        var peerA = new PeerContext();
+        var peerB = new PeerContext();
+        manager.BeginPeer(peerA);
+        manager.BeginPeer(peerB);
+        peerB.TryVerify();
+        Assert.Equal(SessionCapabilities.View | SessionCapabilities.Control | SessionCapabilities.Clipboard | SessionCapabilities.FileTransfer, manager.GrantedCapabilities);
+
+        var clipboardRaised = false;
+        manager.ClipboardMessageReceived += (_, _) => clipboardRaised = true;
+        manager.ProcessInputMessage(peerA, InputJson);      // A is retired
+        manager.ProcessInputMessage(new PeerContext(), InputJson);   // an unverified peer that is not retired: still judged as unverified
+        manager.ProcessInputMessage(new PeerContext(), ClipboardJson);
+
+        controller.DidNotReceive().ApplyInput(Arg.Any<InputMessage>());
+        Assert.False(clipboardRaised);
+
+        manager.ProcessInputMessage(peerB, InputJson);      // control: B's own message is applied
+        controller.Received(1).ApplyInput(Arg.Any<InputMessage>());
+    }
+
     [Fact]
     public void RetiredPeer_CanNeverBecomeVerified()
     {

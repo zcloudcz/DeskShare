@@ -148,12 +148,13 @@ public class ClientManager : IDisposable
     // Tells the host whether this viewer wants its clipboard; the host sends nothing until we subscribed.
     private void SendClipboardSubscription()
     {
-        if (!HostAllowsClipboard || _dataChannel?.readyState != RTCDataChannelState.open)
+        if (!HostAllowsClipboard)
         {
             return;
         }
 
-        _dataChannel.send($"{{\"type\":\"clipboard_subscribe\",\"enabled\":{(_shareClipboard ? "true" : "false")}}}");
+        var json = $"{{\"type\":\"clipboard_subscribe\",\"enabled\":{(_shareClipboard ? "true" : "false")}}}";
+        _peer.TrySend(channel => channel.send(json), requireVerified: true);
     }
 
     private void UpdateClipboardEnabled()
@@ -190,12 +191,12 @@ public class ClientManager : IDisposable
 
     private bool SendDataChannelJson(string json)
     {
-        if (!_isConnected || !_peer.IsVerified || _dataChannel?.readyState != RTCDataChannelState.open)
+        // One read of the peer; check and send happen on ITS channel under its lock (see PeerContext.TrySend).
+        if (!_isConnected || !_peer.TrySend(channel => channel.send(json), requireVerified: true))
         {
             return false;
         }
 
-        _dataChannel.send(json);
         _logger.LogDebug("Sent clipboard message: Size={Size} bytes", Encoding.UTF8.GetByteCount(json));
         return true;
     }
@@ -419,6 +420,7 @@ public class ClientManager : IDisposable
         // Setup data channel for remote control input and clipboard
         _dataChannel = await _peerConnection.createDataChannel("input", new RTCDataChannelInit());
         var channel = _dataChannel;
+        peer.Channel = channel; // the peer's own transport: everything for this connection is sent through it
         channel.onopen += () =>
         {
             if (peer.IsRetired) return; // channel of a replaced connection
@@ -428,7 +430,7 @@ public class ClientManager : IDisposable
             // Every send of this uploader goes to ITS channel and only while its own peer is current and verified:
             // a transfer started on a replaced connection can never leak into the new one.
             _fileUploader = new FileUploader(
-                json => { if (channel.readyState != RTCDataChannelState.open || !peer.IsVerified) return false; channel.send(json); return true; },
+                json => peer.TrySend(c => c.send(json), requireVerified: true),
                 () => channel.bufferedAmount);
 
             // First message on the channel is our e2e binding; the authorization_request follows once the
@@ -450,7 +452,8 @@ public class ClientManager : IDisposable
         {
             _logger.LogError("Data channel error: {Error}", error);
         };
-        _dataChannel.onmessage += OnDataChannelMessage;
+        // Bound to THIS connection's context: a message is always judged against the peer whose channel delivered it.
+        channel.onmessage += (c, protocol, data) => OnDataChannelMessage(peer, c, data);
 
         _logger.LogInformation("WebRTC peer connection configured with video sink and data channel");
 
@@ -460,13 +463,19 @@ public class ClientManager : IDisposable
         _logger.LogInformation("WebRTC setup complete, waiting for offer from server");
     }
 
-    private void OnDataChannelMessage(RTCDataChannel channel, DataChannelPayloadProtocols protocol, byte[] data)
+    // Runs under the peer's lock, which PeerContext.Retire() needs: once a connection is replaced none of its
+    // messages is being handled and none starts, so an old connection cannot change the state of the new one.
+    private void OnDataChannelMessage(PeerContext peer, RTCDataChannel channel, byte[] data)
     {
-        // The sender's binding is verified against the CURRENT peer connection's fingerprints, so a message from a
-        // channel of a replaced connection must never reach that check.
-        if (!ReferenceEquals(channel, _dataChannel)) return;
-        var peer = _peer; // one read: the whole message is judged against this peer connection
+        lock (peer.SyncRoot)
+        {
+            if (peer.IsRetired) return;
+            HandlePeerMessage(peer, channel, data);
+        }
+    }
 
+    private void HandlePeerMessage(PeerContext peer, RTCDataChannel channel, byte[] data)
+    {
         try
         {
             var json = Encoding.UTF8.GetString(data);
@@ -528,13 +537,19 @@ public class ClientManager : IDisposable
     private bool TrySendBind(PeerContext peer)
     {
         var (senderFp, viewerFp) = GetFingerprints(peer);
-        if (_e2eKey == null || senderFp == null || viewerFp == null || peer.IsRetired || _dataChannel?.readyState != RTCDataChannelState.open)
+        if (_e2eKey == null || senderFp == null || viewerFp == null)
         {
             return false;
         }
 
-        _dataChannel.send(E2EBinding.BuildBindMessage(E2EBinding.ViewerRole,
-            E2EBinding.ComputeMac(_e2eKey, E2EBinding.ViewerRole, senderFp, viewerFp)));
+        var bind = E2EBinding.BuildBindMessage(E2EBinding.ViewerRole,
+            E2EBinding.ComputeMac(_e2eKey, E2EBinding.ViewerRole, senderFp, viewerFp));
+        // The bind is the one message allowed before verification (requireVerified: false).
+        if (!peer.TrySend(c => c.send(bind), requireVerified: false))
+        {
+            return false;
+        }
+
         _bindSent = true;
         return true;
     }
@@ -559,7 +574,7 @@ public class ClientManager : IDisposable
         _logger.LogInformation("Sender passed the end-to-end binding check");
 
         // The host answers with authorization_response, which also says whether it shares the clipboard.
-        channel.send("{\"type\":\"authorization_request\"}");
+        peer.TrySend(c => c.send("{\"type\":\"authorization_request\"}"), requireVerified: true);
         return true;
     }
 
@@ -1057,22 +1072,18 @@ public class ClientManager : IDisposable
             throw new InvalidOperationException("Not connected or data channel not available");
         }
 
-        if (!_peer.IsVerified)
-        {
-            return; // no input to a peer that has not passed the end-to-end check
-        }
-
-        if (_dataChannel.readyState != RTCDataChannelState.open)
-        {
-            _logger.LogWarning("Data channel is not open, cannot send input");
-            return;
-        }
-
         try
         {
             var json = JsonSerializer.Serialize(input);
             var bytes = Encoding.UTF8.GetBytes(json);
-            _dataChannel.send(bytes);
+            // One read of the peer; no input to a peer that has not passed the end-to-end check, and never to a
+            // channel other than that peer's own.
+            if (!_peer.TrySend(c => c.send(bytes), requireVerified: true))
+            {
+                _logger.LogDebug("Input not sent: data channel not open or peer not verified");
+                return;
+            }
+
             _logger.LogDebug("Sent input: {Type}", input.Type);
         }
         catch (Exception ex)

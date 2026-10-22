@@ -192,8 +192,6 @@ public sealed class WebRTCSessionWithInput : IDisposable
             return E2EBinding.ComputeMac(key, E2EBinding.SenderRole, senderFp, viewerFp);
         };
 
-        // Video flows only for the verified peer itself: the keyframe request is ignored if it was replaced meanwhile.
-        _dataChannelManager.ViewerVerified += (_, peer) => video.RequestKeyframe(peer);
         _dataChannelManager.ViewerBindFailed += (_, peer) => DropUnverifiedPeer(peer.Connection, "binding did not verify");
         _baseSession.ConnectionStateChanged += (_, state) =>
         {

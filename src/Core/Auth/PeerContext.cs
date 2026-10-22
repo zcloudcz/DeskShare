@@ -1,7 +1,10 @@
+using SIPSorcery.Net;
+
 namespace DeskShare.Core.Auth;
 
 /// <summary>
-/// The end-to-end verification state of ONE peer connection (see <see cref="E2EBinding"/>).
+/// The end-to-end verification state of ONE peer connection (see <see cref="E2EBinding"/>), together with that
+/// connection's own transport (<see cref="Connection"/>, <see cref="Channel"/>).
 /// </summary>
 /// <remarks>
 /// Why an object per peer connection and not a flag on the long-lived session: verifying a MAC takes time, and a new
@@ -9,6 +12,11 @@ namespace DeskShare.Core.Auth;
 /// shared, the late "valid" result of connection A could mark connection B as verified. With one object per connection
 /// a late result can only ever reach A's own object, and A's object is <see cref="Retire">retired</see> the moment it is
 /// replaced, so it can no longer become verified at all.
+///
+/// The rule for all code: read the current context ONCE into a local, then check and use only that context and ITS
+/// transport. Never check a context and then send through "the current channel" (it may have changed in between).
+/// <see cref="TrySend"/> does the check and the send under the same lock that <see cref="Retire"/> needs, so a send
+/// cannot interleave with the replacement.
 /// </remarks>
 public sealed class PeerContext
 {
@@ -17,9 +25,21 @@ public sealed class PeerContext
     private volatile bool _dead;
 
     /// <summary>The peer connection this context belongs to (null in unit tests).</summary>
-    public SIPSorcery.Net.RTCPeerConnection? Connection { get; }
+    public RTCPeerConnection? Connection { get; }
 
-    public PeerContext(SIPSorcery.Net.RTCPeerConnection? connection = null) => Connection = connection;
+    /// <summary>The data channel of this connection (set when it is attached).</summary>
+    public volatile RTCDataChannel? Channel;
+
+    /// <summary>True while the viewer of this connection asked for the host's clipboard.</summary>
+    public volatile bool ClipboardSubscribed;
+
+    /// <summary>Test seam: treat the channel as open (a real RTCDataChannel cannot be opened without a network).</summary>
+    internal bool ChannelOpenForTests;
+
+    public PeerContext(RTCPeerConnection? connection = null) => Connection = connection;
+
+    /// <summary>Held while a message of this peer is being processed and while something is sent to it.</summary>
+    public object SyncRoot => _lock;
 
     /// <summary>True once verified and while the connection has not been replaced.</summary>
     public bool IsVerified => _verified && !_dead;
@@ -41,19 +61,40 @@ public sealed class PeerContext
         }
     }
 
-    /// <summary>The connection was replaced: it can no longer be verified.</summary>
+    /// <summary>
+    /// Runs <paramref name="send"/> on THIS connection's data channel, but only if the context is alive, (optionally)
+    /// verified and the channel is open. Check and send happen under the lock <see cref="Retire"/> needs.
+    /// </summary>
+    public bool TrySend(Action<RTCDataChannel> send, bool requireVerified)
+    {
+        lock (_lock)
+        {
+            if (_dead || (requireVerified && !_verified)) return false;
+            var channel = Channel;
+            if (channel == null || (!ChannelOpenForTests && channel.readyState != RTCDataChannelState.open)) return false;
+            send(channel);
+            return true;
+        }
+    }
+
+    /// <summary>The connection was replaced: it can no longer be verified, and nothing more is sent to it or taken from it.</summary>
     public void Retire()
     {
         lock (_lock)
         {
             _dead = true;
             _verified = false;
+            ClipboardSubscribed = false;
         }
     }
 
     /// <summary>Back to unverified on the same connection (for example a new data channel on it).</summary>
     public void Revoke()
     {
-        lock (_lock) { _verified = false; }
+        lock (_lock)
+        {
+            _verified = false;
+            ClipboardSubscribed = false;
+        }
     }
 }
