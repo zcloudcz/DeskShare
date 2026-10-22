@@ -77,6 +77,31 @@ public sealed class DataChannelManager : IDisposable
     /// </summary>
     public FileReceiver? FileReceiver { get; set; }
 
+    private PrivacyScreenController? _privacyScreen;
+
+    /// <summary>
+    /// Privacy screen of this host; set by the session when the host allows it. It is switched off whenever the
+    /// channel closes or is replaced, and its state changes are reported to the viewer ("privacy_screen_state").
+    /// </summary>
+    public PrivacyScreenController? PrivacyScreen
+    {
+        get => _privacyScreen;
+        set
+        {
+            if (_privacyScreen != null)
+                _privacyScreen.StateChanged -= SendPrivacyState;
+            _privacyScreen = value;
+            if (value != null)
+                value.StateChanged += SendPrivacyState;
+        }
+    }
+
+    private void SendPrivacyState(bool enabled, string? reason)
+    {
+        if (IsOpen) // automatic off often happens because the channel is gone: nobody to tell then
+            SendJson(new { type = "privacy_screen_state", enabled, reason });
+    }
+
     /// <summary>
     /// Sends a clipboard message to the viewer, only while it is subscribed and the channel is open.
     /// </summary>
@@ -143,6 +168,7 @@ public sealed class DataChannelManager : IDisposable
         _channelOpenedAt = DateTime.UtcNow;
         ClipboardSubscribed = false; // a new channel is a new viewer session: it must subscribe again
         FileReceiver?.Abort();
+        _privacyScreen?.Disable("channel_replaced");
 
         // Subscribe to data channel events
         _dataChannel.onopen += OnDataChannelOpen;
@@ -287,6 +313,7 @@ public sealed class DataChannelManager : IDisposable
             _dataChannel?.label, _dataChannel?.id);
         ClipboardSubscribed = false;
         FileReceiver?.Abort();
+        _privacyScreen?.Disable("channel_closed");
 
         ChannelClosed?.Invoke(this, EventArgs.Empty);
     }
@@ -393,7 +420,16 @@ public sealed class DataChannelManager : IDisposable
                     var clipboard = (GrantedCapabilities & SessionCapabilities.Clipboard) != 0;
                     // "files" likewise tells the viewer whether it may send files to this host.
                     var files = (GrantedCapabilities & SessionCapabilities.FileTransfer) != 0;
-                    SendJson(new { type = "authorization_response", authorized, clipboard, files, timestamp = DateTime.UtcNow });
+                    // "privacy" says whether the viewer may offer its privacy screen button.
+                    var privacy = (GrantedCapabilities & SessionCapabilities.PrivacyScreen) != 0;
+                    SendJson(new { type = "authorization_response", authorized, clipboard, files, privacy, timestamp = DateTime.UtcNow });
+                    return;
+                }
+
+                if (messageType == "privacy_screen")
+                {
+                    // Passed the policy: PrivacyScreen and Control are both granted. The state goes back through StateChanged.
+                    PrivacyScreen?.Set(doc.RootElement.TryGetProperty("enabled", out var on) && on.ValueKind == JsonValueKind.True);
                     return;
                 }
 
@@ -505,6 +541,7 @@ public sealed class DataChannelManager : IDisposable
         _dataChannel = null;
         ClipboardSubscribed = false;
         FileReceiver?.Abort();
+        _privacyScreen?.Disable("channel_closed");
     }
 
     /// <summary>

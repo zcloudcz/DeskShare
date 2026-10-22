@@ -232,7 +232,7 @@ public class ScreenSenderService : IHostedService, IDisposable
             }
 
             // The data channel session is also needed for clipboard sharing or file receiving alone; input stays unauthorized then.
-            if (_configuration.EnableRemoteControl || _configuration.EnableClipboard || enableFileReceive)
+            if (_configuration.EnableRemoteControl || _configuration.EnableClipboard || enableFileReceive || _configuration.EnablePrivacyScreen)
             {
                 _logger.LogInformation("Creating WebRTC session WITH data channel (remote control: {Control}, clipboard: {Clipboard})", _configuration.EnableRemoteControl, _configuration.EnableClipboard);
 
@@ -263,6 +263,18 @@ public class ScreenSenderService : IHostedService, IDisposable
                         FileReceived?.Invoke(this, file);
                     };
                     _logger.LogInformation("File receiving enabled, folder: {Folder}, max {Max} bytes", folder, _configuration.FileReceiveMaxBytes);
+                }
+                if (_configuration.EnablePrivacyScreen)
+                {
+                    if (OperatingSystem.IsWindows())
+                    {
+                        _webrtcSessionWithInput.EnablePrivacyScreen(new Platforms.Windows.PrivacyOverlay(), _configuration.PrivacyScreenBlocksInput);
+                        _logger.LogInformation("Privacy screen enabled (block local input: {Block})", _configuration.PrivacyScreenBlocksInput);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Privacy screen is only available on Windows; not granted.");
+                    }
                 }
                 ApplyIceServers(_webrtcSessionWithInput.VideoSource);
 
@@ -784,6 +796,18 @@ public class ScreenSenderConfiguration
     /// Default is false: saving files from a remote peer is something the host must opt in to.
     /// </summary>
     public bool EnableFileReceive { get; set; } = false;
+
+    /// <summary>
+    /// Whether the viewer may black out this machine's local monitors while it keeps seeing the desktop (Windows only).
+    /// Default is false: it hides what the local user sees, so the host must opt in.
+    /// </summary>
+    public bool EnablePrivacyScreen { get; set; } = false;
+
+    /// <summary>
+    /// With the privacy screen on, also block the local mouse and keyboard (BlockInput; needs an elevated process,
+    /// and Ctrl+Alt+Del always gives the local user control back).
+    /// </summary>
+    public bool PrivacyScreenBlocksInput { get; set; } = false;
 
     /// <summary>Where received files are saved. Empty means <see cref="DefaultFileReceiveFolder"/>.</summary>
     public string FileReceiveFolder { get; set; } = string.Empty;

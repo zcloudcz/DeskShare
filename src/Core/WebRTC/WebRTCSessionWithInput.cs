@@ -199,6 +199,26 @@ public sealed class WebRTCSessionWithInput : IDisposable
         _dataChannelManager.HostGrantedCapabilities |= SessionCapabilities.FileTransfer;
     }
 
+    /// <summary>
+    /// Lets the viewer black out the host's local monitors (grants <see cref="SessionCapabilities.PrivacyScreen"/>;
+    /// the viewer also needs Control). Off until called; the host's decision. It is switched off again when the
+    /// data channel goes away, when remote control is revoked and when the session is disposed.
+    /// </summary>
+    public void EnablePrivacyScreen(IPrivacyOverlay overlay, bool blockInput)
+    {
+        var controller = new PrivacyScreenController(overlay, blockInput);
+        _dataChannelManager.PrivacyScreen = controller;
+        _dataChannelManager.HostGrantedCapabilities |= SessionCapabilities.PrivacyScreen;
+        if (_inputController != null)
+        {
+            _inputController.AuthorizationStateChanged += (_, state) =>
+            {
+                if (state != InputAuthorizationState.Authorized)
+                    controller.Disable("control_revoked");
+            };
+        }
+    }
+
     private async void OnRemoteClipboardMessageReceived(object? sender, ClipboardMessage message)
     {
         try
@@ -471,6 +491,7 @@ public sealed class WebRTCSessionWithInput : IDisposable
 
         _dataChannelManager.Dispose();
         _dataChannelManager.FileReceiver?.Dispose();
+        _dataChannelManager.PrivacyScreen?.Dispose();
         _baseSession.Dispose();
         _clipboardManager?.Dispose();
 
