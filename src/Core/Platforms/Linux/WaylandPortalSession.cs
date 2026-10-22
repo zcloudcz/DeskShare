@@ -13,7 +13,8 @@ namespace DeskShare.Core.Platforms.Linux;
 /// Wayland has no global screen grab or input injection; a sandbox-friendly D-Bus service, the desktop portal,
 /// asks the user once and then hands out a PipeWire video stream (ScreenCast) and an input channel (RemoteDesktop).
 /// A RemoteDesktop session that also selects ScreenCast sources gives both with a single consent dialog, so the
-/// capturer and the input controller share it (reference counted: the last <see cref="Release"/> closes it).
+/// capturer and the input controller share it (see <see cref="SharedSessionCache{T}"/>: reference counted, kept
+/// briefly after opening, dropped when the portal closes it).
 /// Portals without RemoteDesktop (xdg-desktop-portal-wlr on sway/Hyprland) get a ScreenCast-only session and
 /// <see cref="CanInjectInput"/> stays false.
 ///
@@ -24,7 +25,7 @@ namespace DeskShare.Core.Platforms.Linux;
 /// it adds no new assembly to the release. It supports Unix fd passing, which OpenPipeWireRemote needs.
 /// </remarks>
 [SupportedOSPlatform("linux")]
-internal sealed class WaylandPortalSession : IDisposable
+internal sealed class WaylandPortalSession : IRemoteDesktopPortal, IDisposable
 {
     private static readonly ILogger Logger = Log.ForContext<WaylandPortalSession>();
 
@@ -36,13 +37,15 @@ internal sealed class WaylandPortalSession : IDisposable
     // The consent dialog waits for a human, so this is generous; a headless test backend answers at once.
     private static readonly TimeSpan ResponseTimeout = TimeSpan.FromMinutes(2);
 
-    private static readonly object SharedLock = new();
-    private static WaylandPortalSession? _shared; // guarded by SharedLock
-    private static int _refCount;                 // guarded by SharedLock
+    // 15 s covers the sender's startup (size probe, signaling connect, real capturer) so that a portal without
+    // restore tokens asks only once. ponytail: fixed time; a slower startup still sees a second dialog.
+    private static readonly SharedSessionCache<WaylandPortalSession> Shared = new(TimeSpan.FromSeconds(15));
 
     private readonly Connection _connection;
     private string _sessionHandle = "";
     private int _tokenCounter;
+    private IDisposable? _closedSubscription;
+    private int _disposed;
 
     /// <summary>PipeWire node id of the (single) selected monitor stream.</summary>
     public uint NodeId { get; private set; }
@@ -55,6 +58,9 @@ internal sealed class WaylandPortalSession : IDisposable
 
     /// <summary>True when this is a RemoteDesktop session with pointer and keyboard granted.</summary>
     public bool CanInjectInput { get; private set; }
+
+    /// <summary>True once the portal closed the session (e.g. the user stopped sharing from the desktop).</summary>
+    public bool IsClosed { get; private set; }
 
     /// <summary>Where the restore token is kept, next to the Server ID and the other persisted sender files.</summary>
     internal static string DefaultRestoreTokenPath => Path.Combine(
@@ -80,32 +86,21 @@ internal sealed class WaylandPortalSession : IDisposable
     /// Every successful call must be paired with <see cref="Release"/>.
     /// </summary>
     /// <exception cref="InvalidOperationException">The portal is unavailable or the user declined.</exception>
-    public static WaylandPortalSession Acquire()
+    public static WaylandPortalSession Acquire() => Shared.Acquire(() =>
     {
-        lock (SharedLock)
-        {
-            // Run on the thread pool: the D-Bus continuations must not need a caller's synchronization context.
-            _shared ??= Task.Run(OpenAsync).GetAwaiter().GetResult();
-            _refCount++;
-            return _shared;
-        }
-    }
+        // Run on the thread pool: the D-Bus continuations must not need a caller's synchronization context.
+        var session = Task.Run(OpenAsync).GetAwaiter().GetResult();
+        session._onClosed = () => Shared.Invalidate(session);
+        return session;
+    });
 
-    /// <summary>Drops one reference; the last one closes the portal session.</summary>
-    public static void Release()
-    {
-        WaylandPortalSession? toClose = null;
-        lock (SharedLock)
-        {
-            if (_refCount == 0) return;
-            if (--_refCount == 0)
-            {
-                toClose = _shared;
-                _shared = null;
-            }
-        }
-        toClose?.Dispose();
-    }
+    /// <summary>Drops one reference taken by <see cref="Acquire"/>.</summary>
+    public static void Release(WaylandPortalSession session) => Shared.Release(session);
+
+    /// <summary>Closes <paramref name="session"/> and forgets it, so the next <see cref="Acquire"/> opens a new one.</summary>
+    public static void Invalidate(WaylandPortalSession session) => Shared.Invalidate(session);
+
+    private Action? _onClosed;
 
     private static async Task<WaylandPortalSession> OpenAsync()
     {
@@ -169,6 +164,19 @@ internal sealed class WaylandPortalSession : IDisposable
         CanInjectInput = useRemoteDesktop && (granted & DevicePointer) != 0 && (granted & DeviceKeyboard) != 0;
 
         WriteRestoreToken(restoreTokenPath, started.TryGetValue("restore_token", out var token) ? token.GetString() : null);
+
+        // The user can end the session from the desktop at any time; a closed session must not be handed out again.
+        _closedSubscription = await _connection.AddMatchAsync(
+            new MatchRule { Type = MessageType.Signal, Interface = "org.freedesktop.portal.Session", Member = "Closed", Path = _sessionHandle, Sender = PortalService },
+            (_, _) => true,
+            (ex, _, _, _) =>
+            {
+                if (ex != null) return;
+                Logger.Information("[WaylandPortal] The portal closed the session (sharing stopped from the desktop)");
+                IsClosed = true;
+                _onClosed?.Invoke();
+            },
+            ObserverFlags.None, null, null, emitOnCapturedContext: false);
         Logger.Information("[WaylandPortal] Session started: PipeWire node {Node}, {Width}x{Height}, input {Input}",
             NodeId, StreamWidth, StreamHeight, CanInjectInput ? "granted" : "not available");
     }
@@ -201,12 +209,48 @@ internal sealed class WaylandPortalSession : IDisposable
             ?? throw new InvalidOperationException("OpenPipeWireRemote returned no file descriptor");
     }
 
+    /// <inheritdoc />
+    public bool NotifyPointerMotionAbsolute(double x, double y)
+    {
+        using var writer = BeginNotify("NotifyPointerMotionAbsolute", "udd");
+        writer.WriteUInt32(NodeId);
+        writer.WriteDouble(x);
+        writer.WriteDouble(y);
+        return _connection.TrySendMessage(writer.CreateMessage());
+    }
+
+    /// <inheritdoc />
+    public bool NotifyPointerButton(int button, bool pressed)
+    {
+        using var writer = BeginNotify("NotifyPointerButton", "iu");
+        writer.WriteInt32(button);
+        writer.WriteUInt32(pressed ? 1u : 0u);
+        return _connection.TrySendMessage(writer.CreateMessage());
+    }
+
+    /// <inheritdoc />
+    public bool NotifyPointerAxisDiscrete(int steps)
+    {
+        using var writer = BeginNotify("NotifyPointerAxisDiscrete", "ui");
+        writer.WriteUInt32(0); // vertical axis
+        writer.WriteInt32(steps);
+        return _connection.TrySendMessage(writer.CreateMessage());
+    }
+
+    /// <inheritdoc />
+    public bool NotifyKeyboardKeycode(int keycode, bool pressed)
+    {
+        using var writer = BeginNotify("NotifyKeyboardKeycode", "iu");
+        writer.WriteInt32(keycode);
+        writer.WriteUInt32(pressed ? 1u : 0u);
+        return _connection.TrySendMessage(writer.CreateMessage());
+    }
+
     /// <summary>
     /// Starts a fire-and-forget RemoteDesktop Notify* call: the header plus the session and empty options that
-    /// every Notify method begins with. The caller writes the remaining arguments and passes the writer to
-    /// <see cref="Send"/>. No reply is requested so input never waits for a D-Bus round trip.
+    /// every Notify method begins with. No reply is requested so input never waits for a D-Bus round trip.
     /// </summary>
-    public MessageWriter BeginNotify(string member, string argumentSignature)
+    private MessageWriter BeginNotify(string member, string argumentSignature)
     {
         var writer = _connection.GetMessageWriter();
         writer.WriteMethodCallHeader(PortalService, PortalPath, RemoteDesktopInterface, member,
@@ -215,9 +259,6 @@ internal sealed class WaylandPortalSession : IDisposable
         writer.WriteDictionary(new Dictionary<string, VariantValue>());
         return writer;
     }
-
-    /// <summary>Sends a message built with <see cref="BeginNotify"/>; false when the connection is gone.</summary>
-    public bool Send(MessageBuffer message) => _connection.TrySendMessage(message);
 
     /// <summary>
     /// Calls a portal method that answers through a Request object and waits for its Response signal.
@@ -309,12 +350,28 @@ internal sealed class WaylandPortalSession : IDisposable
         return _connection.CallMethodAsync(message, (m, _) => m.GetBodyReader().ReadVariantValue().GetUInt32(), null);
     }
 
-    /// <summary>The stored token, or null when there is none (first run, or the file is unreadable).</summary>
+    /// <summary>
+    /// The stored token, or null when there is none or it cannot be trusted: the token lets a later start skip
+    /// the consent dialog, so a file someone else could have written (symlink, foreign owner, readable or
+    /// writable by group/others) is ignored.
+    /// </summary>
     internal static string? ReadRestoreToken(string path)
     {
         try
         {
-            var token = File.Exists(path) ? File.ReadAllText(path).Trim() : "";
+            var file = new FileInfo(path);
+            if (!file.Exists)
+                return null;
+            if (!OperatingSystem.IsWindows())
+            {
+                if (file.LinkTarget != null || !EnsurePrivateDirectory(file.DirectoryName!) || (file.UnixFileMode & GroupOrOther) != 0
+                    || !IsOwnedByUs(path, file.UnixFileMode))
+                {
+                    Logger.Warning("[WaylandPortal] Ignoring restore token {Path}: not a private file of this user", path);
+                    return null;
+                }
+            }
+            var token = File.ReadAllText(path).Trim();
             return token.Length > 0 ? token : null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -327,31 +384,106 @@ internal sealed class WaylandPortalSession : IDisposable
     /// Stores the token the portal returned. The old one is consumed by every start, so no new token means
     /// the file is removed rather than keeping a token that would no longer work.
     /// </summary>
+    /// <remarks>
+    /// Written to a fresh temp file created exclusively (O_CREAT|O_EXCL, which also refuses a pre-planted
+    /// symlink) with mode 0600 from the start, then renamed over the token: rename replaces a symlink at the
+    /// path instead of following it, and readers never see a half-written file.
+    /// </remarks>
     internal static void WriteRestoreToken(string path, string? token)
     {
+        var directory = Path.GetDirectoryName(path)!;
+        string? temp = null;
         try
         {
-            if (string.IsNullOrEmpty(token))
+            if (!EnsurePrivateDirectory(directory))
             {
-                File.Delete(path);
+                Logger.Warning("[WaylandPortal] Not storing the restore token: {Dir} is not a private directory of this user", directory);
                 return;
             }
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.WriteAllText(path, token);
+            if (string.IsNullOrEmpty(token))
+            {
+                File.Delete(path); // removes a symlink itself, never its target
+                return;
+            }
+
+            temp = Path.Combine(directory, $".wayland-restore-token.{Guid.NewGuid():N}.tmp");
+            var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None };
             if (!OperatingSystem.IsWindows())
-                File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite); // it grants screen access
+                options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            using (var stream = new FileStream(temp, options))
+            using (var writer = new StreamWriter(stream))
+                writer.Write(token);
+            File.Move(temp, path, overwrite: true);
+            temp = null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             Logger.Warning(ex, "[WaylandPortal] Could not store the restore token; the next start will ask again");
         }
+        finally
+        {
+            if (temp != null)
+                try { File.Delete(temp); } catch (IOException) { /* best effort */ }
+        }
+    }
+
+    private const UnixFileMode GroupOrOther =
+        UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
+        UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
+
+    /// <summary>Creates the directory as 0700, or tightens an existing one to 0700; false when it is not ours.</summary>
+    private static bool EnsurePrivateDirectory(string directory)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Directory.CreateDirectory(directory);
+            return true;
+        }
+        if (!Directory.Exists(directory))
+            Directory.CreateDirectory(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        if (new DirectoryInfo(directory).LinkTarget != null)
+            return false;
+        // chmod only succeeds for the owner (or root), so this both enforces 0700 and proves the directory is ours.
+        try
+        {
+            File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// .NET has no API for a file's owner; re-applying the current mode is a chmod, which only the owner (or root)
+    /// may do, so it proves ownership without changing anything.
+    /// </summary>
+    [UnsupportedOSPlatform("windows")]
+    private static bool IsOwnedByUs(string path, UnixFileMode currentMode)
+    {
+        try
+        {
+            File.SetUnixFileMode(path, currentMode);
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+        _closedSubscription?.Dispose();
+        var closedByPortal = IsClosed;
+        IsClosed = true; // holders (the input controller) then reacquire instead of using a dead connection
+
         // Closing the D-Bus connection ends the portal session too, but an explicit Close removes the
         // "screen is being shared" indicator immediately.
-        if (_sessionHandle.Length > 0)
+        if (_sessionHandle.Length > 0 && !closedByPortal)
         {
             try
             {

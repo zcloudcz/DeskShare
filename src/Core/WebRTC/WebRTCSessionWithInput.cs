@@ -126,8 +126,8 @@ public sealed class WebRTCSessionWithInput : IDisposable
     /// Initializes a new instance of the WebRTCSessionWithInput class.
     /// </summary>
     /// <param name="logger">Logger instance for diagnostic output.</param>
-    /// <param name="inputController">Optional input controller for processing remote inputs.</param>
-    /// <param name="clipboardManager">Optional clipboard manager for clipboard synchronization.</param>
+    /// <param name="inputController">Optional input controller for processing remote inputs; disposed with the session.</param>
+    /// <param name="clipboardManager">Optional clipboard manager for clipboard synchronization; disposed with the session.</param>
     public WebRTCSessionWithInput(ILogger logger, IInputController? inputController = null, IClipboardManager? clipboardManager = null)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -457,6 +457,9 @@ public sealed class WebRTCSessionWithInput : IDisposable
         _dataChannelManager.Dispose();
         _baseSession.Dispose();
         _clipboardManager?.Dispose();
+        // Owned like the clipboard manager: on Wayland it holds a desktop portal session (and its D-Bus connection)
+        // that would otherwise stay open after sharing stops.
+        _inputController?.Dispose();
 
         _disposed = true;
 

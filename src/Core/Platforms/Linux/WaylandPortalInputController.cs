@@ -6,6 +6,28 @@ using Serilog;
 namespace DeskShare.Core.Platforms.Linux;
 
 /// <summary>
+/// What <see cref="WaylandPortalInputController"/> needs from a RemoteDesktop portal session. Implemented by
+/// <see cref="WaylandPortalSession"/>; an interface so the controller's authorization logic can be tested
+/// without D-Bus.
+/// </summary>
+internal interface IRemoteDesktopPortal
+{
+    bool CanInjectInput { get; }
+    bool IsClosed { get; }
+    int StreamWidth { get; }
+    int StreamHeight { get; }
+
+    /// <summary>Absolute pointer position in the stream's logical coordinates.</summary>
+    bool NotifyPointerMotionAbsolute(double x, double y);
+    /// <summary>evdev button code (BTN_*), pressed or released.</summary>
+    bool NotifyPointerButton(int button, bool pressed);
+    /// <summary>Vertical wheel steps, positive = down.</summary>
+    bool NotifyPointerAxisDiscrete(int steps);
+    /// <summary>evdev key code (KEY_*), pressed or released.</summary>
+    bool NotifyKeyboardKeycode(int keycode, bool pressed);
+}
+
+/// <summary>
 /// Wayland input controller: injects pointer and keyboard events through the RemoteDesktop desktop portal,
 /// using the session shared with <see cref="PipeWireScreenCapturer"/> (see <see cref="WaylandPortalSession"/>).
 /// </summary>
@@ -13,6 +35,10 @@ namespace DeskShare.Core.Platforms.Linux;
 /// Authorization works like <see cref="XTestInputController"/>: the host's consent callback first, then the
 /// portal session. Portals without RemoteDesktop (xdg-desktop-portal-wlr) cannot inject input; authorization is
 /// then denied with a log line instead of silently dropping every event.
+///
+/// Opening the portal session can block for as long as its consent dialog is open. Each authorization attempt
+/// therefore gets a number; revoke, cancellation and dispose start a new number, and an attempt that finishes
+/// after that publishes nothing and gives its session reference back.
 /// </remarks>
 [SupportedOSPlatform("linux")]
 public sealed class WaylandPortalInputController : IInputController
@@ -22,14 +48,18 @@ public sealed class WaylandPortalInputController : IInputController
     private const int MaxEventsPerSecond = 120;
 
     private readonly ILogger _logger;
+    private readonly Func<IRemoteDesktopPortal> _acquire;
+    private readonly Action<IRemoteDesktopPortal> _release;
     private readonly Queue<DateTime> _eventTimestamps = new();
-    private WaylandPortalSession? _session;
-    private InputAuthorizationState _authorizationState = InputAuthorizationState.NotAuthorized;
+    private readonly object _gate = new();
+    private volatile IRemoteDesktopPortal? _session; // written under _gate
+    private int _attempt;                            // guarded by _gate
+    private volatile InputAuthorizationState _authorizationState = InputAuthorizationState.NotAuthorized;
     private DateTime _authorizationGrantedAt;
     private int _keyboardEventsProcessed;
     private int _mouseEventsProcessed;
     private int _eventsRejected;
-    private bool _disposed;
+    private bool _disposed; // guarded by _gate
 
     public event EventHandler<InputAuthorizationState>? AuthorizationStateChanged;
 
@@ -41,56 +71,123 @@ public sealed class WaylandPortalInputController : IInputController
     public InputAuthorizationState AuthorizationState => _authorizationState;
 
     public WaylandPortalInputController(ILogger logger)
+        : this(logger, WaylandPortalSession.Acquire, s => WaylandPortalSession.Release((WaylandPortalSession)s))
     {
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
-    public Task<bool> RequestAuthorizationAsync(string clientId, CancellationToken cancellationToken = default)
+    /// <param name="acquire">Takes a reference on the shared portal session (may block on the consent dialog).</param>
+    /// <param name="release">Gives a reference taken by <paramref name="acquire"/> back.</param>
+    internal WaylandPortalInputController(ILogger logger, Func<IRemoteDesktopPortal> acquire, Action<IRemoteDesktopPortal> release)
+    {
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _acquire = acquire;
+        _release = release;
+    }
+
+    public async Task<bool> RequestAuthorizationAsync(string clientId, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(clientId))
             throw new ArgumentNullException(nameof(clientId));
 
-        if (_authorizationState == InputAuthorizationState.Authorized)
-            return Task.FromResult(true);
+        int attempt;
+        IRemoteDesktopPortal? held;
+        lock (_gate)
+        {
+            if (_disposed)
+                return false;
+            if (_authorizationState == InputAuthorizationState.Authorized)
+                return true;
+            attempt = ++_attempt;
+            held = _session;
+        }
 
-        ChangeAuthorizationState(InputAuthorizationState.Pending);
+        ChangeAuthorizationState(InputAuthorizationState.Pending, attempt);
         if (!(AuthorizationRequested?.Invoke(clientId) ?? false))
         {
             _logger.Information("[WaylandPortalInput] Remote control denied for client: {ClientId}", clientId);
-            ChangeAuthorizationState(InputAuthorizationState.Denied);
-            return Task.FromResult(false);
+            ChangeAuthorizationState(InputAuthorizationState.Denied, attempt);
+            return false;
         }
 
-        try
+        IRemoteDesktopPortal session;
+        if (held != null && !held.IsClosed)
         {
-            _session ??= WaylandPortalSession.Acquire();
+            session = held;
         }
-        catch (Exception ex)
+        else
         {
-            _logger.Error(ex, "[WaylandPortalInput] Could not open the desktop portal session");
-            ChangeAuthorizationState(InputAuthorizationState.Denied);
-            return Task.FromResult(false);
+            // Off the caller's thread so the token can abandon the wait; the acquire itself cannot be interrupted,
+            // so an abandoned one hands its reference back when it finishes.
+            var acquiring = Task.Run(_acquire);
+            try
+            {
+                session = await acquiring.WaitAsync(cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                _ = acquiring.ContinueWith(t => _release(t.Result), TaskContinuationOptions.OnlyOnRanToCompletion);
+                ChangeAuthorizationState(InputAuthorizationState.Denied, attempt); // unless a revoke came first
+                Invalidate(attempt);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "[WaylandPortalInput] Could not open the desktop portal session");
+                ChangeAuthorizationState(InputAuthorizationState.Denied, attempt);
+                return false;
+            }
+
+            IRemoteDesktopPortal? toRelease = null;
+            lock (_gate)
+            {
+                if (attempt != _attempt || _disposed)
+                {
+                    toRelease = session; // revoked, cancelled or disposed while the dialog was open
+                }
+                else
+                {
+                    toRelease = _session; // a closed session we held before
+                    _session = session;
+                }
+            }
+            if (toRelease != null) _release(toRelease);
+            if (ReferenceEquals(toRelease, session))
+            {
+                _logger.Information("[WaylandPortalInput] Authorization was revoked while the portal was opening; ignoring its result");
+                return false;
+            }
         }
 
-        if (!_session.CanInjectInput)
+        if (!session.CanInjectInput)
         {
             _logger.Warning("[WaylandPortalInput] This desktop's portal offers no RemoteDesktop (pointer/keyboard) access; remote control is unavailable (screen sharing still works)");
-            ChangeAuthorizationState(InputAuthorizationState.Denied);
-            return Task.FromResult(false);
+            ChangeAuthorizationState(InputAuthorizationState.Denied, attempt);
+            return false;
         }
 
+        if (!ChangeAuthorizationState(InputAuthorizationState.Authorized, attempt))
+            return false;
         _authorizationGrantedAt = DateTime.UtcNow;
-        ChangeAuthorizationState(InputAuthorizationState.Authorized);
         _logger.Information("[WaylandPortalInput] Authorization granted to client: {ClientId}", clientId);
-        return Task.FromResult(true);
+        return true;
     }
 
     public void RevokeAuthorization()
     {
+        Invalidate(attempt: null);
         if (_authorizationState is InputAuthorizationState.Authorized or InputAuthorizationState.Pending)
         {
-            ChangeAuthorizationState(InputAuthorizationState.Revoked);
+            ChangeAuthorizationState(InputAuthorizationState.Revoked, attempt: null);
             _logger.Information("[WaylandPortalInput] Authorization revoked");
+        }
+    }
+
+    /// <summary>Makes every running attempt stale (only <paramref name="attempt"/> when given).</summary>
+    private void Invalidate(int? attempt)
+    {
+        lock (_gate)
+        {
+            if (attempt == null || attempt == _attempt) _attempt++;
         }
     }
 
@@ -101,7 +198,8 @@ public sealed class WaylandPortalInputController : IInputController
         if (_disposed)
             throw new ObjectDisposedException(nameof(WaylandPortalInputController));
 
-        if (!IsEnabled || !CheckRateLimit())
+        var session = _session;
+        if (!IsEnabled || session == null || !CheckRateLimit())
         {
             _eventsRejected++;
             return false;
@@ -111,12 +209,12 @@ public sealed class WaylandPortalInputController : IInputController
         {
             bool success = input.Type switch
             {
-                InputMessageType.MouseMove => SendMove(input),
-                InputMessageType.MouseDown => SendButton(input, pressed: true),
-                InputMessageType.MouseUp => SendButton(input, pressed: false),
-                InputMessageType.MouseWheel => SendWheel(input),
-                InputMessageType.KeyDown => SendKey(input, pressed: true),
-                InputMessageType.KeyUp => SendKey(input, pressed: false),
+                InputMessageType.MouseMove => SendMove(session, input),
+                InputMessageType.MouseDown => SendButton(session, input, pressed: true),
+                InputMessageType.MouseUp => SendButton(session, input, pressed: false),
+                InputMessageType.MouseWheel => SendWheel(session, input),
+                InputMessageType.KeyDown => SendKey(session, input, pressed: true),
+                InputMessageType.KeyUp => SendKey(session, input, pressed: false),
                 _ => false
             };
 
@@ -153,61 +251,40 @@ public sealed class WaylandPortalInputController : IInputController
         _ => null
     };
 
-    private bool SendMove(InputMessage input)
+    private bool SendMove(IRemoteDesktopPortal session, InputMessage input)
     {
         if (input.X is not { } x || input.Y is not { } y || x < 0 || x > 1 || y < 0 || y > 1)
             return false;
-        if (_session!.StreamWidth <= 0 || _session.StreamHeight <= 0)
+        if (session.StreamWidth <= 0 || session.StreamHeight <= 0)
         {
             _logger.Warning("[WaylandPortalInput] The portal reported no stream size; cannot place the pointer");
             return false;
         }
 
-        var (sx, sy) = ToStreamCoordinates(x, y, _session.StreamWidth, _session.StreamHeight);
-        using var writer = _session.BeginNotify("NotifyPointerMotionAbsolute", "udd");
-        writer.WriteUInt32(_session.NodeId);
-        writer.WriteDouble(sx);
-        writer.WriteDouble(sy);
-        return _session.Send(writer.CreateMessage());
+        var (sx, sy) = ToStreamCoordinates(x, y, session.StreamWidth, session.StreamHeight);
+        return session.NotifyPointerMotionAbsolute(sx, sy);
     }
 
-    private bool SendButton(InputMessage input, bool pressed)
-    {
-        if (input.Button is not { } button || ToEvdevButton(button) is not { } code)
-            return false;
+    private static bool SendButton(IRemoteDesktopPortal session, InputMessage input, bool pressed) =>
+        input.Button is { } button && ToEvdevButton(button) is { } code && session.NotifyPointerButton(code, pressed);
 
-        using var writer = _session!.BeginNotify("NotifyPointerButton", "iu");
-        writer.WriteInt32(code);
-        writer.WriteUInt32(pressed ? 1u : 0u);
-        return _session.Send(writer.CreateMessage());
-    }
-
-    private bool SendWheel(InputMessage input)
+    private static bool SendWheel(IRemoteDesktopPortal session, InputMessage input)
     {
         if (input.WheelDelta is not { } delta || Math.Abs(delta) > 1000)
             return false;
         var steps = ToScrollSteps(delta);
-        if (steps == 0)
-            return true; // less than one notch: nothing to scroll, like the XTest controller
-
-        using var writer = _session!.BeginNotify("NotifyPointerAxisDiscrete", "ui");
-        writer.WriteUInt32(0); // vertical axis
-        writer.WriteInt32(steps);
-        return _session.Send(writer.CreateMessage());
+        // Less than one notch: nothing to scroll, like the XTest controller.
+        return steps == 0 || session.NotifyPointerAxisDiscrete(steps);
     }
 
-    private bool SendKey(InputMessage input, bool pressed)
+    private bool SendKey(IRemoteDesktopPortal session, InputMessage input, bool pressed)
     {
         if (input.KeyCode is not { } vk || EvdevKeyMap.FromVirtualKey(vk) is not { } code)
         {
             _logger.Debug("[WaylandPortalInput] No evdev mapping for key {KeyCode}", input.KeyCode);
             return false;
         }
-
-        using var writer = _session!.BeginNotify("NotifyKeyboardKeycode", "iu");
-        writer.WriteInt32(code);
-        writer.WriteUInt32(pressed ? 1u : 0u);
-        return _session.Send(writer.CreateMessage());
+        return session.NotifyKeyboardKeycode(code, pressed);
     }
 
     private bool CheckRateLimit()
@@ -221,13 +298,23 @@ public sealed class WaylandPortalInputController : IInputController
         return true;
     }
 
-    private void ChangeAuthorizationState(InputAuthorizationState newState)
+    /// <summary>
+    /// Sets the state unless <paramref name="attempt"/> is given and no longer current (a stale attempt must not
+    /// overwrite a revoke). Returns whether the state was applied.
+    /// </summary>
+    private bool ChangeAuthorizationState(InputAuthorizationState newState, int? attempt)
     {
-        if (_authorizationState != newState)
+        bool changed;
+        lock (_gate)
         {
+            if (attempt != null && (attempt != _attempt || _disposed))
+                return false;
+            changed = _authorizationState != newState;
             _authorizationState = newState;
-            AuthorizationStateChanged?.Invoke(this, newState);
         }
+        if (changed)
+            AuthorizationStateChanged?.Invoke(this, newState);
+        return true;
     }
 
     public InputStatistics GetStatistics() => new()
@@ -240,14 +327,17 @@ public sealed class WaylandPortalInputController : IInputController
 
     public void Dispose()
     {
-        if (_disposed)
-            return;
         RevokeAuthorization();
-        if (_session != null)
+        IRemoteDesktopPortal? session;
+        lock (_gate)
         {
+            if (_disposed)
+                return;
+            _disposed = true;
+            _attempt++;
+            session = _session;
             _session = null;
-            WaylandPortalSession.Release();
         }
-        _disposed = true;
+        if (session != null) _release(session);
     }
 }

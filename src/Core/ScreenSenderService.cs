@@ -230,13 +230,15 @@ public class ScreenSenderService : IHostedService, IDisposable
                     _logger.LogWarning("Accessibility permission is not granted yet: remote control will not work until the app is enabled in System Settings > Privacy & Security > Accessibility, then restart sharing.");
                 }
 
-                // Create input controller for remote control
+                var clipboardManager = _configuration.EnableClipboard ? PlatformServiceFactory.CreateClipboardManager() : null;
+
+                // Create input controller for remote control. Nothing that can throw runs between this and the
+                // session that takes ownership of it (the finally block below disposes the session).
                 var serilogLogger = Serilog.Log.ForContext<IInputController>();
                 var inputController = PlatformServiceFactory.CreateInputController(serilogLogger);
 
                 // Create session with input support
                 var serilogSessionLogger = Serilog.Log.ForContext<WebRTCSessionWithInput>();
-                var clipboardManager = _configuration.EnableClipboard ? PlatformServiceFactory.CreateClipboardManager() : null;
                 _webrtcSessionWithInput = new WebRTCSessionWithInput(serilogSessionLogger, inputController, clipboardManager);
                 _webrtcSessionWithInput.ClipboardSharingEnabled = _configuration.EnableClipboard;
                 ApplyIceServers(_webrtcSessionWithInput.VideoSource);

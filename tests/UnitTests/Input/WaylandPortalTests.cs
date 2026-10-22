@@ -114,6 +114,121 @@ public sealed class WaylandPortalTests
         Assert.Equal(expected, EvdevKeyMap.FromVirtualKey(virtualKey));
     }
 
+    [Theory]
+    [InlineData('A', 38u)]  // X keycode = evdev + 8 (KEY_A 30)
+    [InlineData('B', 56u)]  // the old offset mapping sent 39 ('s') here
+    [InlineData('H', 43u)]
+    [InlineData('1', 10u)]
+    [InlineData(0x10, 50u)] // Shift -> Shift_L
+    [InlineData(0x0D, 36u)] // Return
+    public void XTest_ConvertVirtualKeyToXKeycode_UsesEvdevPlus8(int virtualKey, uint expected)
+    {
+        Assert.Equal(expected, XTestInputController.ConvertVirtualKeyToXKeycode(virtualKey));
+    }
+
+    [Fact]
+    public void XTest_ConvertVirtualKeyToXKeycode_UnknownKey_IsNull()
+    {
+        Assert.Null(XTestInputController.ConvertVirtualKeyToXKeycode(0xFF));
+    }
+
+    /// <summary>Linux/macOS only: symlinks and file modes are what these tests are about.</summary>
+    public sealed class UnixFactAttribute : FactAttribute
+    {
+        public UnixFactAttribute()
+        {
+            if (OperatingSystem.IsWindows())
+                Skip = "Unix file modes and symlinks (runs in the Wayland Docker E2E image)";
+        }
+    }
+
+    private static string NewTokenDir() => Path.Combine(Path.GetTempPath(), "deskshare-token-" + Guid.NewGuid().ToString("N"), "DeskShare");
+
+    [UnixFact]
+    public void RestoreToken_IsWrittenAs0600_InA0700Directory()
+    {
+        var dir = NewTokenDir();
+        var path = Path.Combine(dir, "wayland-restore-token");
+        try
+        {
+            Directory.CreateDirectory(dir); // default 0755, like the folder other sender files create
+            WaylandPortalSession.WriteRestoreToken(path, "token-1");
+
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(dir));
+            Assert.Equal("token-1", WaylandPortalSession.ReadRestoreToken(path));
+            Assert.Empty(Directory.GetFiles(dir, "*.tmp", SearchOption.AllDirectories));
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(dir)!, recursive: true);
+        }
+    }
+
+    [UnixFact]
+    public void RestoreToken_SymlinkAtTheTokenPath_IsReplacedNotFollowed_AndNotRead()
+    {
+        var dir = NewTokenDir();
+        var path = Path.Combine(dir, "wayland-restore-token");
+        var victim = Path.Combine(Path.GetDirectoryName(dir)!, "victim");
+        try
+        {
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(victim, "precious");
+            File.CreateSymbolicLink(path, victim);
+
+            Assert.Null(WaylandPortalSession.ReadRestoreToken(path)); // a planted link is not trusted
+
+            WaylandPortalSession.WriteRestoreToken(path, "token-2");
+            Assert.Equal("precious", File.ReadAllText(victim));      // target untouched
+            Assert.Null(new FileInfo(path).LinkTarget);               // the link itself was replaced
+            Assert.Equal("token-2", WaylandPortalSession.ReadRestoreToken(path));
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(dir)!, recursive: true);
+        }
+    }
+
+    [UnixFact]
+    public void RestoreToken_ReadableByOthers_IsIgnored()
+    {
+        var dir = NewTokenDir();
+        var path = Path.Combine(dir, "wayland-restore-token");
+        try
+        {
+            WaylandPortalSession.WriteRestoreToken(path, "token-3");
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+            Assert.Null(WaylandPortalSession.ReadRestoreToken(path));
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(dir)!, recursive: true);
+        }
+    }
+
+    [UnixFact]
+    public void RestoreToken_DirectoryIsASymlink_NothingIsWritten()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "deskshare-token-" + Guid.NewGuid().ToString("N"));
+        var elsewhere = Path.Combine(root, "elsewhere");
+        var dir = Path.Combine(root, "DeskShare");
+        try
+        {
+            Directory.CreateDirectory(elsewhere);
+            Directory.CreateSymbolicLink(dir, elsewhere);
+
+            WaylandPortalSession.WriteRestoreToken(Path.Combine(dir, "wayland-restore-token"), "token-4");
+
+            Assert.Empty(Directory.GetFileSystemEntries(elsewhere));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Fact]
     public void EvdevKeyMap_UnknownKey_IsNull()
     {

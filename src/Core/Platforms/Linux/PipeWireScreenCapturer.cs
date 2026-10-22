@@ -19,7 +19,11 @@ namespace DeskShare.Core.Platforms.Linux;
 /// gstreamer1.0-pipewire + gstreamer1.0-plugins-base (Debian/Ubuntu), gstreamer1-plugins-base + pipewire-gstreamer
 /// (Fedora), gst-plugins-base + gst-plugin-pipewire (Arch). GNOME and KDE desktops usually have them already.
 ///
-/// Like <see cref="FfmpegScreenCapturer"/>, a background thread fills a single "latest frame" slot that
+/// The GStreamer stream is shared and kept for a short time after it was opened (<see cref="SharedSessionCache{T}"/>):
+/// the sender probes the screen size with one capturer and then creates the real one, and some portals
+/// (xdg-desktop-portal-wlr) end a stream once its consumer disconnects, so a second consumer could not reattach.
+///
+/// Like <see cref="FfmpegScreenCapturer"/>, frames land in a single "latest frame" slot that
 /// <see cref="TryAcquireFrame"/> takes, so a slow consumer never queues frames.
 /// </remarks>
 [SupportedOSPlatform("linux")]
@@ -27,15 +31,11 @@ public sealed class PipeWireScreenCapturer : IScreenCapturer
 {
     private static readonly ILogger Logger = Log.ForContext<PipeWireScreenCapturer>();
     private static readonly TimeSpan FirstFrameTimeout = TimeSpan.FromSeconds(5);
+    private static readonly SharedSessionCache<Stream> Streams = new(TimeSpan.FromSeconds(15));
 
     private readonly object _lock = new();
     private readonly ManualResetEventSlim _firstFrame = new(false);
-    private WaylandPortalSession? _session;
-    private SafeHandle? _pipeWireFd;
-    private IntPtr _pipeline;
-    private IntPtr _appSink;
-    private Thread? _pullThread;
-    private volatile bool _stopping;
+    private Stream? _stream;
     private Frame? _latest; // guarded by _lock
     private bool _disposed; // guarded by _lock
     private bool _sizeMismatchLogged;
@@ -49,51 +49,42 @@ public sealed class PipeWireScreenCapturer : IScreenCapturer
     /// <inheritdoc />
     public bool Initialize()
     {
-        if (_session != null)
+        if (_stream != null)
             throw new InvalidOperationException("Capturer is already initialized.");
 
         try
         {
-            _session = WaylandPortalSession.Acquire();
-            _pipeWireFd = _session.OpenPipeWireRemote();
-
-            Gst.gst_init(IntPtr.Zero, IntPtr.Zero);
-            // BGRA (not BGRx): videoconvert then writes an opaque alpha, which is what the pipeline expects.
-            // appsink keeps only the newest buffer and never syncs to the clock (live capture); the capture
-            //   pipeline's own timer then sets the frame rate, as with x11grab.
-            var description = $"pipewiresrc fd={_pipeWireFd.DangerousGetHandle()} path={_session.NodeId} always-copy=true " +
-                              "! videoconvert ! video/x-raw,format=BGRA " +
-                              "! appsink name=sink max-buffers=1 drop=true sync=false";
-            _pipeline = Gst.gst_parse_launch(description, out var error);
-            if (error != IntPtr.Zero)
+            // Two tries: a portal can hand out a stream that is already gone (xdg-desktop-portal-wlr when the
+            // previous sender was stopped a moment ago: "target not found"); a fresh portal session then works.
+            for (int attempt = 1; ; attempt++)
             {
-                // A recoverable error (e.g. a property older plugins lack) still returns a pipeline.
-                Logger.Warning("[PipeWireScreenCapturer] GStreamer: {Error}", Gst.TakeErrorMessage(error));
-            }
-            if (_pipeline == IntPtr.Zero)
-            {
-                Logger.Error("[PipeWireScreenCapturer] Could not build the GStreamer pipeline; install the GStreamer PipeWire plugin (gstreamer1.0-pipewire)");
-                return false;
-            }
+                var stream = Streams.Acquire(Stream.Open);
+                if (stream.Ended)
+                {
+                    // The portal ended the kept stream (e.g. sharing stopped from the desktop): start over.
+                    stream.Discard();
+                    stream = Streams.Acquire(Stream.Open);
+                }
+                _stream = stream;
+                stream.Subscribe(OnSample);
 
-            _appSink = Gst.gst_bin_get_by_name(_pipeline, "sink");
-            if (Gst.gst_element_set_state(_pipeline, Gst.StatePlaying) == Gst.StateChangeFailure)
-            {
-                Logger.Error("[PipeWireScreenCapturer] Pipeline did not start: {Error}", Gst.PopBusError(_pipeline));
-                return false;
+                var error = WaitForFirstFrame(stream);
+                if (error == null)
+                {
+                    Logger.Information("[PipeWireScreenCapturer] Capturing PipeWire node {Node} at {Width}x{Height}", stream.NodeId, Width, Height);
+                    return true;
+                }
+
+                stream.Unsubscribe(OnSample);
+                stream.Discard(); // never hand a stream that delivers nothing to the next capturer
+                _stream = null;
+                if (attempt == 2)
+                {
+                    Logger.Error("[PipeWireScreenCapturer] No frame from the PipeWire stream: {Error}", error);
+                    return false;
+                }
+                Logger.Warning("[PipeWireScreenCapturer] No frame from the PipeWire stream ({Error}); retrying with a new portal session", error);
             }
-
-            _pullThread = new Thread(PullLoop) { IsBackground = true, Name = "PipeWire capture" };
-            _pullThread.Start();
-
-            if (!_firstFrame.Wait(FirstFrameTimeout))
-            {
-                Logger.Error("[PipeWireScreenCapturer] No frame within {Timeout}: {Error}", FirstFrameTimeout, Gst.PopBusError(_pipeline));
-                return false;
-            }
-
-            Logger.Information("[PipeWireScreenCapturer] Capturing PipeWire node {Node} at {Width}x{Height}", _session.NodeId, Width, Height);
-            return true;
         }
         catch (DllNotFoundException ex)
         {
@@ -107,50 +98,187 @@ public sealed class PipeWireScreenCapturer : IScreenCapturer
         }
     }
 
-    private void PullLoop()
+    /// <summary>Null once the first frame arrived, otherwise why not (fails fast on a pipeline error).</summary>
+    private string? WaitForFirstFrame(Stream stream)
     {
-        const ulong pullTimeoutNs = 100_000_000; // 100 ms: bounds how long Dispose waits for this thread
-        // Compositors only send a frame when the screen changes. A viewer that joins while the screen is idle
-        // would wait for the next change, so the newest sample is kept and delivered again once per second.
-        // (pipewiresrc's keepalive-time does not fire for these streams.) The sample is a copy
-        // (always-copy=true), so holding it does not starve the compositor of PipeWire buffers.
-        var repeatInterval = TimeSpan.FromSeconds(1);
-        var lastSample = IntPtr.Zero;
-        var lastDelivered = DateTime.UtcNow;
-        try
+        var deadline = DateTime.UtcNow + FirstFrameTimeout;
+        while (DateTime.UtcNow < deadline)
         {
+            if (_firstFrame.Wait(TimeSpan.FromMilliseconds(100)))
+                return null;
+            var error = stream.PopError();
+            if (error != "none")
+                return error;
+        }
+        return $"no frame within {FirstFrameTimeout.TotalSeconds:0} s";
+    }
+
+    /// <summary>
+    /// One portal session's PipeWire stream read through GStreamer, shared by consecutive capturers.
+    /// </summary>
+    private sealed class Stream : IDisposable
+    {
+        private readonly WaylandPortalSession _session;
+        private readonly SafeHandle _pipeWireFd;
+        private readonly IntPtr _pipeline;
+        private readonly IntPtr _appSink;
+        private readonly Thread _pullThread;
+        private readonly object _subscribersLock = new();
+        private readonly List<Action<IntPtr>> _subscribers = new(); // guarded by _subscribersLock
+        private IntPtr _lastSample;                                 // guarded by _subscribersLock
+        private volatile bool _stopping;
+        private int _disposed;
+
+        public uint NodeId => _session.NodeId;
+
+        /// <summary>True once the stream stopped delivering (end of stream from the portal side).</summary>
+        public volatile bool Ended;
+
+        private Stream(WaylandPortalSession session, SafeHandle pipeWireFd, IntPtr pipeline)
+        {
+            _session = session;
+            _pipeWireFd = pipeWireFd;
+            _pipeline = pipeline;
+            _appSink = Gst.gst_bin_get_by_name(pipeline, "sink");
+            _pullThread = new Thread(PullLoop) { IsBackground = true, Name = "PipeWire capture" };
+        }
+
+        public static Stream Open()
+        {
+            var session = WaylandPortalSession.Acquire();
+            SafeHandle? fd = null;
+            Stream? stream = null;
+            try
+            {
+                fd = session.OpenPipeWireRemote();
+                Gst.gst_init(IntPtr.Zero, IntPtr.Zero);
+                // BGRA (not BGRx): videoconvert then writes an opaque alpha, which is what the pipeline expects.
+                // appsink keeps only the newest buffer and never syncs to the clock (live capture); the capture
+                //   pipeline's own timer then sets the frame rate, as with x11grab.
+                var description = $"pipewiresrc fd={fd.DangerousGetHandle()} path={session.NodeId} always-copy=true " +
+                                  "! videoconvert ! video/x-raw,format=BGRA " +
+                                  "! appsink name=sink max-buffers=1 drop=true sync=false";
+                var pipeline = Gst.gst_parse_launch(description, out var error);
+                if (error != IntPtr.Zero)
+                {
+                    // A recoverable error (e.g. a property older plugins lack) still returns a pipeline.
+                    Logger.Warning("[PipeWireScreenCapturer] GStreamer: {Error}", Gst.TakeErrorMessage(error));
+                }
+                if (pipeline == IntPtr.Zero)
+                    throw new InvalidOperationException("Could not build the GStreamer pipeline; install the GStreamer PipeWire plugin (gstreamer1.0-pipewire)");
+
+                stream = new Stream(session, fd, pipeline); // owns session reference, fd and pipeline from here
+                if (Gst.gst_element_set_state(pipeline, Gst.StatePlaying) == Gst.StateChangeFailure)
+                    throw new InvalidOperationException("GStreamer pipeline did not start: " + stream.PopError());
+                stream._pullThread.Start();
+                return stream;
+            }
+            catch
+            {
+                if (stream != null)
+                {
+                    stream.Dispose();
+                }
+                else
+                {
+                    fd?.Dispose();
+                    WaylandPortalSession.Release(session);
+                }
+                throw;
+            }
+        }
+
+        /// <summary>Adds a frame consumer; it gets the newest frame at once, so it never waits for screen damage.</summary>
+        public void Subscribe(Action<IntPtr> onSample)
+        {
+            lock (_subscribersLock)
+            {
+                _subscribers.Add(onSample);
+                if (_lastSample != IntPtr.Zero) Deliver(onSample, _lastSample);
+            }
+        }
+
+        public void Unsubscribe(Action<IntPtr> onSample)
+        {
+            lock (_subscribersLock) _subscribers.Remove(onSample);
+        }
+
+        public string PopError() => Gst.PopBusError(_pipeline);
+
+        /// <summary>Drops this stream and its portal session from the caches, so the next capturer starts fresh.</summary>
+        public void Discard()
+        {
+            Streams.Invalidate(this);
+            WaylandPortalSession.Invalidate(_session);
+        }
+
+        private static void Deliver(Action<IntPtr> onSample, IntPtr sample)
+        {
+            try
+            {
+                onSample(sample);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex, "[PipeWireScreenCapturer] Failed to read a frame");
+            }
+        }
+
+        private void PullLoop()
+        {
+            const ulong pullTimeoutNs = 100_000_000; // 100 ms: bounds how long Dispose waits for this thread
+            // Compositors only send a frame when the screen changes. A viewer that joins while the screen is idle
+            // would wait for the next change, so the newest sample is kept and delivered again once per second.
+            // (pipewiresrc's keepalive-time does not fire for these streams.) The sample is a copy
+            // (always-copy=true), so holding it does not starve the compositor of PipeWire buffers.
+            var repeatInterval = TimeSpan.FromSeconds(1);
+            var lastDelivered = DateTime.UtcNow;
             while (!_stopping)
             {
                 var sample = Gst.gst_app_sink_try_pull_sample(_appSink, pullTimeoutNs);
-                if (sample == IntPtr.Zero)
+                lock (_subscribersLock)
                 {
-                    if (Gst.gst_app_sink_is_eos(_appSink))
+                    if (sample == IntPtr.Zero)
                     {
-                        Logger.Error("[PipeWireScreenCapturer] Stream ended: {Error}", Gst.PopBusError(_pipeline));
-                        return;
+                        if (Gst.gst_app_sink_is_eos(_appSink))
+                        {
+                            Logger.Error("[PipeWireScreenCapturer] Stream ended: {Error}", PopError());
+                            Ended = true;
+                            return;
+                        }
+                        if (_lastSample == IntPtr.Zero || DateTime.UtcNow - lastDelivered < repeatInterval)
+                            continue;
+                        sample = Gst.gst_mini_object_ref(_lastSample); // repeat the idle screen
                     }
-                    if (lastSample == IntPtr.Zero || DateTime.UtcNow - lastDelivered < repeatInterval)
-                        continue;
-                    sample = Gst.gst_mini_object_ref(lastSample); // repeat the idle screen
-                }
 
-                try
-                {
-                    OnSample(sample);
+                    foreach (var subscriber in _subscribers)
+                        Deliver(subscriber, sample);
                     lastDelivered = DateTime.UtcNow;
-                }
-                catch (Exception ex)
-                {
-                    Logger.Error(ex, "[PipeWireScreenCapturer] Failed to read a frame");
-                }
 
-                if (lastSample != IntPtr.Zero) Gst.gst_mini_object_unref(lastSample);
-                lastSample = sample; // takes over this loop's reference
+                    if (_lastSample != IntPtr.Zero) Gst.gst_mini_object_unref(_lastSample);
+                    _lastSample = sample; // takes over this loop's reference
+                }
             }
         }
-        finally
+
+        public void Dispose()
         {
-            if (lastSample != IntPtr.Zero) Gst.gst_mini_object_unref(lastSample);
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+            _stopping = true;
+            if (_pullThread.IsAlive) _pullThread.Join();
+
+            Gst.gst_element_set_state(_pipeline, Gst.StateNull);
+            if (_appSink != IntPtr.Zero) Gst.gst_object_unref(_appSink);
+            Gst.gst_object_unref(_pipeline);
+            lock (_subscribersLock)
+            {
+                if (_lastSample != IntPtr.Zero) Gst.gst_mini_object_unref(_lastSample);
+                _lastSample = IntPtr.Zero;
+            }
+
+            _pipeWireFd.Dispose(); // pipewiresrc works on its own dup of the fd
+            WaylandPortalSession.Release(_session);
         }
     }
 
@@ -245,18 +373,11 @@ public sealed class PipeWireScreenCapturer : IScreenCapturer
         }
         pending?.Dispose();
 
-        _stopping = true;
-        _pullThread?.Join();
-
-        if (_pipeline != IntPtr.Zero)
+        if (_stream != null)
         {
-            Gst.gst_element_set_state(_pipeline, Gst.StateNull);
-            if (_appSink != IntPtr.Zero) Gst.gst_object_unref(_appSink);
-            Gst.gst_object_unref(_pipeline);
+            _stream.Unsubscribe(OnSample);
+            Streams.Release(_stream);
         }
-
-        _pipeWireFd?.Dispose(); // pipewiresrc works on its own dup of the fd
-        if (_session != null) WaylandPortalSession.Release();
         _firstFrame.Dispose();
     }
 

@@ -27,4 +27,7 @@ dbus-update-activation-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSI
 
 timeout 120 bash -c "until curl -sf http://signaling:5151/health >/dev/null; do sleep 1; done"
 
+# Linux-only unit tests first (restore-token file security); set -e stops the run when they fail.
+dotnet test /opt/unit/DeskShare.UnitTests.dll --filter "FullyQualifiedName~WaylandPortal"
+
 exec dotnet test /opt/e2e/DeskShare.IntegrationTests.dll --filter "${E2E_FILTER:-FullyQualifiedName~WaylandE2E}" --logger "console;verbosity=detailed"

@@ -37,7 +37,9 @@ COPY . .
 RUN dotnet publish src/ScreenSenderApp/DeskShare.ScreenSenderApp.csproj -c Release -o /opt/sender \
     && cp -a /opt/ffmpeg /opt/sender/ffmpeg \
     && dotnet build tests/IntegrationTests/DeskShare.IntegrationTests.csproj -c Release -o /opt/e2e \
-    && cp -a /opt/ffmpeg /opt/e2e/ffmpeg
+    && cp -a /opt/ffmpeg /opt/e2e/ffmpeg \
+    # Unit tests for the Linux-only parts (file modes, symlinks) that the Windows CI job skips.
+    && dotnet build tests/UnitTests/DeskShare.UnitTests.csproj -c Release -o /opt/unit
 
 # A Wayland-only session: no DISPLAY, so the sender must pick the portal path on its own.
 ENV XDG_SESSION_TYPE=wayland \
