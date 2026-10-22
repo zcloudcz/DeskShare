@@ -110,8 +110,8 @@ public sealed class PrivacyOverlay : IPrivacyOverlay
         var result = (int)SendMessageW(_controller, MsgShow, blockInput ? 1 : 0, IntPtr.Zero);
         return result switch
         {
-            1 => new PrivacyShowResult(true, null, Volatile.Read(ref _generation)),
-            2 => new PrivacyShowResult(true, "input_block_failed", Volatile.Read(ref _generation)),
+            1 => new PrivacyShowResult(true, null, Volatile.Read(ref _shownGeneration)),
+            2 => new PrivacyShowResult(true, "input_block_failed", Volatile.Read(ref _shownGeneration)),
             _ => new PrivacyShowResult(false, _reason ?? "overlay_failed")
         };
     }
@@ -120,6 +120,7 @@ public sealed class PrivacyOverlay : IPrivacyOverlay
     public event Action<int, string>? Failed;
 
     private int _generation; // bumped by every show and hide; a late Failed of an older generation is ignored
+    private int _shownGeneration; // generation of the last Show, written on the UI thread before SendMessage returns
 
     public void Hide()
     {
@@ -248,7 +249,9 @@ public sealed class PrivacyOverlay : IPrivacyOverlay
         _reason = null;
         if (_visible)
             HideAll();
-        Interlocked.Increment(ref _generation);
+        // Captured here, on the UI thread, for TryShow: a Tick failure right after this show bumps _generation, and
+        // TryShow must still report THIS show's generation so that failure is matched to it.
+        _shownGeneration = Interlocked.Increment(ref _generation);
 
         _desktop?.Refresh();
         _blockRequested = blockInput;
