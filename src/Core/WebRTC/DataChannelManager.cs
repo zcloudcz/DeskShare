@@ -72,6 +72,12 @@ public sealed class DataChannelManager : IDisposable
     public bool ClipboardSubscribed { get; private set; }
 
     /// <summary>
+    /// Receives the viewer's files; set by the session when the host allows file receiving. Its transfer is
+    /// aborted whenever the channel closes or is replaced, so no half-written file survives a disconnect.
+    /// </summary>
+    public FileReceiver? FileReceiver { get; set; }
+
+    /// <summary>
     /// Sends a clipboard message to the viewer, only while it is subscribed and the channel is open.
     /// </summary>
     public bool TrySendClipboard(string json) => ClipboardSubscribed && IsOpen && SendMessage(json);
@@ -136,6 +142,7 @@ public sealed class DataChannelManager : IDisposable
         _dataChannel = dataChannel;
         _channelOpenedAt = DateTime.UtcNow;
         ClipboardSubscribed = false; // a new channel is a new viewer session: it must subscribe again
+        FileReceiver?.Abort();
 
         // Subscribe to data channel events
         _dataChannel.onopen += OnDataChannelOpen;
@@ -279,6 +286,7 @@ public sealed class DataChannelManager : IDisposable
         _logger.Information("DataChannel closed: Label={Label}, ID={Id}",
             _dataChannel?.label, _dataChannel?.id);
         ClipboardSubscribed = false;
+        FileReceiver?.Abort();
 
         ChannelClosed?.Invoke(this, EventArgs.Empty);
     }
@@ -362,6 +370,11 @@ public sealed class DataChannelManager : IDisposable
             if ((GrantedCapabilities & required) != required)
             {
                 LogRejection(typeName, $"capability {required} not granted");
+                // Tell a viewer that offers a file anyway (stale UI, other client) instead of leaving it waiting.
+                if (typeName == "file_offer" && FileReceiver.TryGetId(doc.RootElement) is { } offerId)
+                {
+                    SendJson(new { type = "file_reject", id = offerId, reason = "disabled" });
+                }
                 return;
             }
 
@@ -378,7 +391,9 @@ public sealed class DataChannelManager : IDisposable
                     _logger.Information("Remote control requested by viewer, authorized: {Authorized}", authorized);
                     // "clipboard" tells the viewer whether the host shares the text clipboard (only then its buttons are usable).
                     var clipboard = (GrantedCapabilities & SessionCapabilities.Clipboard) != 0;
-                    SendJson(new { type = "authorization_response", authorized, clipboard, timestamp = DateTime.UtcNow });
+                    // "files" likewise tells the viewer whether it may send files to this host.
+                    var files = (GrantedCapabilities & SessionCapabilities.FileTransfer) != 0;
+                    SendJson(new { type = "authorization_response", authorized, clipboard, files, timestamp = DateTime.UtcNow });
                     return;
                 }
 
@@ -387,6 +402,13 @@ public sealed class DataChannelManager : IDisposable
                     // Already passed the policy: only sessions with the Clipboard grant get here.
                     ClipboardSubscribed = doc.RootElement.TryGetProperty("enabled", out var enabled) && enabled.ValueKind == JsonValueKind.True;
                     _logger.Information("Viewer clipboard subscription: {Subscribed}", ClipboardSubscribed);
+                    return;
+                }
+
+                if (messageType is "file_offer" or "file_chunk" or "file_end" or "file_cancel")
+                {
+                    // Passed the policy: only sessions with the FileTransfer grant (and so a receiver) get here.
+                    FileReceiver?.Handle(messageType, doc.RootElement);
                     return;
                 }
 
@@ -482,6 +504,7 @@ public sealed class DataChannelManager : IDisposable
 
         _dataChannel = null;
         ClipboardSubscribed = false;
+        FileReceiver?.Abort();
     }
 
     /// <summary>
