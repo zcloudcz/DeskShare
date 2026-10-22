@@ -176,9 +176,11 @@ public partial class MainWindow : Window
 
             bool enableRemoteControl = EnableRemoteControlCheckBox.IsChecked == true;
             bool enableClipboard = EnableClipboardCheckBox.IsChecked == true;
+            bool enableFileReceive = EnableFileReceiveCheckBox.IsChecked == true;
             bool trustClientPermanent = TrustClientPermanentCheckBox.IsChecked == true;
 
-            await _serverManager.StartAsync(serverId, password, enableRemoteControl, trustClientPermanent, enableClipboard);
+            _serverManager.FileReceived += OnFileReceived;
+            await _serverManager.StartAsync(serverId, password, enableRemoteControl, trustClientPermanent, enableClipboard, enableFileReceive);
 
             _logger.LogInformation("Server started with remote control {Status}",
                 enableRemoteControl ? "ENABLED" : "DISABLED");
@@ -217,6 +219,7 @@ public partial class MainWindow : Window
 
             EnableRemoteControlCheckBox.IsEnabled = false;
             EnableClipboardCheckBox.IsEnabled = false;
+            EnableFileReceiveCheckBox.IsEnabled = false;
             TrustClientPermanentCheckBox.IsEnabled = false;
 
             UpdateTabAvailability();
@@ -241,9 +244,37 @@ public partial class MainWindow : Window
 
             StartServerButton.IsEnabled = true;
             StartServerButton.Content = "Start Server";
+            _serverManager.FileReceived -= OnFileReceived;
             EnableRemoteControlCheckBox.IsEnabled = true;
             EnableClipboardCheckBox.IsEnabled = true;
+            EnableFileReceiveCheckBox.IsEnabled = true;
             TrustClientPermanentCheckBox.IsEnabled = true;
+        }
+    }
+
+    private string? _lastReceivedFolder;
+
+    // Non-blocking notice (no dialog): the host should not have to click away a file somebody sent.
+    private void OnFileReceived(object? sender, DeskShare.Core.WebRTC.ReceivedFile file)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            _lastReceivedFolder = System.IO.Path.GetDirectoryName(file.FullPath);
+            FileReceivedText.Text = $"Received {file.SavedAs} from viewer";
+            FileReceivedPanel.IsVisible = true;
+        });
+    }
+
+    private void OpenReceivedFolder_Click(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (_lastReceivedFolder != null)
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(_lastReceivedFolder) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not open the received files folder");
         }
     }
 
@@ -276,8 +307,11 @@ public partial class MainWindow : Window
             StartServerButton.Content = "Start Server";
             StopServerButton.Content = "Stop Server";
 
+            _serverManager.FileReceived -= OnFileReceived;
+            FileReceivedPanel.IsVisible = false;
             EnableRemoteControlCheckBox.IsEnabled = true;
             EnableClipboardCheckBox.IsEnabled = true;
+            EnableFileReceiveCheckBox.IsEnabled = true;
             TrustClientPermanentCheckBox.IsEnabled = true;
 
             UpdateTabAvailability();
