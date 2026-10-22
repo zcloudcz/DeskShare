@@ -16,9 +16,15 @@ namespace DeskShare.Desktop.Shared.Services;
 public class VideoSink : IVideoSink, IDisposable
 {
     private readonly ILogger<VideoSink> _logger;
-    private readonly FFmpegVideoEndPoint? _ffmpegEndpoint;
-    private volatile bool _disposed;
-    private int _decodesInFlight; // frames being decoded right now (native FFmpeg code) on the network thread
+    private readonly IVideoSink? _ffmpegEndpoint; // FFmpegVideoEndPoint in the app; a fake in tests
+    private int _disposed; // 0/1, set once by Dispose
+
+    // Who still needs the native decoder: 1 for the owner (until Dispose) plus 1 per decode running right now.
+    // Whoever drops it to 0 frees the decoder. So a decode that is still inside native FFmpeg code when Dispose runs
+    // is never pulled out from under it: the decode itself frees the decoder when it leaves. Dispose never waits,
+    // because the decode can be blocked on the very thread that calls Dispose (the UI thread).
+    private int _users = 1;
+    private int _freed; // 0/1: the decoder is freed exactly once
     private readonly ConcurrentQueue<byte[]> _frameQueue = new();
     private const int MaxQueueSize = 30; // Keep max 30 frames (1 second at 30fps)
     private bool _isInitialized;
@@ -84,6 +90,15 @@ public class VideoSink : IVideoSink, IDisposable
         }
     }
 
+    /// <summary>Test seam: a sink over any decoder endpoint (disposed through <see cref="IDisposable"/> if it is one).</summary>
+    internal VideoSink(ILogger<VideoSink> logger, IVideoSink endpoint)
+    {
+        _logger = logger;
+        _ffmpegEndpoint = endpoint;
+        _ffmpegEndpoint.OnVideoSinkDecodedSampleFaster += OnDecodedSampleFaster;
+        _isInitialized = true;
+    }
+
     /// <summary>
     /// Handles decoded video samples from FFmpeg (faster variant using RawImage).
     /// </summary>
@@ -132,13 +147,13 @@ public class VideoSink : IVideoSink, IDisposable
     /// </summary>
     public void GotVideoFrame(IPEndPoint remoteEndPoint, uint timestamp, byte[] frame, VideoFormat format)
     {
-        // Counted so Dispose can wait for a decode that is running in native code: freeing the FFmpeg decoder under
-        // it crashes the whole process. No lock on purpose: the decode raises FrameReceived, whose handler may block on
-        // the UI thread, and Dispose is called from the UI thread.
-        Interlocked.Increment(ref _decodesInFlight);
+        // Take a reference before touching the decoder (see _users). If Dispose already ran, the check below sees it
+        // (Interlocked is a full fence) and the decoder is not touched, even if it has already been freed.
+        // No lock on purpose: the decode raises FrameReceived, and a handler may wait for the UI thread.
+        Interlocked.Increment(ref _users);
         try
         {
-            if (_disposed || !_isInitialized || _ffmpegEndpoint == null)
+            if (Volatile.Read(ref _disposed) != 0 || !_isInitialized || _ffmpegEndpoint == null)
             {
                 _logger.LogWarning("Decoder not initialized, cannot decode frame");
                 return;
@@ -155,8 +170,24 @@ public class VideoSink : IVideoSink, IDisposable
         }
         finally
         {
-            Interlocked.Decrement(ref _decodesInFlight);
+            Release();
         }
+    }
+
+    // Drops one reference; the last one out frees the native decoder (on whatever thread that happens to be).
+    private void Release()
+    {
+        if (Interlocked.Decrement(ref _users) != 0 || Interlocked.Exchange(ref _freed, 1) != 0)
+        {
+            return;
+        }
+
+        if (_ffmpegEndpoint != null)
+        {
+            _ffmpegEndpoint.OnVideoSinkDecodedSampleFaster -= OnDecodedSampleFaster;
+            (_ffmpegEndpoint as IDisposable)?.Dispose();
+        }
+        _logger.LogInformation("VideoSink decoder freed");
     }
 
     /// <summary>
@@ -282,25 +313,12 @@ public class VideoSink : IVideoSink, IDisposable
 
     public void Dispose()
     {
-        if (_disposed) return;
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return; // no new decode starts from here on
 
-        _disposed = true; // no new decode starts from here on
         _frameQueue.Clear();
 
-        // A decode that already started finishes first (bounded: its handler could be waiting for the UI thread, which
-        // is the one disposing us).
-        var waited = System.Diagnostics.Stopwatch.StartNew();
-        while (Volatile.Read(ref _decodesInFlight) > 0 && waited.ElapsedMilliseconds < 1000)
-        {
-            Thread.Sleep(2);
-        }
-
-        if (_ffmpegEndpoint != null)
-        {
-            _ffmpegEndpoint.OnVideoSinkDecodedSampleFaster -= OnDecodedSampleFaster;
-        }
-
-        _ffmpegEndpoint?.Dispose();
+        // Drop the owner's reference: frees the decoder now, or, if a decode is still running, when that decode exits.
+        Release();
         _logger.LogInformation("VideoSink disposed");
     }
 }

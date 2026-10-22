@@ -667,12 +667,24 @@ public partial class ProjectionWindow : Window
     /// - Avalonia: using (var fb = bitmap.Lock()) { Marshal.Copy(data, 0, fb.Address, size) }
     ///   The Lock() returns an ILockedFramebuffer that auto-unlocks on Dispose.
     /// </summary>
-    private void OnFrameReceived(object? sender, VideoFrameReceivedEventArgs frame)
-    {
-        _logger.LogDebug("[ProjectionWindow] Frame {Width}x{Height}, {Size} bytes", frame.Width, frame.Height, frame.FrameData.Length);
+    private VideoFrameReceivedEventArgs? _pendingFrame; // newest decoded frame the UI thread has not drawn yet
 
-        Dispatcher.UIThread.Invoke(() =>
+    private void OnFrameReceived(object? sender, VideoFrameReceivedEventArgs received)
+    {
+        _logger.LogDebug("[ProjectionWindow] Frame {Width}x{Height}, {Size} bytes", received.Width, received.Height, received.FrameData.Length);
+
+        // Post, never Invoke: this runs on the decode thread, inside the native decoder. Invoke would park that thread
+        // until the UI thread is free, and the UI thread may be busy closing this window and disposing the decoder.
+        // Only the newest frame is kept, so a slow UI thread skips frames instead of queueing them without limit.
+        if (Interlocked.Exchange(ref _pendingFrame, received) != null)
         {
+            return; // a render is already posted; it will pick up this newer frame
+        }
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            var frame = Interlocked.Exchange(ref _pendingFrame, null);
+            if (frame == null) return;
             try
             {
                 // The bitmap must match the sender's screen size. A fixed 1920x1080 buffer showed a sheared,
