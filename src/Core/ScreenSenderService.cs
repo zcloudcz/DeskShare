@@ -65,6 +65,16 @@ public class ScreenSenderService : IHostedService, IDisposable
     {
     }
 
+    /// <summary>Same as the default constructor but with Server ID / owner secret kept at explicit paths (unattended agent: %ProgramData%).</summary>
+    public ScreenSenderService(
+        ILogger<ScreenSenderService> logger,
+        ScreenSenderConfiguration configuration,
+        string serverIdPath,
+        ServerOwnerSecretStore ownerSecretStore)
+        : this(logger, configuration, new HttpClient { Timeout = TimeSpan.FromSeconds(5) }, serverIdPath, ownerSecretStore)
+    {
+    }
+
     /// <summary>Lets tests supply a fake HTTP handler and temp files instead of the real ones.</summary>
     internal ScreenSenderService(
         ILogger<ScreenSenderService> logger,

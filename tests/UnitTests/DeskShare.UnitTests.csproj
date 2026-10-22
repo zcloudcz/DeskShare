@@ -24,6 +24,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Core\DeskShare.Core.csproj" />
     <ProjectReference Include="..\..\src\DeskShare.Desktop.Shared\DeskShare.Desktop.Shared.csproj" />
+    <ProjectReference Include="..\..\src\DeskShare.Unattended\DeskShare.Unattended.csproj" />
     <ProjectReference Include="..\..\src\Stun\DeskShare.Stun.csproj" />
     <ProjectReference Include="..\..\src\Turn\DeskShare.Turn.csproj" />
     <ProjectReference Include="..\..\src\SignalingServer\DeskShare.SignalingServer.csproj" />

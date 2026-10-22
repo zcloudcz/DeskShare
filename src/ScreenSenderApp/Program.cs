@@ -9,9 +9,13 @@ using Serilog.Extensions.Logging;
 // run in-process. Intended for machines without a UI (CLI, service, container).
 // Any appsettings.json key can be overridden on the command line, e.g.:
 //   --Signaling:ServerUrl=wss://host/signal --Capture:TargetFps=15 --Security:EnableRemoteControl=true
+//   --config <file.json> (unattended service): extra JSON config; Server ID and owner secret are then kept next to it
+//   instead of in the per-user %APPDATA%, because the agent runs as SYSTEM.
+var configFile = new ConfigurationBuilder().AddCommandLine(args).Build()["config"];
 var configuration = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
     .AddJsonFile("appsettings.json", optional: true)
+    .AddJsonFile(configFile ?? "unused.json", optional: configFile is null)
     .AddCommandLine(args)
     .Build();
 
@@ -31,10 +35,22 @@ try
         EnableRemoteControl = configuration.GetValue("Security:EnableRemoteControl", false),
         TrustClientPermanent = configuration.GetValue("Security:TrustClientPermanent", false)
     };
-    config.EnsureServerId(); // empty ServerId -> derived from the machine
-
     var logger = new SerilogLoggerFactory(Log.Logger).CreateLogger<ScreenSenderService>();
-    using var service = new ScreenSenderService(logger, config);
+    ScreenSenderService service;
+    if (configFile is null)
+    {
+        config.EnsureServerId(); // empty ServerId -> persisted per-user id
+        service = new ScreenSenderService(logger, config);
+    }
+    else
+    {
+        var dataDir = Path.GetDirectoryName(Path.GetFullPath(configFile))!;
+        var idPath = Path.Combine(dataDir, "server-id");
+        if (string.IsNullOrEmpty(config.ServerId))
+            config.ServerId = ServerIdGenerator.GetOrCreateServerId(idPath);
+        service = new ScreenSenderService(logger, config, idPath, new DeskShare.Core.Auth.ServerOwnerSecretStore(Path.Combine(dataDir, "server-owner.key")));
+    }
+    using var serviceLifetime = service;
 
     // Subscribe before StartAsync, otherwise the first passkey would be missed.
     service.PasskeyChanged += (_, e) =>
