@@ -1,4 +1,5 @@
-﻿using DeskShare.Core.Interfaces;
+﻿using DeskShare.Core.Auth;
+using DeskShare.Core.Interfaces;
 using DeskShare.Core.Models;
 using Serilog;
 using SIPSorcery.Net;
@@ -153,6 +154,84 @@ public sealed class WebRTCSessionWithInput : IDisposable
 
         _logger.Information("WebRTCSessionWithInput initialized with input controller: {HasInput}, clipboard: {HasClipboard}",
             inputController != null, clipboardManager != null);
+    }
+
+    /// <summary>
+    /// Requires every viewer to pass the end-to-end binding (see <see cref="E2EBinding"/>) before it gets video or any
+    /// data channel capability. The sender keeps adding the keys of its rotating passkeys to <paramref name="keys"/>.
+    /// A viewer that does not verify within <see cref="E2EBinding.Timeout"/>, or sends a wrong binding, is disconnected.
+    /// </summary>
+    public void EnableE2EBinding(E2EKeyRing keys)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        if (_baseSession.VideoSource is not Video.SIPSorceryVideoSource video)
+        {
+            throw new InvalidOperationException("End-to-end binding needs the SIPSorcery video source.");
+        }
+
+        video.RequirePeerVerification = true;
+
+        _dataChannelManager.VerifyViewerBind = viewerMac =>
+        {
+            // Both fingerprints come from this side's own view of the negotiation: ours is what we generated, the
+            // viewer's is what the signaling server handed us. A man in the middle makes the two sides disagree.
+            var peerConnection = video.PeerConnection;
+            var senderFp = E2EBinding.GetFingerprint(peerConnection?.localDescription?.sdp?.ToString());
+            var viewerFp = E2EBinding.GetFingerprint(peerConnection?.remoteDescription?.sdp?.ToString());
+            if (senderFp == null || viewerFp == null
+                || !keys.TryVerify(E2EBinding.ViewerRole, senderFp, viewerFp, viewerMac, out var key))
+            {
+                return null;
+            }
+
+            // Answer with the sender's mac made with the key that matched, so the viewer can verify us in turn.
+            return E2EBinding.ComputeMac(key, E2EBinding.SenderRole, senderFp, viewerFp);
+        };
+
+        _dataChannelManager.ViewerVerified += (_, _) =>
+        {
+            CancelBindTimeout();
+            video.MarkPeerVerified();
+        };
+        _dataChannelManager.ViewerBindFailed += (_, _) => DropUnverifiedPeer(video.PeerConnection, "binding did not verify");
+        _baseSession.ConnectionStateChanged += (_, state) =>
+        {
+            if (state == RTCPeerConnectionState.connected && !_dataChannelManager.PeerVerified)
+            {
+                StartBindTimeout(video.PeerConnection);
+            }
+        };
+    }
+
+    private CancellationTokenSource? _bindTimeout;
+
+    /// <summary>Test seam: how long a connected peer may stay unverified.</summary>
+    internal TimeSpan BindTimeout { get; set; } = E2EBinding.Timeout;
+
+    private void StartBindTimeout(RTCPeerConnection? peerConnection)
+    {
+        var cts = new CancellationTokenSource();
+        Interlocked.Exchange(ref _bindTimeout, cts)?.Cancel();
+
+        _ = Task.Delay(BindTimeout, cts.Token).ContinueWith(t =>
+        {
+            // Only the peer connection that was waiting is closed, not a newer one that replaced it meanwhile.
+            if (!t.IsCanceled && !_disposed && !_dataChannelManager.PeerVerified)
+            {
+                DropUnverifiedPeer(peerConnection, "no binding within the deadline");
+            }
+        }, TaskScheduler.Default);
+    }
+
+    private void CancelBindTimeout() => Interlocked.Exchange(ref _bindTimeout, null)?.Cancel();
+
+    private void DropUnverifiedPeer(RTCPeerConnection? peerConnection, string reason)
+    {
+        // No key material or fingerprints in the log: only the fact.
+        _logger.Warning("Closing peer connection: end-to-end check failed ({Reason}). The connection may be intercepted.", reason);
+        CancelBindTimeout();
+        try { peerConnection?.close(); }
+        catch (Exception ex) { _logger.Warning(ex, "Closing the unverified peer connection failed"); }
     }
 
     /// <summary>
@@ -455,6 +534,7 @@ public sealed class WebRTCSessionWithInput : IDisposable
         }
 
         _logger.Information("Disposing WebRTCSessionWithInput");
+        CancelBindTimeout();
 
         // Unsubscribe from events
         _clipboardSync?.Dispose();

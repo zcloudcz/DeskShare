@@ -52,6 +52,22 @@ public sealed class SIPSorceryVideoSource : IVideoSource
     public IReadOnlyList<RTCIceServer> IceServers { get; set; } = IceServerMapper.DefaultIceServers();
 
     /// <summary>
+    /// When true, no frame is encoded or sent to a peer until <see cref="MarkPeerVerified"/> is called for it
+    /// (end-to-end binding, see E2EBinding). Verification is per peer connection: every
+    /// <see cref="ResetPeerConnection"/> starts unverified again.
+    /// </summary>
+    public bool RequirePeerVerification { get; set; }
+
+    private volatile bool _peerVerified;
+
+    /// <summary>Releases video to the current peer connection and makes its first frame a keyframe.</summary>
+    public void MarkPeerVerified()
+    {
+        _framesSinceKeyframe = KeyframeInterval; // frames dropped while unverified left the viewer without a keyframe
+        _peerVerified = true;
+    }
+
+    /// <summary>
     /// Gets the underlying peer connection for signaling integration.
     /// </summary>
     public RTCPeerConnection? PeerConnection => _peerConnection;
@@ -82,6 +98,9 @@ public sealed class SIPSorceryVideoSource : IVideoSource
 
         // Reset keyframe counter to force immediate keyframe for new client
         _framesSinceKeyframe = KeyframeInterval; // Will trigger keyframe on next PushFrame
+
+        // The new peer has not proven anything yet (matters only with RequirePeerVerification).
+        _peerVerified = false;
 
         // Disconnect encoder from old peer connection
         if (_videoEncoder != null && _peerConnection != null)
@@ -188,6 +207,16 @@ public sealed class SIPSorceryVideoSource : IVideoSource
 
         if (frame == null)
             throw new ArgumentNullException(nameof(frame));
+
+        // Unverified peer (possibly a man in the middle): it gets no pixels of the screen.
+        if (RequirePeerVerification && !_peerVerified)
+        {
+            lock (_statsLock)
+            {
+                _framesDropped++;
+            }
+            return false;
+        }
 
         // Check if peer connection is in a valid state for sending
         // Allow sending during 'connecting' and 'connected' states

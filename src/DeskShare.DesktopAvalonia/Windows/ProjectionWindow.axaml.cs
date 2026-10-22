@@ -45,6 +45,7 @@ public partial class ProjectionWindow : Window
     private readonly string? _webSocketToken;
     private readonly string? _clientId;
     private readonly string? _resumeToken;
+    private readonly byte[]? _e2eKey;
     private readonly IReadOnlyList<DeskShare.Core.Auth.IceServerInfo>? _iceServers;
     private bool _isFullscreen;
     private bool _isConnected;
@@ -61,7 +62,8 @@ public partial class ProjectionWindow : Window
         string? webSocketToken = null,
         string? clientId = null,
         IReadOnlyList<DeskShare.Core.Auth.IceServerInfo>? iceServers = null,
-        string? resumeToken = null)
+        string? resumeToken = null,
+        byte[]? e2eKey = null)
     {
         InitializeComponent();
 
@@ -75,6 +77,7 @@ public partial class ProjectionWindow : Window
         _clientId = clientId;
         _iceServers = iceServers;
         _resumeToken = resumeToken;
+        _e2eKey = e2eKey;
 
         ServerIdText.Text = $"Server ID: {serverId}";
         ConnectedServerIdText.Text = serverId;
@@ -124,7 +127,7 @@ public partial class ProjectionWindow : Window
             _clientManager.ClipboardRejected += OnClipboardRejected;
             _clientManager.HostAllowsFilesChanged += OnHostAllowsFilesChanged;
 
-            await _clientManager.ConnectAsync(_serverId, _password, null, _webSocketToken, _clientId, _iceServers, _resumeToken);
+            await _clientManager.ConnectAsync(_serverId, _password, null, _webSocketToken, _clientId, _iceServers, _resumeToken, _e2eKey);
 
             _logger.LogInformation("Successfully connected to server {ServerId}", _serverId);
         }
@@ -243,11 +246,13 @@ public partial class ProjectionWindow : Window
         Dispatcher.UIThread.Invoke(async () =>
         {
             _logger.LogInformation("Disconnected: {Reason}", reason);
+            // A failed end-to-end check is a security warning, not an ordinary disconnect.
+            var intercepted = reason == ClientManager.BindFailedMessage;
             var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                "Connection Lost",
-                $"Disconnected: {reason}",
+                intercepted ? "Security Warning" : "Connection Lost",
+                intercepted ? reason : $"Disconnected: {reason}",
                 ButtonEnum.Ok,
-                MsBoxIcon.Info);
+                intercepted ? MsBoxIcon.Error : MsBoxIcon.Info);
             await msgBox.ShowWindowDialogAsync(this);
             Close();
         });

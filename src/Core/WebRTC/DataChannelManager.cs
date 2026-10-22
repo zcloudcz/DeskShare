@@ -1,6 +1,7 @@
 ﻿using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using DeskShare.Core.Auth;
 using DeskShare.Core.Interfaces;
 using DeskShare.Core.Models;
 using Serilog;
@@ -60,9 +61,31 @@ public sealed class DataChannelManager : IDisposable
     /// <c>IsEnabled</c> (the "Allow remote control" decision) so there is only one source of truth.
     /// </summary>
     public SessionCapabilities GrantedCapabilities =>
-        SessionCapabilities.View
-        | HostGrantedCapabilities
-        | (_inputController?.IsEnabled == true ? SessionCapabilities.Control : SessionCapabilities.None);
+        // "Unverified": until the viewer proved it holds the e2e key, nothing is granted. Only e2e_bind passes
+        // (it needs no grant, see DataChannelPolicy), so a man in the middle gets neither input nor clipboard nor files.
+        RequireE2EBinding && !PeerVerified
+            ? SessionCapabilities.None
+            : SessionCapabilities.View
+              | HostGrantedCapabilities
+              | (_inputController?.IsEnabled == true ? SessionCapabilities.Control : SessionCapabilities.None);
+
+    /// <summary>
+    /// Checks the viewer's <c>e2e_bind</c> mac and returns the sender's own mac for the reply, or null when the
+    /// viewer's mac is wrong. Setting it switches the "unverified until bound" rule on (see <see cref="GrantedCapabilities"/>).
+    /// </summary>
+    public Func<string, string?>? VerifyViewerBind { get; set; }
+
+    /// <summary>True when peers must pass the e2e binding before they get any capability.</summary>
+    public bool RequireE2EBinding => VerifyViewerBind != null;
+
+    /// <summary>True once the viewer on the current channel passed the e2e binding. Reset when the channel changes.</summary>
+    public bool PeerVerified { get; private set; }
+
+    /// <summary>Raised when the viewer's e2e binding verified.</summary>
+    public event EventHandler? ViewerVerified;
+
+    /// <summary>Raised when the viewer sent a binding that does not verify (wrong key, or a man in the middle).</summary>
+    public event EventHandler? ViewerBindFailed;
 
     /// <summary>
     /// True when the viewer on the current channel asked for the host's clipboard ("clipboard_subscribe").
@@ -142,6 +165,7 @@ public sealed class DataChannelManager : IDisposable
         _dataChannel = dataChannel;
         _channelOpenedAt = DateTime.UtcNow;
         ClipboardSubscribed = false; // a new channel is a new viewer session: it must subscribe again
+        PeerVerified = false; // ...and must prove the e2e binding again
         FileReceiver?.Abort();
 
         // Subscribe to data channel events
@@ -286,6 +310,7 @@ public sealed class DataChannelManager : IDisposable
         _logger.Information("DataChannel closed: Label={Label}, ID={Id}",
             _dataChannel?.label, _dataChannel?.id);
         ClipboardSubscribed = false;
+        PeerVerified = false;
         FileReceiver?.Abort();
 
         ChannelClosed?.Invoke(this, EventArgs.Empty);
@@ -329,8 +354,9 @@ public sealed class DataChannelManager : IDisposable
             // Raise event for general message handling
             MessageReceived?.Invoke(this, message);
 
-            // If input controller is configured, try to process as input message
-            if (_inputController != null)
+            // If input controller is configured, try to process as input message.
+            // With e2e binding the messages must be processed even without a controller: e2e_bind is handled there.
+            if (_inputController != null || RequireE2EBinding)
             {
                 ProcessInputMessage(message);
             }
@@ -381,6 +407,12 @@ public sealed class DataChannelManager : IDisposable
             if (doc.RootElement.TryGetProperty("type", out var typeElement))
             {
                 var messageType = typeElement.GetString();
+
+                if (messageType == "e2e_bind")
+                {
+                    HandleViewerBind(doc.RootElement);
+                    return;
+                }
 
                 if (messageType == "authorization_request")
                 {
@@ -462,6 +494,36 @@ public sealed class DataChannelManager : IDisposable
     }
 
     /// <summary>
+    /// Verifies the viewer's <c>e2e_bind</c>. On success the peer gets its normal grants and receives the sender's own
+    /// bind; on failure nothing is sent back (the sender's mac must not be handed to an unverified peer).
+    /// </summary>
+    private void HandleViewerBind(JsonElement message)
+    {
+        if (VerifyViewerBind == null || PeerVerified)
+        {
+            return; // binding not in use, or already done: a repeated message changes nothing
+        }
+
+        string? senderMac = null;
+        if (E2EBinding.TryReadBind(message, out var role, out var mac) && role == E2EBinding.ViewerRole)
+        {
+            senderMac = VerifyViewerBind(mac);
+        }
+
+        if (senderMac == null)
+        {
+            LogRejection("e2e_bind", "binding does not verify");
+            ViewerBindFailed?.Invoke(this, EventArgs.Empty);
+            return;
+        }
+
+        PeerVerified = true;
+        SendJson(new { type = "e2e_bind", v = E2EBinding.Version, role = E2EBinding.SenderRole, mac = senderMac });
+        _logger.Information("Viewer passed the end-to-end binding check");
+        ViewerVerified?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
     /// Logs a rejected message. Only the type name is logged, never the content (it may hold keystrokes or
     /// clipboard text), and only the first few per bucket.
     /// </summary>
@@ -504,6 +566,7 @@ public sealed class DataChannelManager : IDisposable
 
         _dataChannel = null;
         ClipboardSubscribed = false;
+        PeerVerified = false;
         FileReceiver?.Abort();
     }
 

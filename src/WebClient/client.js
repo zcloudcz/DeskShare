@@ -82,6 +82,111 @@ async function signAuthRequest(serverId, passkey, timestamp, nonce) {
     return btoa(String.fromCharCode(...new Uint8Array(sig)));
 }
 
+// ---- End-to-end binding (mirrors E2EBinding.cs; tests/js/e2e-vector.mjs checks both give the same bytes) ----
+// The signaling server relays the SDP (and so the DTLS fingerprints) and sees what we send it, so the passkey itself
+// never goes there: we send authKey, derived from it. e2eKey, derived from the same passkey, stays in this page and
+// is used to prove over the data channel that both sides see the same fingerprints (no man in the middle).
+const PLACEHOLDER_IDLE = placeholder.textContent;
+const BIND_TIMEOUT_MS = 10000;
+const BIND_FAILED_MESSAGE = 'Secure connection check failed. The connection may be intercepted. Do not continue.';
+let e2eKey = null; // { serverId, bytes }; memory only. A page reload needs the passkey again.
+let peerVerified = false; // the sender's e2e_bind verified for the current peer connection
+let bindSent = false;
+let bindTimer = null;
+let pendingStream = null; // video held back until the sender is verified
+let bindFailed = false; // keeps the red error on screen when the socket close handler would overwrite it
+
+function toHex(buf) {
+    return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Returns { authKey (base64url), e2eKey (Uint8Array) }: HKDF-SHA256(passkey, salt "DeskShare/v1/"+serverId, info "auth"/"e2e").
+async function deriveKeys(passkey, serverId) {
+    const enc = new TextEncoder();
+    const ikm = await crypto.subtle.importKey('raw', enc.encode(passkey.replace(/[-\s]/g, '').toUpperCase()), 'HKDF', false, ['deriveBits']);
+    const salt = enc.encode('DeskShare/v1/' + serverId);
+    const derive = async (info) => new Uint8Array(await crypto.subtle.deriveBits(
+        { name: 'HKDF', hash: 'SHA-256', salt, info: enc.encode(info) }, ikm, 256));
+    const auth = await derive('auth');
+    return {
+        authKey: btoa(String.fromCharCode(...auth)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+        e2eKey: await derive('e2e')
+    };
+}
+
+// The sha-256 DTLS fingerprint of an SDP (uppercase, colons), or null when there is none or the SDP names two
+// different ones (we could not tell which certificate DTLS uses).
+function getFingerprint(sdp) {
+    let found = null;
+    const re = /^a=fingerprint:sha-256[ \t]+((?:[0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2})[ \t]*$/gm;
+    for (const m of (sdp || '').replace(/\r/g, '').matchAll(re)) {
+        const fp = m[1].toUpperCase();
+        if (found && found !== fp) return null;
+        found = fp;
+    }
+    return found;
+}
+
+async function bindKey(usage) {
+    return crypto.subtle.importKey('raw', e2eKey.bytes, { name: 'HMAC', hash: 'SHA-256' }, false, [usage]);
+}
+
+function bindData(role, senderFp, viewerFp) {
+    return new TextEncoder().encode(`DeskShare-bind-v1|${role}|${senderFp}|${viewerFp}`);
+}
+
+// Fingerprints as this side sees them: the sender's is in the remote description, ours in the local one.
+function bindFingerprints() {
+    return {
+        senderFp: getFingerprint(pc?.remoteDescription?.sdp),
+        viewerFp: getFingerprint(pc?.localDescription?.sdp)
+    };
+}
+
+async function sendBind() {
+    const { senderFp, viewerFp } = bindFingerprints();
+    if (!e2eKey || !senderFp || !viewerFp) return false;
+    const mac = toHex(await crypto.subtle.sign('HMAC', await bindKey('sign'), bindData('viewer', senderFp, viewerFp)));
+    dataChannel.send(JSON.stringify({ type: 'e2e_bind', v: 1, role: 'viewer', mac }));
+    bindSent = true;
+    return true;
+}
+
+// crypto.subtle.verify compares in constant time.
+async function verifySenderBind(message) {
+    const { senderFp, viewerFp } = bindFingerprints();
+    if (!e2eKey || !senderFp || !viewerFp || message.v !== 1 || message.role !== 'sender'
+        || typeof message.mac !== 'string' || !/^[0-9a-fA-F]{64}$/.test(message.mac)) return false;
+    const mac = Uint8Array.from(message.mac.match(/../g), (h) => parseInt(h, 16));
+    return crypto.subtle.verify('HMAC', await bindKey('verify'), mac, bindData('sender', senderFp, viewerFp));
+}
+
+function showVideo() {
+    if (!pendingStream) return;
+    remoteVideo.srcObject = pendingStream;
+    placeholder.style.display = 'none';
+    remoteVideo.style.display = 'block';
+    fullscreenBtn.disabled = false;
+    updateStatus('Receiving video stream', 'success');
+}
+
+function failBinding() {
+    console.warn('End-to-end check failed'); // no keys or fingerprints in the console
+    bindFailed = true;
+    disconnect();
+    updateStatus(BIND_FAILED_MESSAGE, 'error');
+}
+
+function startBindTimer() {
+    clearTimeout(bindTimer);
+    if (peerVerified) return;
+    const watched = pc;
+    bindTimer = setTimeout(() => {
+        // Only the peer connection that was waiting counts, not a newer one created by a reconnect.
+        if (!peerVerified && pc === watched) failBinding();
+    }, BIND_TIMEOUT_MS);
+}
+
 // Mirrors ServerIdGenerator.NormalizeServerIdInput: "123 456 789", "123-456-789", "123456789" and
 // "server-123456789" all become "server-123456789". Anything else is only trimmed so legacy IDs still work.
 function normalizeServerId(input) {
@@ -107,17 +212,34 @@ async function authenticate() {
         return null;
     }
 
+    if (!crypto.subtle) {
+        updateStatus('A secure context (https) is required to connect.', 'error');
+        return null;
+    }
+
     clientId = clientId || crypto.randomUUID();
+
+    // The server gets authKey instead of the passkey. Without a typed passkey (a trusted client reconnecting) there
+    // is nothing to derive: we keep the e2eKey of this page session if it belongs to the same server, otherwise the
+    // end-to-end check will fail and the passkey has to be entered again.
+    let authKey = '';
+    if (passkey) {
+        const keys = await deriveKeys(passkey, serverId);
+        authKey = keys.authKey;
+        e2eKey = { serverId, bytes: keys.e2eKey };
+    } else if (e2eKey && e2eKey.serverId !== serverId) {
+        e2eKey = null;
+    }
 
     const timestamp = new Date().toISOString();
     const nonce = crypto.randomUUID();
     const body = {
         ServerId: serverId,
-        Passkey: passkey,
+        Passkey: authKey,
         ClientId: clientId,
         Timestamp: timestamp,
         Nonce: nonce,
-        Signature: await signAuthRequest(serverId, passkey, timestamp, nonce)
+        Signature: await signAuthRequest(serverId, authKey, timestamp, nonce)
     };
 
     updateStatus('Authenticating...', 'info');
@@ -172,6 +294,7 @@ async function resume() {
  * Returns true when a WebSocket was created, false when authentication or setup failed.
  */
 async function connect(tryResume = false) {
+    bindFailed = false;
     try {
         let authResult = null;
         if (tryResume && resumeToken) {
@@ -308,7 +431,7 @@ async function connect(tryResume = false) {
             } else if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
                 updateStatus('Max reconnection attempts reached. Please reconnect manually.', 'error');
             } else {
-                updateStatus('Disconnected from signaling server', 'info');
+                if (!bindFailed) updateStatus('Disconnected from signaling server', 'info');
             }
         };
 
@@ -327,19 +450,20 @@ async function handleOffer(message) {
 
         // Create peer connection
         pc = new RTCPeerConnection(config);
+        peerVerified = false; // every peer connection must pass the end-to-end check again
+        bindSent = false;
+        pendingStream = null;
+        placeholder.textContent = 'Verifying secure connection...';
 
-        // The sender opens an "input" data channel only when the host allowed remote control.
+        // The sender always opens the "input" data channel: the end-to-end check runs over it.
         pc.ondatachannel = (event) => setupDataChannel(event.channel);
 
-        // Handle incoming tracks
+        // Handle incoming tracks. The video is held back until the sender is verified (see showVideo).
         pc.ontrack = (event) => {
             console.log('Received remote track:', event.track.kind);
             if (event.streams && event.streams[0]) {
-                remoteVideo.srcObject = event.streams[0];
-                placeholder.style.display = 'none';
-                remoteVideo.style.display = 'block';
-                fullscreenBtn.disabled = false; // Enable fullscreen button
-                updateStatus('Receiving video stream', 'success');
+                pendingStream = event.streams[0];
+                if (peerVerified) showVideo();
             }
         };
 
@@ -362,8 +486,16 @@ async function handleOffer(message) {
             console.log('Connection state:', pc.connectionState);
             updateWebRtcState(pc.connectionState);
 
+            // The sender drops a viewer whose binding does not verify. Losing the connection after we sent our
+            // binding but before the sender's arrived is treated as a failed check, not as a network glitch to retry.
+            if (bindSent && !peerVerified && !userDisconnected && ['failed', 'closed', 'disconnected'].includes(pc.connectionState)) {
+                failBinding();
+                return;
+            }
+
             if (pc.connectionState === 'connected') {
                 updateStatus('WebRTC connection established', 'success');
+                startBindTimer();
                 startStatsMonitoring(); // Start collecting statistics
             } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
                 updateStatus('WebRTC connection failed', 'error');
@@ -475,6 +607,7 @@ function disconnect() {
     reconnectAttempts = 0;
     isReconnecting = false;
     resumeToken = null; // a manual disconnect ends the session; the next Connect must use the passkey
+    e2eKey = null; // ...which also derives the end-to-end key again
 
     if (ws) {
         ws.close();
@@ -556,7 +689,13 @@ function cleanup() {
         remoteVideo.srcObject = null;
     }
 
+    peerVerified = false;
+    bindSent = false;
+    pendingStream = null;
+    clearTimeout(bindTimer);
+
     remoteVideo.style.display = 'none';
+    placeholder.textContent = bindFailed ? BIND_FAILED_MESSAGE : PLACEHOLDER_IDLE;
     placeholder.style.display = 'block';
     fullscreenBtn.disabled = true; // Disable fullscreen button
 
@@ -573,8 +712,9 @@ function setupDataChannel(channel) {
     dataChannel = channel;
     dataChannel.onopen = () => {
         remoteControl = new RemoteControl(remoteVideo, dataChannel);
-        // The host's authorization_response also tells us whether it shares the clipboard.
-        dataChannel.send(JSON.stringify({ type: 'authorization_request', timestamp: new Date().toISOString() }));
+        // First message on the channel is our e2e binding. The authorization_request follows only after the
+        // sender's binding verified (below); nothing else is sent before that.
+        sendBind().then((sent) => { if (!sent) failBinding(); }, () => failBinding());
         updateControlButton();
         // The channel also exists for clipboard-only sessions, so "control available" is only said once the
         // host's authorization_response confirms it.
@@ -591,6 +731,20 @@ function setupDataChannel(channel) {
     dataChannel.onmessage = (event) => {
         let message;
         try { message = JSON.parse(event.data); } catch { return; }
+        if (message.type === 'e2e_bind') {
+            if (peerVerified) return;
+            verifySenderBind(message).then((ok) => {
+                if (!ok) { failBinding(); return; }
+                peerVerified = true;
+                clearTimeout(bindTimer);
+                showVideo();
+                // The host's authorization_response also tells us whether it shares the clipboard.
+                dataChannel.send(JSON.stringify({ type: 'authorization_request', timestamp: new Date().toISOString() }));
+            }, () => failBinding());
+            return;
+        }
+        // Until the sender's binding verified, whatever else arrives is ignored (it could come from a man in the middle).
+        if (!peerVerified) return;
         if (message.type === 'authorization_response') {
             setClipboardAllowed(message.clipboard === true);
             setFilesAllowed(message.files === true);

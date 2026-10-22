@@ -43,6 +43,16 @@ public class ClientManager : IDisposable
     // which rotates every 45 s and is long stale by the time we need to reconnect.
     private string? _resumeToken;
     private static readonly HttpClient ResumeHttpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
+    // End-to-end binding (see E2EBinding). The key comes from the passkey the user typed and stays in memory for
+    // the whole session, so a re-negotiated peer connection (reconnect, resume) can prove itself again.
+    private byte[]? _e2eKey;
+    private volatile bool _peerVerified;
+    private volatile bool _bindSent;
+    private string? _disconnectReason;
+
+    /// <summary>Shown (and raised via <see cref="Disconnected"/>) when the end-to-end check fails.</summary>
+    public const string BindFailedMessage = "Secure connection check failed. The connection may be intercepted. Do not continue.";
+
     private CancellationTokenSource? _receiveCts;
     private int _reconnectAttempts;
     private const int MaxReconnectAttempts = 5;
@@ -195,6 +205,8 @@ public class ClientManager : IDisposable
     /// <param name="clientId">The ClientId sent to /authenticate; the token is bound to it, so we must use the same one.</param>
     /// <param name="iceServers">STUN/TURN servers from /authenticate; falls back to public STUN when null.</param>
     /// <param name="resumeToken">Resume token from /authenticate; used by reconnects instead of the passkey.</param>
+    /// <param name="e2eKey">Key from <see cref="E2EBinding.DeriveKeys"/> for the passkey the user typed. Without it the
+    /// sender cannot be verified and the connection is refused (video stays hidden, then it is dropped).</param>
     public async Task ConnectAsync(
         string serverId,
         string? password,
@@ -202,7 +214,8 @@ public class ClientManager : IDisposable
         string? webSocketToken = null,
         string? clientId = null,
         IReadOnlyList<IceServerInfo>? iceServers = null,
-        string? resumeToken = null)
+        string? resumeToken = null,
+        byte[]? e2eKey = null)
     {
         if (_isConnected)
         {
@@ -223,6 +236,8 @@ public class ClientManager : IDisposable
         _signalingUrl = signalingUrl;
         _iceServers = iceServers;
         _resumeToken = resumeToken;
+        _e2eKey = e2eKey;
+        _disconnectReason = null;
 
         try
         {
@@ -291,6 +306,8 @@ public class ClientManager : IDisposable
         };
 
         _peerConnection = new RTCPeerConnection(config);
+        _peerVerified = false; // every new peer connection must pass the end-to-end check again
+        _bindSent = false;
 
         // Handle ICE candidates
         _peerConnection.onicecandidate += async (candidate) =>
@@ -326,10 +343,19 @@ public class ClientManager : IDisposable
         {
             _logger.LogInformation("WebRTC connection state: {State}", state);
 
+            // The sender drops a viewer whose binding does not verify. Losing the connection after we sent our
+            // binding but before the sender's arrived is treated as a failed check, not as a network glitch to retry.
+            if (_bindSent && !_peerVerified && state is RTCPeerConnectionState.failed or RTCPeerConnectionState.closed or RTCPeerConnectionState.disconnected)
+            {
+                await FailBindingAsync();
+                return;
+            }
+
             if (state == RTCPeerConnectionState.connected)
             {
                 _logger.LogInformation("WebRTC peer connection established");
                 _reconnectAttempts = 0;
+                StartBindDeadline(_peerConnection);
             }
             else if (state == RTCPeerConnectionState.disconnected)
             {
@@ -355,6 +381,9 @@ public class ClientManager : IDisposable
         _videoSink = new VideoSink(_videoSinkLogger);
         _videoSink.FrameReceived += (sender, args) =>
         {
+            // Nothing is shown until the sender proved (e2e binding) that nobody sits in the middle.
+            if (!_peerVerified) return;
+
             _logger.LogDebug("[ClientManager] VideoSink.FrameReceived event fired - frame size: {Size} bytes", args.FrameData.Length);
             FrameReceived?.Invoke(this, args);
 
@@ -388,8 +417,12 @@ public class ClientManager : IDisposable
                 json => { if (_dataChannel?.readyState != RTCDataChannelState.open) return false; _dataChannel.send(json); return true; },
                 () => _dataChannel?.bufferedAmount ?? 0);
 
-            // The host answers with authorization_response, which also says whether it shares the clipboard.
-            _dataChannel!.send("{\"type\":\"authorization_request\"}");
+            // First message on the channel is our e2e binding; the authorization_request follows once the
+            // sender's binding verified (see OnDataChannelMessage). Nothing else is sent before that.
+            if (!TrySendBind())
+            {
+                _ = FailBindingAsync();
+            }
         };
         _dataChannel.onclose += () =>
         {
@@ -424,6 +457,21 @@ public class ClientManager : IDisposable
             {
                 var messageType = typeElement.GetString();
 
+                if (messageType == "e2e_bind")
+                {
+                    if (!_peerVerified && !VerifySenderBind(doc.RootElement))
+                    {
+                        _ = FailBindingAsync();
+                    }
+                    return;
+                }
+
+                // Until the sender's binding verified, whatever else arrives is ignored (it could come from a man in the middle).
+                if (!_peerVerified)
+                {
+                    return;
+                }
+
                 if (messageType == "authorization_response")
                 {
                     SetHostAllowsClipboard(doc.RootElement.TryGetProperty("clipboard", out var clip) && clip.ValueKind == JsonValueKind.True);
@@ -448,6 +496,71 @@ public class ClientManager : IDisposable
         {
             _logger.LogError(ex, "Error processing data channel message");
         }
+    }
+
+    // ---- End-to-end binding (see E2EBinding) ----
+
+    /// <summary>Fingerprints as this side sees them: (sender = remote description, viewer = local description).</summary>
+    private (string? SenderFp, string? ViewerFp) GetFingerprints() =>
+        (E2EBinding.GetFingerprint(_peerConnection?.remoteDescription?.sdp?.ToString()),
+         E2EBinding.GetFingerprint(_peerConnection?.localDescription?.sdp?.ToString()));
+
+    private bool TrySendBind()
+    {
+        var (senderFp, viewerFp) = GetFingerprints();
+        if (_e2eKey == null || senderFp == null || viewerFp == null || _dataChannel?.readyState != RTCDataChannelState.open)
+        {
+            return false;
+        }
+
+        _dataChannel.send(E2EBinding.BuildBindMessage(E2EBinding.ViewerRole,
+            E2EBinding.ComputeMac(_e2eKey, E2EBinding.ViewerRole, senderFp, viewerFp)));
+        _bindSent = true;
+        return true;
+    }
+
+    /// <summary>Checks the sender's binding; on success releases video and asks the host what it allows.</summary>
+    private bool VerifySenderBind(JsonElement message)
+    {
+        var (senderFp, viewerFp) = GetFingerprints();
+        if (_e2eKey == null || senderFp == null || viewerFp == null
+            || !E2EBinding.TryReadBind(message, out var role, out var mac) || role != E2EBinding.SenderRole
+            || !E2EBinding.VerifyMac(_e2eKey, E2EBinding.SenderRole, senderFp, viewerFp, mac))
+        {
+            return false;
+        }
+
+        _peerVerified = true;
+        _logger.LogInformation("Sender passed the end-to-end binding check");
+
+        // The host answers with authorization_response, which also says whether it shares the clipboard.
+        _dataChannel?.send("{\"type\":\"authorization_request\"}");
+        return true;
+    }
+
+    /// <summary>Drops the connection if the sender has not verified within <see cref="E2EBinding.Timeout"/>.</summary>
+    private void StartBindDeadline(RTCPeerConnection? peerConnection)
+    {
+        if (_peerVerified) return;
+
+        _ = Task.Delay(E2EBinding.Timeout).ContinueWith(_ =>
+        {
+            // Only the peer connection that was waiting counts, not a newer one created by a reconnect.
+            if (!_peerVerified && ReferenceEquals(peerConnection, _peerConnection))
+            {
+                return FailBindingAsync();
+            }
+            return Task.CompletedTask;
+        }, TaskScheduler.Default).Unwrap();
+    }
+
+    private async Task FailBindingAsync()
+    {
+        // Only the fact is logged, never keys or fingerprints.
+        _logger.LogWarning("End-to-end check failed: the sender could not be verified. The connection may be intercepted.");
+        _bindSent = false;
+        _disconnectReason = BindFailedMessage;
+        await DisconnectAsync();
     }
 
     private void SetHostAllowsFiles(bool allowed)
@@ -911,6 +1024,11 @@ public class ClientManager : IDisposable
             throw new InvalidOperationException("Not connected or data channel not available");
         }
 
+        if (!_peerVerified)
+        {
+            return; // no input to a peer that has not passed the end-to-end check
+        }
+
         if (_dataChannel.readyState != RTCDataChannelState.open)
         {
             _logger.LogWarning("Data channel is not open, cannot send input");
@@ -989,8 +1107,10 @@ public class ClientManager : IDisposable
         _isConnected = false;
         _serverId = null;
         _resumeToken = null;
+        _e2eKey = null; // the session is over: the next connect derives it again from the passkey
 
-        Disconnected?.Invoke(this, "User disconnected");
+        Disconnected?.Invoke(this, _disconnectReason ?? "User disconnected");
+        _disconnectReason = null;
         _logger.LogInformation("Disconnected successfully");
     }
 

@@ -136,15 +136,17 @@ public static class Viewer
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         var timestamp = DateTime.UtcNow;
         var nonce = Guid.NewGuid().ToString();
+        // Like the real viewers: the server gets authKey (derived from the passkey), never the passkey itself.
+        var authKey = E2EBinding.DeriveKeys(passkey, serverId).AuthKey;
         var response = await http.PostAsJsonAsync($"{SignalingUrl.ToHttpBase(SenderProcess.SignalingWsUrl)}/authenticate",
             new ClientAuthenticationMessage
             {
                 ServerId = serverId,
-                Passkey = passkey,
+                Passkey = authKey,
                 ClientId = clientId,
                 Timestamp = timestamp,
                 Nonce = nonce,
-                Signature = RequestSigningService.SignRequest(serverId, passkey, timestamp, nonce)
+                Signature = RequestSigningService.SignRequest(serverId, authKey, timestamp, nonce)
             });
         return (response.StatusCode, response.IsSuccessStatusCode
             ? await response.Content.ReadFromJsonAsync<ClientAuthenticationResponse>()
@@ -154,13 +156,16 @@ public static class Viewer
     /// <summary>Viewer log lines, appended to failure messages so a failed run explains itself.</summary>
     public static readonly List<string> Log = new();
 
-    public static async Task<ClientManager> ConnectAsync(SenderProcess sender, EventHandler<VideoFrameReceivedEventArgs>? onFrame = null, IClipboardManager? clipboard = null)
+    /// <param name="e2eKeyOverride">Test seam: the end-to-end key the viewer binds with. Null = the real one derived from
+    /// the sender's passkey; a different key simulates a viewer (or man in the middle) that does not know the passkey.</param>
+    public static async Task<ClientManager> ConnectAsync(SenderProcess sender, EventHandler<VideoFrameReceivedEventArgs>? onFrame = null, IClipboardManager? clipboard = null, byte[]? e2eKeyOverride = null)
     {
         lock (Log) Log.Clear();
         var loggers = LoggerFactory.Create(b => b.SetMinimumLevel(LogLevel.Information).AddProvider(new ListLoggerProvider(Log)));
         var clientId = ServerIdGenerator.GenerateClientId();
-        var (_, auth) = await AuthenticateAsync(sender.ServerId, sender.Passkey, clientId);
-        Assert.True(auth?.Success, $"authenticate failed (passkey used: {sender.Passkey})\n{sender.Output}");
+        var passkey = sender.Passkey;
+        var (_, auth) = await AuthenticateAsync(sender.ServerId, passkey, clientId);
+        Assert.True(auth?.Success, $"authenticate failed (passkey used: {passkey})\n{sender.Output}");
 
         var client = new ClientManager(
             loggers.CreateLogger<ClientManager>(),
@@ -170,7 +175,8 @@ public static class Viewer
         if (onFrame != null) client.FrameReceived += onFrame;
 
         await client.ConnectAsync(sender.ServerId, null, SenderProcess.SignalingWsUrl,
-            auth!.WebSocketToken, clientId, auth.IceServers, auth.ResumeToken);
+            auth!.WebSocketToken, clientId, auth.IceServers, auth.ResumeToken,
+            e2eKeyOverride ?? E2EBinding.DeriveKeys(passkey, sender.ServerId).E2EKey);
         return client;
     }
 
