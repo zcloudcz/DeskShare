@@ -83,6 +83,7 @@ public class ServerManager : IDisposable
                 SignalingServerUrl = signalingUrl,
                 TargetFps = targetFps,
                 MaxOutputWidth = maxOutputWidth,
+                Codec = _configuration["Server:Codec"] ?? "vp8",
                 AdapterIndex = adapterIndex,
                 OutputIndex = outputIndex,
                 EnableRemoteControl = enableRemoteControl,

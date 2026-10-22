@@ -60,8 +60,9 @@ public class VideoSink : IVideoSink, IDisposable
             _ffmpegEndpoint = new FFmpegVideoEndPoint();
             _logger.LogInformation("Initializing FFmpeg VP8 decoder endpoint");
 
-            // Restrict to VP8 only
-            _ffmpegEndpoint.RestrictFormats(format => format.Codec == VideoCodecsEnum.VP8);
+            // VP8 (software sender) and H.264 (hardware sender, Capture:Codec=h264). FFmpeg decodes both; the codec
+            // of each frame comes with the frame itself, so no switch is needed when the sender picks H.264.
+            _ffmpegEndpoint.RestrictFormats(format => format.Codec == VideoCodecsEnum.VP8 || format.Codec == VideoCodecsEnum.H264);
 
             // Set video format explicitly before receiving frames
             var vp8Format = new VideoFormat(VideoCodecsEnum.VP8, 96);
