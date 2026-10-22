@@ -42,6 +42,7 @@ const ctrlAltDelBtn = document.getElementById('ctrlAltDelBtn');
 const sendClipboardBtn = document.getElementById('sendClipboardBtn');
 const copyHostClipboardBtn = document.getElementById('copyHostClipboardBtn');
 const sendFileBtn = document.getElementById('sendFileBtn');
+const privacyBtn = document.getElementById('privacyBtn');
 const fileInput = document.getElementById('fileInput');
 
 function updateStatus(message, type = 'info') {
@@ -470,6 +471,8 @@ async function handleOffer(message) {
         // void), and every peer connection must pass the end-to-end check again.
         const session = sessions.begin(pc);
         hostAllowsControl = false;
+        hostAllowsPrivacy = false;
+        privacyOn = false;
         setClipboardAllowed(false);
         setFilesAllowed(false);
         placeholder.textContent = 'Verifying secure connection...';
@@ -696,6 +699,8 @@ function cleanup() {
         dataChannel.close();
         dataChannel = null;
     }
+    hostAllowsPrivacy = false;
+    privacyOn = false;
     updateControlButton();
     setClipboardAllowed(false);
     setFilesAllowed(false);
@@ -753,6 +758,8 @@ function setupDataChannel(session, channel) {
         remoteControl = null;
         dataChannel = null;
         hostAllowsControl = false;
+        hostAllowsPrivacy = false;
+        privacyOn = false;
         updateControlButton();
         setClipboardAllowed(false);
         setFilesAllowed(false);
@@ -777,6 +784,7 @@ function setupDataChannel(session, channel) {
         if (message.type === 'authorization_response') {
             setClipboardAllowed(message.clipboard === true);
             setFilesAllowed(message.files === true);
+            hostAllowsPrivacy = message.privacy === true;
             // Before the user clicked "Enable control" the answer only tells what the host allows
             // (control and clipboard); afterwards it is the answer to the control request.
             if (!(remoteControl && remoteControl.enabled)) {
@@ -789,6 +797,8 @@ function setupDataChannel(session, channel) {
                     message.authorized ? 'success' : 'error');
                 updateControlButton();
             }
+        } else if (message.type === 'privacy_screen_state') {
+            onPrivacyState(message);
         } else if (message.type === 'clipboard') {
             receiveHostClipboard(message);
         } else if (['file_accept', 'file_reject', 'file_done', 'file_error', 'file_cancel'].includes(message.type)) {
@@ -822,6 +832,34 @@ function updateControlButton() {
     controlBtn.textContent = remoteControl && remoteControl.enabled ? 'Disable control' : 'Enable control';
     // Only while the host has authorized control: the host rejects the message otherwise.
     if (ctrlAltDelBtn) ctrlAltDelBtn.disabled = !(remoteControl && remoteControl.enabled && remoteControl.authorized);
+    updatePrivacyButton();
+}
+
+// ---- Privacy screen (the host's local monitor shows black; offered only when the host allowed it and control is active) ----
+let hostAllowsPrivacy = false;
+let privacyOn = false;
+
+function updatePrivacyButton() {
+    if (!privacyBtn) return;
+    const controlActive = !!(remoteControl && remoteControl.enabled && remoteControl.authorized);
+    if (!controlActive && privacyOn) {
+        sessions.send(sessions.current, { type: 'privacy_screen', enabled: false }); // the host needs Control for this message
+    }
+    if (!controlActive) privacyOn = false;
+    privacyBtn.hidden = !(hostAllowsPrivacy && controlActive);
+    privacyBtn.textContent = privacyOn ? 'Privacy screen: on' : 'Privacy screen';
+}
+
+function togglePrivacy() {
+    // The button follows the host's privacy_screen_state answer, not the click. Goes through the session gate like
+    // everything else: only to the current, live, verified connection.
+    sessions.send(sessions.current, { type: 'privacy_screen', enabled: !privacyOn });
+}
+
+function onPrivacyState(message) {
+    privacyOn = message.enabled === true;
+    updatePrivacyButton();
+    if (message.reason && !privacyOn) updateStatus('Privacy screen is off: ' + message.reason, 'info');
 }
 
 // Ctrl+Alt+Del cannot be typed through the browser; the Windows host injects it as a secure attention sequence.

@@ -530,7 +530,9 @@ public sealed class FileReceiverTests : IDisposable
 
         manager.ProcessInputMessage("""{"type":"file_offer","id":"11111111-1111-1111-1111-111111111111","name":"a.txt","size":1}""");
 
-        Assert.Equal("file_accept", LastType());
+        // The reply is routed to the peer that sent the offer (here: a peer without a transport), so the proof that the
+        // receiver was reached is the transfer it started.
+        Assert.NotEmpty(Files());
     }
 
     [Fact]

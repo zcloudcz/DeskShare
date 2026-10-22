@@ -245,13 +245,15 @@ public class ScreenSenderService : IHostedService, IDisposable
                     _logger.LogWarning("Accessibility permission is not granted yet: remote control will not work until the app is enabled in System Settings > Privacy & Security > Accessibility, then restart sharing.");
                 }
 
-                // Create input controller for remote control
+                var clipboardManager = _configuration.EnableClipboard ? PlatformServiceFactory.CreateClipboardManager() : null;
+
+                // Create input controller for remote control. Nothing that can throw runs between this and the
+                // session that takes ownership of it (the finally block below disposes the session).
                 var serilogLogger = Serilog.Log.ForContext<IInputController>();
                 var inputController = PlatformServiceFactory.CreateInputController(serilogLogger);
 
                 // Create session with input support
                 var serilogSessionLogger = Serilog.Log.ForContext<WebRTCSessionWithInput>();
-                var clipboardManager = _configuration.EnableClipboard ? PlatformServiceFactory.CreateClipboardManager() : null;
                 _webrtcSessionWithInput = new WebRTCSessionWithInput(serilogSessionLogger, inputController, clipboardManager);
                 _webrtcSessionWithInput.ClipboardSharingEnabled = _configuration.EnableClipboard;
                 if (enableFileReceive)
@@ -266,6 +268,18 @@ public class ScreenSenderService : IHostedService, IDisposable
                         FileReceived?.Invoke(this, file);
                     };
                     _logger.LogInformation("File receiving enabled, folder: {Folder}, max {Max} bytes", folder, _configuration.FileReceiveMaxBytes);
+                }
+                if (_configuration.EnablePrivacyScreen)
+                {
+                    if (OperatingSystem.IsWindows())
+                    {
+                        _webrtcSessionWithInput.EnablePrivacyScreen(new Platforms.Windows.PrivacyOverlay((inputController as Platforms.Windows.WindowsInputController) is { } wic ? wic.SetLocalInputBlocked : null), _configuration.PrivacyScreenBlocksInput);
+                        _logger.LogInformation("Privacy screen enabled (block local input: {Block})", _configuration.PrivacyScreenBlocksInput);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Privacy screen is only available on Windows; not granted.");
+                    }
                 }
                 ApplyIceServers(_webrtcSessionWithInput.VideoSource);
                 _webrtcSessionWithInput.EnableE2EBinding(_e2eKeys);
@@ -747,6 +761,18 @@ public class ScreenSenderConfiguration
     /// Default is false: saving files from a remote peer is something the host must opt in to.
     /// </summary>
     public bool EnableFileReceive { get; set; } = false;
+
+    /// <summary>
+    /// Whether the viewer may black out this machine's local monitors while it keeps seeing the desktop (Windows only).
+    /// Default is false: it hides what the local user sees, so the host must opt in.
+    /// </summary>
+    public bool EnablePrivacyScreen { get; set; } = false;
+
+    /// <summary>
+    /// With the privacy screen on, also block the local mouse and keyboard (BlockInput; needs an elevated process,
+    /// and Ctrl+Alt+Del always gives the local user control back).
+    /// </summary>
+    public bool PrivacyScreenBlocksInput { get; set; } = false;
 
     /// <summary>Where received files are saved. Empty means <see cref="DefaultFileReceiveFolder"/>.</summary>
     public string FileReceiveFolder { get; set; } = string.Empty;

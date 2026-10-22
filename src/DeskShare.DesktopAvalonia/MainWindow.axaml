@@ -333,6 +333,22 @@
                                          FontSize="11"
                                          Foreground="#495057"
                                          Margin="25,0,0,15"/>
+                                <StackPanel x:Name="PrivacyScreenPanel" Margin="0,0,0,15">
+                                    <CheckBox x:Name="EnablePrivacyScreenCheckBox"
+                                            Content="Allow privacy screen (local monitor shows black)"
+                                            FontSize="14"
+                                            IsChecked="False"/>
+                                    <CheckBox x:Name="PrivacyScreenBlocksInputCheckBox"
+                                            Content="Also block local mouse and keyboard"
+                                            Margin="25,5,0,0"
+                                            FontSize="13"
+                                            IsChecked="False"/>
+                                    <TextBlock Text="Needs an elevated app to block input; Ctrl+Alt+Del always restores local input"
+                                             FontSize="11"
+                                             Foreground="#495057"
+                                             Margin="25,0,0,0"
+                                             TextWrapping="Wrap"/>
+                                </StackPanel>
                                 <StackPanel x:Name="FileReceivedPanel" Orientation="Horizontal" Margin="25,0,0,15" IsVisible="False">
                                     <TextBlock x:Name="FileReceivedText" FontSize="12" VerticalAlignment="Center"/>
                                     <Button Content="Open folder" Margin="10,0,0,0" Padding="8,2" Click="OpenReceivedFolder_Click"/>

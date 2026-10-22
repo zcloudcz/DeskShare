@@ -148,6 +148,17 @@
                                   IsVisible="False"
                                   Click="SendFile_Click"/>
 
+                            <ToggleButton x:Name="PrivacyButton"
+                                  Content="Privacy screen"
+                                  Background="#444444"
+                                  Foreground="White"
+                                  BorderThickness="0"
+                                  Padding="12,8"
+                                  Margin="5,0"
+                                  Cursor="Hand"
+                                  IsVisible="False"
+                                  Click="Privacy_Click"/>
+
                             <Button x:Name="FullscreenButton"
                                   Content="Fullscreen"
                                   Background="#444444"

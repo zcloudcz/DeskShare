@@ -127,8 +127,8 @@ public sealed class WebRTCSessionWithInput : IDisposable
     /// Initializes a new instance of the WebRTCSessionWithInput class.
     /// </summary>
     /// <param name="logger">Logger instance for diagnostic output.</param>
-    /// <param name="inputController">Optional input controller for processing remote inputs.</param>
-    /// <param name="clipboardManager">Optional clipboard manager for clipboard synchronization.</param>
+    /// <param name="inputController">Optional input controller for processing remote inputs; disposed with the session.</param>
+    /// <param name="clipboardManager">Optional clipboard manager for clipboard synchronization; disposed with the session.</param>
     public WebRTCSessionWithInput(ILogger logger, IInputController? inputController = null, IClipboardManager? clipboardManager = null)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -270,6 +270,26 @@ public sealed class WebRTCSessionWithInput : IDisposable
         receiver.FileReceived += (_, file) => FileReceived?.Invoke(this, file);
         _dataChannelManager.FileReceiver = receiver;
         _dataChannelManager.HostGrantedCapabilities |= SessionCapabilities.FileTransfer;
+    }
+
+    /// <summary>
+    /// Lets the viewer black out the host's local monitors (grants <see cref="SessionCapabilities.PrivacyScreen"/>;
+    /// the viewer also needs Control). Off until called; the host's decision. It is switched off again when the
+    /// data channel goes away, when remote control is revoked and when the session is disposed.
+    /// </summary>
+    public void EnablePrivacyScreen(IPrivacyOverlay overlay, bool blockInput)
+    {
+        var controller = new PrivacyScreenController(overlay, blockInput);
+        _dataChannelManager.PrivacyScreen = controller;
+        _dataChannelManager.HostGrantedCapabilities |= SessionCapabilities.PrivacyScreen;
+        if (_inputController != null)
+        {
+            _inputController.AuthorizationStateChanged += (_, state) =>
+            {
+                if (state != InputAuthorizationState.Authorized)
+                    controller.Disable("control_revoked");
+            };
+        }
     }
 
     private async void OnRemoteClipboardMessageReceived(object? sender, ClipboardMessage message)
@@ -545,6 +565,10 @@ public sealed class WebRTCSessionWithInput : IDisposable
 
         _dataChannelManager.Dispose();
         _dataChannelManager.FileReceiver?.Dispose();
+        _dataChannelManager.PrivacyScreen?.Dispose(); // overlay off (and input unblocked) before the controller goes
+        // Owned like the clipboard manager: on Wayland it holds a desktop portal session (and its D-Bus connection),
+        // on Windows the injection thread; both would otherwise stay alive after sharing stops.
+        _inputController?.Dispose();
         _baseSession.Dispose();
         _clipboardManager?.Dispose();
 

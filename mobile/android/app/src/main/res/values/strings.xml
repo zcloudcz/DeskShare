@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_label">DeskShare remote control</string>
+    <string name="accessibility_service_description">Lets a viewer you share your screen with perform taps, swipes and the Back, Home and Recents actions on this phone. It does not read your screen content or what you type.</string>
+    <string name="capture_notification_title">DeskShare is sharing your screen</string>
+    <string name="capture_notification_text">Open DeskShare and tap Stop sharing to end it.</string>
+</resources>

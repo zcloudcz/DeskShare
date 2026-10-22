@@ -119,6 +119,31 @@ public sealed class DataChannelManager : IDisposable
     /// </summary>
     public FileReceiver? FileReceiver { get; set; }
 
+    private PrivacyScreenController? _privacyScreen;
+
+    /// <summary>
+    /// Privacy screen of this host; set by the session when the host allows it. It is switched off whenever the
+    /// channel closes or is replaced, and its state changes are reported to the viewer ("privacy_screen_state").
+    /// </summary>
+    public PrivacyScreenController? PrivacyScreen
+    {
+        get => _privacyScreen;
+        set
+        {
+            if (_privacyScreen != null)
+                _privacyScreen.StateChanged -= SendPrivacyState;
+            _privacyScreen = value;
+            if (value != null)
+                value.StateChanged += SendPrivacyState;
+        }
+    }
+
+    private void SendPrivacyState(bool enabled, string? reason)
+    {
+        if (IsOpen) // automatic off often happens because the channel is gone: nobody to tell then
+            SendJson(new { type = "privacy_screen_state", enabled, reason });
+    }
+
     /// <summary>
     /// Sends a clipboard message to the viewer, only while it is subscribed and the channel is open.
     /// </summary>
@@ -199,6 +224,7 @@ public sealed class DataChannelManager : IDisposable
         peer.Channel = dataChannel;
         peer.Revoke(); // a new channel is a new viewer session: it must subscribe again and prove the e2e binding again
         FileReceiver?.Abort();
+        _privacyScreen?.Disable("channel_replaced");
 
         // Subscribe to data channel events
         _dataChannel.onopen += OnDataChannelOpen;
@@ -347,6 +373,7 @@ public sealed class DataChannelManager : IDisposable
             _dataChannel?.label, _dataChannel?.id);
         _peer.Revoke();
         FileReceiver?.Abort();
+        _privacyScreen?.Disable("channel_closed");
 
         ChannelClosed?.Invoke(this, EventArgs.Empty);
     }
@@ -416,12 +443,35 @@ public sealed class DataChannelManager : IDisposable
     /// <param name="message">JSON message containing command.</param>
     internal void ProcessInputMessage(string message) => ProcessInputMessage(_peer, message);
 
-    // Everything here concerns "peer", the connection the message arrived on. It runs under the peer's lock, which
-    // Retire() needs: once a peer is replaced no handler of it is running any more and none starts.
+    // Everything here concerns "peer", the connection the message arrived on.
+    //
+    // Two phases, because nothing may call out (events, sends, the input controller, the file receiver, the privacy
+    // screen, other locks) while peer.SyncRoot is held:
+    //  1. under the peer's lock: judge the message with THIS peer's state and make the small state changes;
+    //     the result is an "effect" (what to do), not the doing.
+    //  2. after releasing the lock: run the effect, unless the peer was replaced in between.
+    // A message that was valid when it was judged may therefore still be applied a moment after its connection is
+    // replaced; that equals the message having arrived a moment earlier. What can never happen is a message being
+    // judged with another connection's state.
     internal void ProcessInputMessage(PeerContext peer, string message)
     {
         try
         {
+            if (peer.IsRetired)
+            {
+                return;
+            }
+
+            if (message.Length > DataChannelPolicy.MaxMessageBytes)
+            {
+                LogRejection("<oversize>", $"{message.Length} chars");
+                return;
+            }
+
+            using var doc = JsonDocument.Parse(message);
+            var privacyEpoch = PrivacyScreen?.Epoch ?? 0; // before the policy check: see PrivacyScreenController.Epoch
+
+            Action? effect;
             lock (peer.SyncRoot)
             {
                 if (peer.IsRetired)
@@ -429,7 +479,12 @@ public sealed class DataChannelManager : IDisposable
                     return;
                 }
 
-                ProcessLocked(peer, message);
+                effect = Judge(peer, message, doc.RootElement, privacyEpoch);
+            }
+
+            if (effect != null && !peer.IsRetired)
+            {
+                effect();
             }
         }
         catch (JsonException)
@@ -443,116 +498,117 @@ public sealed class DataChannelManager : IDisposable
         }
     }
 
-    private void ProcessLocked(PeerContext peer, string message)
+    // Phase 1 (runs under the peer's lock): returns what to do, or null for "nothing".
+    private Action? Judge(PeerContext peer, string message, JsonElement root, long privacyEpoch)
     {
+        // Default deny: an unknown type, or a capability the session lacks, never reaches a handler.
+        if (!DataChannelPolicy.TryGetRequiredCapability(root, out var typeName, out var required))
         {
-            if (message.Length > DataChannelPolicy.MaxMessageBytes)
+            // One shared bucket for all unknown names: the names come from the peer, so counting them
+            // separately would let it grow the dictionary (and the log) without limit.
+            LogRejection("<unknown>", $"unknown message type '{typeName}'");
+            return null;
+        }
+
+        var granted = GrantedFor(peer);
+        if ((granted & required) != required)
+        {
+            LogRejection(typeName, $"capability {required} not granted");
+            // Tell a viewer that offers a file anyway (stale UI, other client) instead of leaving it waiting.
+            if (typeName == "file_offer" && FileReceiver.TryGetId(root) is { } offerId)
             {
-                LogRejection("<oversize>", $"{message.Length} chars");
-                return;
+                return () => SendJsonOn(peer, new { type = "file_reject", id = offerId, reason = "disabled" });
+            }
+            return null;
+        }
+
+        if (root.TryGetProperty("type", out var typeElement))
+        {
+            var messageType = typeElement.GetString();
+
+            if (messageType == "e2e_bind")
+            {
+                return () => HandleViewerBind(peer, root);
             }
 
-            using var doc = JsonDocument.Parse(message);
-
-            // Default deny: an unknown type, or a capability the session lacks, never reaches a handler.
-            if (!DataChannelPolicy.TryGetRequiredCapability(doc.RootElement, out var typeName, out var required))
+            if (messageType == "authorization_request")
             {
-                // One shared bucket for all unknown names: the names come from the peer, so counting them
-                // separately would let it grow the dictionary (and the log) without limit.
-                LogRejection("<unknown>", $"unknown message type '{typeName}'");
-                return;
+                // The host decides with the "Allow remote control" checkbox, which authorizes the input
+                // controller when sharing starts. Report that state; the browser only sends input once
+                // it got authorized = true.
+                bool authorized = _inputController?.IsEnabled ?? false;
+                _logger.Information("Remote control requested by viewer, authorized: {Authorized}", authorized);
+                // "clipboard" tells the viewer whether the host shares the text clipboard (only then its buttons are usable).
+                var clipboard = (granted & SessionCapabilities.Clipboard) != 0;
+                // "files" likewise tells the viewer whether it may send files to this host.
+                var files = (granted & SessionCapabilities.FileTransfer) != 0;
+                // "privacy" says whether the viewer may offer its privacy screen button.
+                var privacy = (granted & SessionCapabilities.PrivacyScreen) != 0;
+                return () => SendJsonOn(peer, new { type = "authorization_response", authorized, clipboard, files, privacy, timestamp = DateTime.UtcNow });
             }
 
-            var granted = GrantedFor(peer);
-            if ((granted & required) != required)
+            if (messageType == "privacy_screen")
             {
-                LogRejection(typeName, $"capability {required} not granted");
-                // Tell a viewer that offers a file anyway (stale UI, other client) instead of leaving it waiting.
-                if (typeName == "file_offer" && FileReceiver.TryGetId(doc.RootElement) is { } offerId)
-                {
-                    SendJsonOn(peer, new { type = "file_reject", id = offerId, reason = "disabled" });
-                }
-                return;
+                // Passed the policy: PrivacyScreen and Control are both granted. The state goes back through StateChanged.
+                var on = root.TryGetProperty("enabled", out var onElement) && onElement.ValueKind == JsonValueKind.True;
+                return () => PrivacyScreen?.Set(on, privacyEpoch, () => (GrantedFor(peer) & required) == required);
             }
 
-            if (doc.RootElement.TryGetProperty("type", out var typeElement))
+            if (messageType == "clipboard_subscribe")
             {
-                var messageType = typeElement.GetString();
+                // Already passed the policy: only sessions with the Clipboard grant get here.
+                peer.ClipboardSubscribed = root.TryGetProperty("enabled", out var enabled) && enabled.ValueKind == JsonValueKind.True;
+                _logger.Information("Viewer clipboard subscription: {Subscribed}", peer.ClipboardSubscribed);
+                return null;
+            }
 
-                if (messageType == "e2e_bind")
-                {
-                    HandleViewerBind(peer, doc.RootElement);
-                    return;
-                }
+            if (messageType is "file_offer" or "file_chunk" or "file_end" or "file_cancel")
+            {
+                // Passed the policy: only sessions with the FileTransfer grant (and so a receiver) get here.
+                // Replies go to THIS peer's transport, whatever connection is current when they are sent.
+                return () => FileReceiver?.Handle(messageType, root, json => SendOn(peer, json));
+            }
 
-                if (messageType == "authorization_request")
+            if (messageType == "clipboard")
+            {
+                if (root.TryGetProperty("data", out var dataElement))
                 {
-                    // The host decides with the "Allow remote control" checkbox, which authorizes the input
-                    // controller when sharing starts. Report that state; the browser only sends input once
-                    // it got authorized = true.
-                    bool authorized = _inputController?.IsEnabled ?? false;
-                    _logger.Information("Remote control requested by viewer, authorized: {Authorized}", authorized);
-                    // "clipboard" tells the viewer whether the host shares the text clipboard (only then its buttons are usable).
-                    var clipboard = (granted & SessionCapabilities.Clipboard) != 0;
-                    // "files" likewise tells the viewer whether it may send files to this host.
-                    var files = (granted & SessionCapabilities.FileTransfer) != 0;
-                    SendJsonOn(peer, new { type = "authorization_response", authorized, clipboard, files, timestamp = DateTime.UtcNow });
-                    return;
-                }
-
-                if (messageType == "clipboard_subscribe")
-                {
-                    // Already passed the policy: only sessions with the Clipboard grant get here.
-                    peer.ClipboardSubscribed = doc.RootElement.TryGetProperty("enabled", out var enabled) && enabled.ValueKind == JsonValueKind.True;
-                    _logger.Information("Viewer clipboard subscription: {Subscribed}", peer.ClipboardSubscribed);
-                    return;
-                }
-
-                if (messageType is "file_offer" or "file_chunk" or "file_end" or "file_cancel")
-                {
-                    // Passed the policy: only sessions with the FileTransfer grant (and so a receiver) get here.
-                    FileReceiver?.Handle(messageType, doc.RootElement);
-                    return;
-                }
-
-                if (messageType == "clipboard")
-                {
-                    if (doc.RootElement.TryGetProperty("data", out var dataElement))
+                    var clipboardMessage = JsonSerializer.Deserialize<ClipboardMessage>(dataElement.GetRawText());
+                    if (clipboardMessage != null)
                     {
-                        var clipboardMessage = JsonSerializer.Deserialize<ClipboardMessage>(dataElement.GetRawText());
-                        if (clipboardMessage != null)
-                        {
-                            _logger.Information("Received clipboard message: Type={Type}, Size={Size}",
-                                clipboardMessage.ContentType, clipboardMessage.SizeBytes);
-                            ClipboardMessageReceived?.Invoke(this, clipboardMessage);
-                        }
+                        _logger.Information("Received clipboard message: Type={Type}, Size={Size}",
+                            clipboardMessage.ContentType, clipboardMessage.SizeBytes);
+                        return () => ClipboardMessageReceived?.Invoke(this, clipboardMessage);
                     }
-
-                    // Never fall through: a clipboard message without "data" must not be parsed as input.
-                    return;
                 }
-            }
 
-            // Fall back to treating as InputMessage
-            var inputMessage = JsonSerializer.Deserialize<InputMessage>(message, InputJsonOptions);
-
-            if (inputMessage == null)
-            {
-                _logger.Warning("Failed to deserialize message: Result was null");
-                return;
-            }
-
-            // Apply input to controller if available
-            if (_inputController != null)
-            {
-                bool success = _inputController.ApplyInput(inputMessage);
-
-                if (!success)
-                {
-                    _logger.Warning("Input message rejected: Type={Type}", inputMessage.Type);
-                }
+                // Never fall through: a clipboard message without "data" must not be parsed as input.
+                return null;
             }
         }
+
+        // Fall back to treating as InputMessage
+        var inputMessage = JsonSerializer.Deserialize<InputMessage>(message, InputJsonOptions);
+
+        if (inputMessage == null)
+        {
+            _logger.Warning("Failed to deserialize message: Result was null");
+            return null;
+        }
+
+        // Apply input to controller if available
+        if (_inputController == null)
+        {
+            return null;
+        }
+
+        return () =>
+        {
+            if (!_inputController.ApplyInput(inputMessage))
+            {
+                _logger.Warning("Input message rejected: Type={Type}", inputMessage.Type);
+            }
+        };
     }
 
     /// <summary>
@@ -642,6 +698,7 @@ public sealed class DataChannelManager : IDisposable
         _dataChannel = null;
         _peer.Revoke();
         FileReceiver?.Abort();
+        _privacyScreen?.Disable("channel_closed");
     }
 
     /// <summary>

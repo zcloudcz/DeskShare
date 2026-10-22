@@ -24,5 +24,8 @@ public enum SessionCapabilities
     Clipboard = 4,
 
     /// <summary>Send files to the host (viewer to host only).</summary>
-    FileTransfer = 8
+    FileTransfer = 8,
+
+    /// <summary>Black out the host's local monitors while the viewer still sees the desktop (needs Control too).</summary>
+    PrivacyScreen = 16
 }

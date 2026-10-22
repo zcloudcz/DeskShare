@@ -79,15 +79,28 @@ public sealed class SIPSorceryVideoSource : IVideoSource
 
     private PeerContext? _keyframedPeer; // the peer that already got its first (key)frame
 
-    // Every encoded sample passes the gate of the CURRENT peer, so nothing encoded for an old or unverified peer
-    // can reach a new connection.
+    // The peer whose frame this thread is encoding right now. The encoders deliver the sample synchronously on the
+    // thread that pushed the frame, so a sample can be tied to the peer the frame was pushed for.
+    [ThreadStatic] private static PeerContext? t_encodingPeer;
+
+    // Every encoded sample passes the gate of the peer it was ENCODED FOR, so a frame that started encoding for an old
+    // or unverified peer can never reach a newer connection.
     private void ForwardEncodedSample(uint durationRtpUnits, byte[] sample)
     {
-        // One read of the context; the sample goes out on THAT context's own connection. Reading the mutable
-        // _peerConnection after the check could deliver the frame to a newer, unverified connection.
-        var peer = _peer;
-        if (RequirePeerVerification && !peer.IsVerified) return;
-        peer.Connection?.SendVideo(durationRtpUnits, sample);
+        ChooseConnection(t_encodingPeer, _peer, RequirePeerVerification)?.SendVideo(durationRtpUnits, sample);
+    }
+
+    /// <summary>
+    /// Decides where an encoded sample may go: only to the connection of the peer it was encoded for, and only while
+    /// that peer is still the current one (and verified, when required). A sample without a tag (an encoder that
+    /// delivers on another thread) is judged against the current peer.
+    /// </summary>
+    internal static RTCPeerConnection? ChooseConnection(PeerContext? encodedFor, PeerContext current, bool requireVerified)
+    {
+        var peer = encodedFor ?? current;
+        if (!ReferenceEquals(peer, current)) return null; // encoded for a connection that has been replaced
+        if (requireVerified && !peer.IsVerified) return null;
+        return peer.Connection; // the peer's own connection, not the mutable _peerConnection field
     }
 
     /// <summary>
@@ -326,12 +339,20 @@ public sealed class SIPSorceryVideoSource : IVideoSource
             // The encoder will encode it to VP8 and trigger OnVideoSourceEncodedSample
             // which will automatically send it via the peer connection
             var durationMs = (uint)(1000.0 / _targetFrameRate);
-            _videoEncoder!.ExternalVideoSourceRawSample(
-                durationMs,
-                frame.Width,
-                frame.Height,
-                _i420Buffer,
-                VideoPixelFormatsEnum.I420);
+            t_encodingPeer = peer; // the sample(s) this call produces belong to this peer (see ForwardEncodedSample)
+            try
+            {
+                _videoEncoder!.ExternalVideoSourceRawSample(
+                    durationMs,
+                    frame.Width,
+                    frame.Height,
+                    _i420Buffer,
+                    VideoPixelFormatsEnum.I420);
+            }
+            finally
+            {
+                t_encodingPeer = null;
+            }
 
             lock (_statsLock)
             {

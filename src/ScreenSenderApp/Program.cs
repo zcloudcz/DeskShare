@@ -37,6 +37,8 @@ try
         EnableRemoteControl = configuration.GetValue("Security:EnableRemoteControl", false),
         EnableClipboard = configuration.GetValue("Security:EnableClipboard", false),
         EnableFileReceive = configuration.GetValue("Security:EnableFileReceive", false),
+        EnablePrivacyScreen = configuration.GetValue("Security:EnablePrivacyScreen", false),
+        PrivacyScreenBlocksInput = configuration.GetValue("Security:PrivacyScreenBlocksInput", false),
         FileReceiveFolder = configuration["Security:FileReceiveFolder"] ?? string.Empty,
         FileReceiveMaxBytes = configuration.GetValue("Security:FileReceiveMaxBytes", DeskShare.Core.WebRTC.FileReceiver.DefaultMaxBytes),
         TrustClientPermanent = configuration.GetValue("Security:TrustClientPermanent", false)

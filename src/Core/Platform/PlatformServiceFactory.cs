@@ -29,8 +29,10 @@ public static class PlatformServiceFactory
         }
         else if (OperatingSystem.IsLinux())
         {
-            // Linux: FFmpeg x11grab (on Wayland only X11/XWayland content is captured)
-            // TODO: Detect Wayland and use PipeWire ScreenCast instead
+            // Linux: Wayland sessions capture through the ScreenCast portal + PipeWire (x11grab would only
+            // see XWayland windows); X11 sessions keep FFmpeg x11grab.
+            if (IsWaylandSession())
+                return new Platforms.Linux.PipeWireScreenCapturer();
             return new Platforms.FfmpegScreenCapturer(outputIndex, targetFps);
         }
         else if (OperatingSystem.IsMacOS())
@@ -61,8 +63,9 @@ public static class PlatformServiceFactory
         }
         else if (OperatingSystem.IsLinux())
         {
-            // Linux: XTest extension for X11
-            // TODO: Detect Wayland and use virtual input devices instead
+            // Linux: RemoteDesktop portal on Wayland, XTest extension on X11
+            if (IsWaylandSession())
+                return new Platforms.Linux.WaylandPortalInputController(logger);
             return new Platforms.Linux.XTestInputController(logger);
         }
         else if (OperatingSystem.IsMacOS())
@@ -77,6 +80,10 @@ public static class PlatformServiceFactory
                 $"Input control is not supported on {Environment.OSVersion.Platform}");
         }
     }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
+    private static bool IsWaylandSession() =>
+        Platforms.Linux.WaylandPortalSession.IsWaylandSession(Environment.GetEnvironmentVariable);
 
     /// <summary>
     /// Creates a platform-specific clipboard manager.

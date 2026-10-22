@@ -108,6 +108,46 @@ public class ClientManager : IDisposable
     /// </summary>
     public event EventHandler<bool>? HostAllowsFilesChanged;
 
+    /// <summary>
+    /// Whether the host offers its privacy screen to this viewer (announced as "privacy" in authorization_response,
+    /// and only useful while the host also authorized control).
+    /// </summary>
+    public bool HostAllowsPrivacyScreen { get; private set; }
+
+    /// <summary>Fired when <see cref="HostAllowsPrivacyScreen"/> changes.</summary>
+    public event EventHandler<bool>? HostAllowsPrivacyScreenChanged;
+
+    /// <summary>Fired with the host's answer (privacy_screen_state): enabled, and a reason when it is off.</summary>
+    public event EventHandler<(bool Enabled, string? Reason)>? PrivacyScreenStateChanged;
+
+    /// <summary>Asks the host to turn its privacy screen on or off. The result arrives as <see cref="PrivacyScreenStateChanged"/>.</summary>
+    public void SetPrivacyScreen(bool enabled)
+    {
+        // Only to the current peer's own channel, and only while it is verified (see PeerContext.TrySend).
+        var json = "{\"type\":\"privacy_screen\",\"enabled\":" + (enabled ? "true" : "false") + "}";
+        _peer.TrySend(channel => channel.send(json), requireVerified: true);
+    }
+
+    // The three "host allows ..." flags describe the CURRENT connection. They change under _hostStateGate, which also
+    // refuses a change that comes from a retired peer, and their events are raised AFTER the gate is released: a
+    // handler may block on the UI thread, and the UI thread must be free to send input.
+    private readonly object _hostStateGate = new();
+
+    private void SetHostAllowsPrivacyScreen(bool allowed, PeerContext? peer = null)
+    {
+        lock (_hostStateGate)
+        {
+            if ((peer != null && peer.IsRetired) || HostAllowsPrivacyScreen == allowed)
+            {
+                return;
+            }
+
+            HostAllowsPrivacyScreen = allowed;
+        }
+
+        HostAllowsPrivacyScreenChanged?.Invoke(this, allowed);
+    }
+
     private FileUploader? _fileUploader;
 
     /// <summary>
@@ -315,6 +355,7 @@ public class ClientManager : IDisposable
         // What the previous connection's host allowed does not carry over to the new one.
         SetHostAllowsClipboard(false);
         SetHostAllowsFiles(false);
+        SetHostAllowsPrivacyScreen(false);
         _bindSent = false;
 
         // Handle ICE candidates
@@ -445,8 +486,9 @@ public class ClientManager : IDisposable
             if (peer.IsRetired) return; // an old channel closing must not reset the new connection's state
             _logger.LogInformation("Data channel closed");
             _clipboardManager?.StopMonitoring();
-            SetHostAllowsClipboard(false);
-            SetHostAllowsFiles(false);
+            SetHostAllowsClipboard(false, peer);
+            SetHostAllowsFiles(false, peer);
+            SetHostAllowsPrivacyScreen(false, peer);
         };
         _dataChannel.onerror += (error) =>
         {
@@ -463,15 +505,13 @@ public class ClientManager : IDisposable
         _logger.LogInformation("WebRTC setup complete, waiting for offer from server");
     }
 
-    // Runs under the peer's lock, which PeerContext.Retire() needs: once a connection is replaced none of its
-    // messages is being handled and none starts, so an old connection cannot change the state of the new one.
+    // Judged with the context of the connection whose channel delivered the message. No lock is held while it is
+    // handled: handling raises events (the UI may block on them) and sends, and the UI thread must stay free to send
+    // input (which takes the peer's lock). The state changes below are refused for a retired peer instead.
     private void OnDataChannelMessage(PeerContext peer, RTCDataChannel channel, byte[] data)
     {
-        lock (peer.SyncRoot)
-        {
-            if (peer.IsRetired) return;
-            HandlePeerMessage(peer, channel, data);
-        }
+        if (peer.IsRetired) return;
+        HandlePeerMessage(peer, channel, data);
     }
 
     private void HandlePeerMessage(PeerContext peer, RTCDataChannel channel, byte[] data)
@@ -503,8 +543,17 @@ public class ClientManager : IDisposable
 
                 if (messageType == "authorization_response")
                 {
-                    SetHostAllowsClipboard(doc.RootElement.TryGetProperty("clipboard", out var clip) && clip.ValueKind == JsonValueKind.True);
-                    SetHostAllowsFiles(doc.RootElement.TryGetProperty("files", out var files) && files.ValueKind == JsonValueKind.True);
+                    SetHostAllowsClipboard(doc.RootElement.TryGetProperty("clipboard", out var clip) && clip.ValueKind == JsonValueKind.True, peer);
+                    SetHostAllowsFiles(doc.RootElement.TryGetProperty("files", out var files) && files.ValueKind == JsonValueKind.True, peer);
+                    SetHostAllowsPrivacyScreen(
+                        doc.RootElement.TryGetProperty("privacy", out var privacy) && privacy.ValueKind == JsonValueKind.True
+                        && doc.RootElement.TryGetProperty("authorized", out var authorized) && authorized.ValueKind == JsonValueKind.True, peer);
+                }
+                else if (messageType == "privacy_screen_state" && !peer.IsRetired)
+                {
+                    PrivacyScreenStateChanged?.Invoke(this, (
+                        doc.RootElement.TryGetProperty("enabled", out var on) && on.ValueKind == JsonValueKind.True,
+                        doc.RootElement.TryGetProperty("reason", out var reason) && reason.ValueKind == JsonValueKind.String ? reason.GetString() : null));
                 }
                 else if (messageType is "file_accept" or "file_reject" or "file_done" or "file_error" or "file_cancel")
                 {
@@ -611,25 +660,33 @@ public class ClientManager : IDisposable
         }
     }
 
-    private void SetHostAllowsFiles(bool allowed)
+    private void SetHostAllowsFiles(bool allowed, PeerContext? peer = null)
     {
-        if (HostAllowsFiles == allowed)
+        lock (_hostStateGate)
         {
-            return;
+            if ((peer != null && peer.IsRetired) || HostAllowsFiles == allowed)
+            {
+                return;
+            }
+
+            HostAllowsFiles = allowed;
         }
 
-        HostAllowsFiles = allowed;
         HostAllowsFilesChanged?.Invoke(this, allowed);
     }
 
-    private void SetHostAllowsClipboard(bool allowed)
+    private void SetHostAllowsClipboard(bool allowed, PeerContext? peer = null)
     {
-        if (HostAllowsClipboard == allowed)
+        lock (_hostStateGate)
         {
-            return;
+            if ((peer != null && peer.IsRetired) || HostAllowsClipboard == allowed)
+            {
+                return;
+            }
+
+            HostAllowsClipboard = allowed;
         }
 
-        HostAllowsClipboard = allowed;
         UpdateClipboardEnabled();
         if (allowed)
         {

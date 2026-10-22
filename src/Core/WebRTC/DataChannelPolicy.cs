@@ -26,7 +26,9 @@ internal static class DataChannelPolicy
         ["file_offer"] = SessionCapabilities.FileTransfer,
         ["file_chunk"] = SessionCapabilities.FileTransfer,
         ["file_end"] = SessionCapabilities.FileTransfer,
-        ["file_cancel"] = SessionCapabilities.FileTransfer
+        ["file_cancel"] = SessionCapabilities.FileTransfer,
+        // Hiding the host's screen from its user is only acceptable for someone who may also control it.
+        ["privacy_screen"] = SessionCapabilities.PrivacyScreen | SessionCapabilities.Control
     };
 
     /// <summary>

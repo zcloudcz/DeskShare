@@ -50,7 +50,7 @@ public class ServerManager : IDisposable
     /// <summary>
     /// Starts the server with signaling + screen sender services.
     /// </summary>
-    public async Task StartAsync(string serverId, string? password = null, bool enableRemoteControl = false, bool trustClientPermanent = false, bool enableClipboard = false, bool enableFileReceive = false)
+    public async Task StartAsync(string serverId, string? password = null, bool enableRemoteControl = false, bool trustClientPermanent = false, bool enableClipboard = false, bool enableFileReceive = false, bool enablePrivacyScreen = false, bool privacyScreenBlocksInput = false)
     {
         if (_isRunning)
         {
@@ -92,6 +92,8 @@ public class ServerManager : IDisposable
                 EnableRemoteControl = enableRemoteControl,
                 EnableClipboard = enableClipboard,
                 EnableFileReceive = enableFileReceive,
+                EnablePrivacyScreen = enablePrivacyScreen,
+                PrivacyScreenBlocksInput = privacyScreenBlocksInput,
                 TrustClientPermanent = trustClientPermanent
             };
 

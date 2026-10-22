@@ -317,10 +317,12 @@ public sealed class XTestInputController : IInputController
             return false;
         }
 
-        // Note: input.KeyCode is a Windows Virtual-Key code
-        // We need to convert it to X11 keycode
-        // For now, we'll use a direct mapping (needs proper conversion table)
-        uint xKeycode = ConvertVirtualKeyToXKeycode(input.KeyCode.Value);
+        // input.KeyCode is a Windows virtual-key code; X needs the server's keycode for that physical key.
+        if (ConvertVirtualKeyToXKeycode(input.KeyCode.Value) is not { } xKeycode)
+        {
+            _logger.Debug("[XTestInputController] No X keycode for virtual key {KeyCode}", input.KeyCode.Value);
+            return false;
+        }
 
         int result = XTestFakeKeyEvent(_display, xKeycode, isPress, 0);
         XFlush(_display);
@@ -329,26 +331,11 @@ public sealed class XTestInputController : IInputController
     }
 
     /// <summary>
-    /// Converts Windows Virtual-Key code to X11 keycode.
-    /// This is a simplified mapping - a full implementation would need a complete lookup table.
+    /// Converts a Windows virtual-key code to an X11 keycode, or null when the key has no mapping. X servers with
+    /// the evdev keycodes (every Xorg/Xvfb/XWayland since about 2010) number keys as the Linux evdev code + 8.
     /// </summary>
-    private uint ConvertVirtualKeyToXKeycode(int virtualKey)
-    {
-        // TODO: Implement proper Virtual-Key to X11 keycode mapping
-        // This is a complex mapping that requires a lookup table
-
-        // For now, use a basic offset for common keys
-        // A-Z: VK 0x41-0x5A -> X11 keycode 38-61
-        if (virtualKey >= 0x41 && virtualKey <= 0x5A)
-            return (uint)(virtualKey - 0x41 + 38);
-
-        // 0-9: VK 0x30-0x39 -> X11 keycode 19-28
-        if (virtualKey >= 0x30 && virtualKey <= 0x39)
-            return (uint)(virtualKey - 0x30 + 19);
-
-        // Default: add offset of 8 (X11 keycodes start at 8)
-        return (uint)(virtualKey + 8);
-    }
+    internal static uint? ConvertVirtualKeyToXKeycode(int virtualKey) =>
+        EvdevKeyMap.FromVirtualKey(virtualKey) is { } evdev ? (uint)(evdev + 8) : null;
 
     private bool CheckRateLimit()
     {
