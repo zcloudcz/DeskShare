@@ -77,6 +77,12 @@ public sealed class DataChannelManager : IDisposable
     /// </summary>
     public FileReceiver? FileReceiver { get; set; }
 
+    /// <summary>
+    /// Display list and switching; set by the host when it knows its displays. Without it "switch_display" is ignored
+    /// and no "displays" message is sent.
+    /// </summary>
+    public Displays.DisplaySwitchService? DisplaySwitcher { get; set; }
+
     private PrivacyScreenController? _privacyScreen;
 
     /// <summary>
@@ -424,6 +430,15 @@ public sealed class DataChannelManager : IDisposable
                     // "privacy" says whether the viewer may offer its privacy screen button.
                     var privacy = (GrantedCapabilities & SessionCapabilities.PrivacyScreen) != 0;
                     SendJson(new { type = "authorization_response", authorized, clipboard, files, privacy, timestamp = DateTime.UtcNow });
+                    if (DisplaySwitcher is { } displays)
+                        SendMessage(displays.BuildMessage()); // the viewer shows its picker only when it also has control
+                    return;
+                }
+
+                if (messageType == "switch_display")
+                {
+                    // Passed the policy: only sessions with Control get here.
+                    _ = SwitchDisplayAsync(doc.RootElement.Clone());
                     return;
                 }
 
@@ -496,6 +511,33 @@ public sealed class DataChannelManager : IDisposable
         catch (Exception ex)
         {
             _logger.Error(ex, "Error processing message");
+        }
+    }
+
+    private async Task SwitchDisplayAsync(JsonElement message)
+    {
+        try
+        {
+            if (DisplaySwitcher is not { } displays)
+                return;
+
+            if (!Displays.DisplaySwitchService.TryReadIndex(message, out var index))
+            {
+                LogRejection("switch_display", "missing or invalid index");
+                return;
+            }
+
+            var result = await displays.SwitchAsync(index);
+            if (result is Displays.DisplaySwitchResult.InvalidIndex or Displays.DisplaySwitchResult.RateLimited or Displays.DisplaySwitchResult.Failed)
+                LogRejection("switch_display", result.ToString());
+
+            // Always answer with the current state: after a refusal it puts the viewer's picker back.
+            if (IsOpen)
+                SendMessage(displays.BuildMessage());
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error switching display");
         }
     }
 
