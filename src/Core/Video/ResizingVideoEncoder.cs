@@ -88,6 +88,20 @@ internal sealed class ResizingVideoEncoder : IVideoSource, IDisposable
                 _inner.ForceKeyFrame();
         }
     }
+    /// <summary>
+    /// Drops output the wrapped encoder still buffers (hardware H.264 can hold a frame back). Called at a peer switch so a
+    /// buffered frame of the previous viewer can never be released to the next one. Must forward through this wrapper:
+    /// callers only see the wrapper, so a cast to HybridVideoEncoder on it would silently do nothing.
+    /// </summary>
+    public void DiscardPending()
+    {
+        lock (_lock)
+        {
+            if (!_disposed)
+                (_inner as HybridVideoEncoder)?.DiscardPending();
+        }
+    }
+
     public void RestrictFormats(Func<VideoFormat, bool> filter) => _inner.RestrictFormats(filter);
     public bool HasEncodedVideoSubscribers() => OnVideoSourceEncodedSample != null;
     public bool IsVideoSourcePaused() => _inner.IsVideoSourcePaused();
