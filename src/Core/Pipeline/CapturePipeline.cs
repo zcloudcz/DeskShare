@@ -41,7 +41,7 @@ public sealed class CapturePipeline : IDisposable
     private volatile int _generation;
     // Callback of the last switch, run by the transmission thread once the first frame of that generation was sent.
     private sealed record FirstFrame(int Generation, Action Callback);
-    private volatile FirstFrame? _firstFrameCallback;
+    private FirstFrame? _firstFrameCallback; // published by the capture thread, taken with CompareExchange by transmission
 
     private readonly BlockingCollection<(Frame Frame, int Generation)> _captureQueue;
     private readonly BlockingCollection<(VideoFrame Frame, int Generation)> _conversionQueue;
@@ -330,7 +330,7 @@ public sealed class CapturePipeline : IDisposable
         // Frames already converted or being converted carry the old generation and are dropped by the later stages.
         var generation = _generation + 1;
         if (onFirstFrame != null)
-            _firstFrameCallback = new FirstFrame(generation, onFirstFrame);
+            Volatile.Write(ref _firstFrameCallback, new FirstFrame(generation, onFirstFrame));
         _generation = generation;
         Interlocked.Exchange(ref _keyFramePending, 1);
         Log.Information("Capturer switched: capture {Width}x{Height} -> output {OutWidth}x{OutHeight}",
@@ -428,9 +428,13 @@ public sealed class CapturePipeline : IDisposable
                         // drag the encode average down, so only real pushes are timed.
                         _pushTimings.Record(Stopwatch.GetTimestamp() - pushStart);
                         Interlocked.Increment(ref _framesTransmitted);
-                        if (_firstFrameCallback is { } first && generation >= first.Generation)
+                        // Take the callback atomically: if the capture thread publishes the next switch's callback
+                        // between our read and the reset, CompareExchange fails and the newer one is kept.
+                        // ponytail: fires when PushFrame accepted the frame; a hardware H.264 encoder may emit it one
+                        // frame later, so the input remap can lead the picture by ~1 frame (~33 ms at 30 fps).
+                        if (Volatile.Read(ref _firstFrameCallback) is { } first && generation >= first.Generation
+                            && Interlocked.CompareExchange(ref _firstFrameCallback, null, first) == first)
                         {
-                            _firstFrameCallback = null;
                             first.Callback();
                         }
                     }
