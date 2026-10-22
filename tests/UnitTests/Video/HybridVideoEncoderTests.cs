@@ -234,6 +234,25 @@ public sealed class HybridVideoEncoderTests
         Assert.Throws<ArgumentException>(() => ctx.Encode(new byte[320 * 192], false));
     }
 
+    [Fact]
+    public void OtherEncodersGpuFailure_DoesNotStopAHealthyRunningEncoder()
+    {
+        using var healthy = new HardwareH264Encoder("fake", (_, _) => new FakeContext(() => new byte[] { 1 }));
+        var sent = 0;
+        healthy.OnVideoSourceEncodedSample += (_, _) => sent++;
+        try
+        {
+            HardwareH264Encoder.HardwareDisabled = true; // another viewer's encoder gave up
+
+            healthy.ExternalVideoSourceRawSample(33, 64, 64, new byte[64 * 64 * 3 / 2], VideoPixelFormatsEnum.I420);
+
+            Assert.Equal(1, sent);              // keeps streaming to its viewer
+            Assert.False(healthy.Failed);
+            Assert.False(healthy.CanAdvertise); // but is not offered to a new negotiation
+        }
+        finally { HardwareH264Encoder.HardwareDisabled = false; }
+    }
+
     [RequiresFfmpegFact]
     public void AfterPermanentGpuFailure_NewEncodersAdvertiseVp8Only()
     {

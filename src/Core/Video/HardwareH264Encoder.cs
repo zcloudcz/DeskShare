@@ -45,7 +45,14 @@ internal sealed class HardwareH264Encoder : IVideoSource, IDisposable
     /// True once the encoder failed again right after its context was rebuilt. From then on frames are dropped and
     /// <see cref="HybridVideoEncoder"/> stops advertising H.264, so the next viewer negotiates VP8.
     /// </summary>
-    public bool Failed => _failed || HardwareDisabled;
+    public bool Failed => _failed;
+
+    /// <summary>
+    /// Whether H.264 may be offered to a new negotiation: not when this encoder failed, nor when another encoder in
+    /// this process gave up (<see cref="HardwareDisabled"/>). A running, healthy encoder keeps encoding either way:
+    /// another viewer's GPU failure (e.g. a session limit) must not freeze this viewer's picture.
+    /// </summary>
+    public bool CanAdvertise => !_failed && !HardwareDisabled;
 
     private bool _failed;
 
