@@ -573,12 +573,14 @@ function setupDataChannel(channel) {
         // The host's authorization_response also tells us whether it shares the clipboard.
         dataChannel.send(JSON.stringify({ type: 'authorization_request', timestamp: new Date().toISOString() }));
         updateControlButton();
-        updateStatus('Remote control is available. Click "Enable control".', 'success');
+        // The channel also exists for clipboard-only sessions, so "control available" is only said once the
+        // host's authorization_response confirms it.
     };
     dataChannel.onclose = () => {
         if (remoteControl) remoteControl.disable();
         remoteControl = null;
         dataChannel = null;
+        hostAllowsControl = false;
         updateControlButton();
         setClipboardAllowed(false);
     };
@@ -587,9 +589,13 @@ function setupDataChannel(channel) {
         try { message = JSON.parse(event.data); } catch { return; }
         if (message.type === 'authorization_response') {
             setClipboardAllowed(message.clipboard === true);
-            // The automatic request on open is only about the clipboard: ignore its control answer
-            // until the user clicked "Enable control".
-            if (remoteControl && remoteControl.enabled) {
+            // Before the user clicked "Enable control" the answer only tells what the host allows
+            // (control and clipboard); afterwards it is the answer to the control request.
+            if (!(remoteControl && remoteControl.enabled)) {
+                hostAllowsControl = message.authorized === true;
+                if (hostAllowsControl) updateStatus('Remote control is available. Click "Enable control".', 'success');
+                updateControlButton();
+            } else {
                 remoteControl.handleAuthorizationResponse(message);
                 updateStatus(message.authorized ? 'Remote control active' : 'The host did not allow remote control',
                     message.authorized ? 'success' : 'error');
@@ -617,9 +623,12 @@ function toggleControl() {
     updateControlButton();
 }
 
+// Whether the host allows remote control at all (from its authorization_response).
+let hostAllowsControl = false;
+
 function updateControlButton() {
     if (!controlBtn) return;
-    controlBtn.disabled = !remoteControl;
+    controlBtn.disabled = !remoteControl || (!hostAllowsControl && !remoteControl.enabled);
     controlBtn.textContent = remoteControl && remoteControl.enabled ? 'Disable control' : 'Enable control';
 }
 
