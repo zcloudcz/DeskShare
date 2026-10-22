@@ -157,6 +157,8 @@ public class LinuxE2ETests
         var leaked = await XServer.WaitUntilAsync(() => clipboard.Text != null, TimeSpan.FromSeconds(4),
             () => { XServer.SetClipboard("host-secret-1"); return Task.CompletedTask; });
         Assert.False(leaked, "Host text was applied although the viewer did not opt in");
+        // Stronger than "not applied": the host must not even send it before the viewer subscribed.
+        Assert.DoesNotContain("Received clipboard message from host", Viewer.LogText());
 
         client.ShareClipboard = true;
         var got = await XServer.WaitUntilAsync(() => received == "host->viewer", TimeSpan.FromSeconds(20),

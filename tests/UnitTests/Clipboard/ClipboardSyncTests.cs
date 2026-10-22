@@ -87,6 +87,19 @@ public sealed class ClipboardSyncTests
     }
 
     [Fact]
+    public async Task EchoGuard_EndsAtTheFirstLocalChange()
+    {
+        using var sync = Create(enabled: true);
+
+        await sync.ApplyAsync(Text("A"));  // remote A
+        LocalCopy("B");                    // local B
+        LocalCopy("A");                    // local A again: a genuine copy, must go out
+
+        Assert.Equal(2, _sent.Count);
+        Assert.Contains("\"TextContent\":\"A\"", _sent[1]);
+    }
+
+    [Fact]
     public void TooLargeLocalText_IsRejectedWithMessage_NotTruncated()
     {
         using var sync = Create(enabled: true);

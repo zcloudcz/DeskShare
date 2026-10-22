@@ -129,7 +129,11 @@ public sealed class ClipboardSync : IDisposable
 
     private void OnLocalChanged(object? sender, ClipboardChangedEventArgs e)
     {
-        if (e.Text == _lastRemoteText)
+        // Suppress only the notification for our own write; any local change ends the guard, so
+        // remote A -> local B -> local A still sends the last A.
+        var isEcho = e.Text == _lastRemoteText;
+        _lastRemoteText = null;
+        if (isEcho)
         {
             return;
         }

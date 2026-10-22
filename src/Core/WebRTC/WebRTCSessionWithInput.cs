@@ -144,7 +144,7 @@ public sealed class WebRTCSessionWithInput : IDisposable
         // Clipboard text sync. Off until the host grants it (ClipboardSharingEnabled).
         if (_clipboardManager != null)
         {
-            _clipboardSync = new ClipboardSync(_clipboardManager, json => _dataChannelManager.IsOpen && _dataChannelManager.SendMessage(json));
+            _clipboardSync = new ClipboardSync(_clipboardManager, _dataChannelManager.TrySendClipboard);
             _clipboardSync.Rejected += (_, reason) => _logger.Warning("Clipboard: {Reason}", reason);
 
             // Incoming messages already passed the capability policy in DataChannelManager.

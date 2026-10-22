@@ -17,7 +17,8 @@ internal static class DataChannelPolicy
     private static readonly Dictionary<string, SessionCapabilities> ProtocolMessages = new(StringComparer.Ordinal)
     {
         ["authorization_request"] = SessionCapabilities.View,
-        ["clipboard"] = SessionCapabilities.Clipboard
+        ["clipboard"] = SessionCapabilities.Clipboard,
+        ["clipboard_subscribe"] = SessionCapabilities.Clipboard
     };
 
     /// <summary>

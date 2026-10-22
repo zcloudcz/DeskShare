@@ -102,7 +102,19 @@ public class ClientManager : IDisposable
         {
             _shareClipboard = value;
             UpdateClipboardEnabled();
+            SendClipboardSubscription();
         }
+    }
+
+    // Tells the host whether this viewer wants its clipboard; the host sends nothing until we subscribed.
+    private void SendClipboardSubscription()
+    {
+        if (!HostAllowsClipboard || _dataChannel?.readyState != RTCDataChannelState.open)
+        {
+            return;
+        }
+
+        _dataChannel.send($"{{\"type\":\"clipboard_subscribe\",\"enabled\":{(_shareClipboard ? "true" : "false")}}}");
     }
 
     private void UpdateClipboardEnabled()
@@ -410,6 +422,10 @@ public class ClientManager : IDisposable
 
         HostAllowsClipboard = allowed;
         UpdateClipboardEnabled();
+        if (allowed)
+        {
+            SendClipboardSubscription(); // (re)connect: state the current opt-in
+        }
         HostAllowsClipboardChanged?.Invoke(this, allowed);
     }
 

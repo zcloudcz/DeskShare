@@ -65,6 +65,18 @@ public sealed class DataChannelManager : IDisposable
         | (_inputController?.IsEnabled == true ? SessionCapabilities.Control : SessionCapabilities.None);
 
     /// <summary>
+    /// True when the viewer on the current channel asked for the host's clipboard ("clipboard_subscribe").
+    /// The grant alone is not enough: a viewer that never opted in must not receive clipboard text.
+    /// Reset whenever the channel is attached, detached or closed.
+    /// </summary>
+    public bool ClipboardSubscribed { get; private set; }
+
+    /// <summary>
+    /// Sends a clipboard message to the viewer, only while it is subscribed and the channel is open.
+    /// </summary>
+    public bool TrySendClipboard(string json) => ClipboardSubscribed && IsOpen && SendMessage(json);
+
+    /// <summary>
     /// Event raised when a message is received on the data channel.
     /// </summary>
     public event EventHandler<string>? MessageReceived;
@@ -123,6 +135,7 @@ public sealed class DataChannelManager : IDisposable
 
         _dataChannel = dataChannel;
         _channelOpenedAt = DateTime.UtcNow;
+        ClipboardSubscribed = false; // a new channel is a new viewer session: it must subscribe again
 
         // Subscribe to data channel events
         _dataChannel.onopen += OnDataChannelOpen;
@@ -265,6 +278,7 @@ public sealed class DataChannelManager : IDisposable
     {
         _logger.Information("DataChannel closed: Label={Label}, ID={Id}",
             _dataChannel?.label, _dataChannel?.id);
+        ClipboardSubscribed = false;
 
         ChannelClosed?.Invoke(this, EventArgs.Empty);
     }
@@ -368,6 +382,14 @@ public sealed class DataChannelManager : IDisposable
                     return;
                 }
 
+                if (messageType == "clipboard_subscribe")
+                {
+                    // Already passed the policy: only sessions with the Clipboard grant get here.
+                    ClipboardSubscribed = doc.RootElement.TryGetProperty("enabled", out var enabled) && enabled.ValueKind == JsonValueKind.True;
+                    _logger.Information("Viewer clipboard subscription: {Subscribed}", ClipboardSubscribed);
+                    return;
+                }
+
                 if (messageType == "clipboard")
                 {
                     if (doc.RootElement.TryGetProperty("data", out var dataElement))
@@ -459,6 +481,7 @@ public sealed class DataChannelManager : IDisposable
         _dataChannel.onmessage -= OnDataChannelMessage;
 
         _dataChannel = null;
+        ClipboardSubscribed = false;
     }
 
     /// <summary>

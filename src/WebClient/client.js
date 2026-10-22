@@ -630,7 +630,14 @@ const MAX_MESSAGE_BYTES = 64 * 1024; // the host drops larger data channel messa
 let hostClipboardText = null;
 let clipboardSequence = 0;
 
+let clipboardAllowed = false;
+
 function setClipboardAllowed(allowed) {
+    // Telling the host we want its clipboard text is harmless: it only reaches the OS clipboard on a click.
+    if (allowed && !clipboardAllowed && dataChannel && dataChannel.readyState === 'open') {
+        dataChannel.send(JSON.stringify({ type: 'clipboard_subscribe', enabled: true }));
+    }
+    clipboardAllowed = allowed;
     sendClipboardBtn.hidden = !allowed;
     copyHostClipboardBtn.hidden = !allowed;
     if (!allowed) {
@@ -731,7 +738,11 @@ function showFallbackField(kind) {
         field.rows = 2;
         field.title = 'Press Ctrl+C to copy';
         field.value = hostClipboardText;
-        field.addEventListener('copy', () => {
+        field.addEventListener('copy', (event) => {
+            // Put the text on the clipboard ourselves: hiding the field below would otherwise remove the
+            // selection before the browser's default copy runs.
+            event.clipboardData.setData('text/plain', field.value);
+            event.preventDefault();
             hostClipboardText = null;
             copyHostClipboardBtn.disabled = true;
             hideFallbackField();
@@ -745,6 +756,7 @@ function showFallbackField(kind) {
     });
     field.addEventListener('keyup', (event) => event.stopPropagation());
     field.addEventListener('blur', hideFallbackField);
+    fallbackField = field;
     (kind === 'input' ? sendClipboardBtn : copyHostClipboardBtn).after(field);
     field.focus();
     if (kind !== 'input') field.select();
