@@ -19,9 +19,13 @@ public sealed class PrivacyScreenTests
         public int HideCalls;
         public PrivacyShowResult NextResult = new(true);
         public bool Disposed;
+        public event Action<string>? Failed;
+        public void Fail(string reason) { Visible = false; Failed?.Invoke(reason); }
+        public Action? OnShow; // runs inside TryShow, to interleave events deterministically
 
         public PrivacyShowResult TryShow(bool blockInput)
         {
+            OnShow?.Invoke();
             Visible = NextResult.Shown;
             BlockRequested = blockInput;
             return NextResult;
@@ -104,7 +108,7 @@ public sealed class PrivacyScreenTests
         (bool Enabled, string? Reason)? reported = null;
         controller.StateChanged += (e, r) => reported = (e, r);
 
-        controller.Set(true);
+        controller.Set(true, controller.Epoch);
 
         Assert.False(controller.Enabled);
         Assert.Equal((false, "unsupported_windows_version"), reported);
@@ -117,7 +121,7 @@ public sealed class PrivacyScreenTests
         var controller = new PrivacyScreenController(overlay, true);
         var states = new List<(bool, string?)>();
         controller.StateChanged += (e, r) => states.Add((e, r));
-        controller.Set(true);
+        controller.Set(true, controller.Epoch);
 
         controller.Disable("channel_closed");
         controller.Disable("channel_closed"); // already off: no second hide, no second message
@@ -131,12 +135,73 @@ public sealed class PrivacyScreenTests
     {
         var overlay = new FakeOverlay();
         var controller = new PrivacyScreenController(overlay, false);
-        controller.Set(true);
+        controller.Set(true, controller.Epoch);
 
         controller.Dispose();
 
         Assert.False(overlay.Visible);
         Assert.True(overlay.Disposed);
+    }
+
+    [Fact]
+    public void RequestStale_AfterDisable_DoesNotTurnItOn()
+    {
+        var overlay = new FakeOverlay();
+        var controller = new PrivacyScreenController(overlay, false);
+        var captured = controller.Epoch;   // request accepted ...
+        controller.Disable("control_revoked"); // ... then the session ends
+
+        controller.Set(true, captured);
+
+        Assert.False(overlay.Visible);
+        Assert.False(controller.Enabled);
+    }
+
+    [Fact]
+    public void Request_IsDropped_WhenCapabilityIsGoneUnderTheLock()
+    {
+        var overlay = new FakeOverlay();
+        var controller = new PrivacyScreenController(overlay, false);
+
+        controller.Set(true, controller.Epoch, () => false);
+
+        Assert.False(overlay.Visible);
+    }
+
+    [Fact]
+    public void RevokeDuringShow_EndsUpOff()
+    {
+        var input = Substitute.For<IInputController>();
+        input.IsEnabled.Returns(true);
+        var manager = new DataChannelManager(Substitute.For<ILogger>(), input);
+        var overlay = new FakeOverlay();
+        var controller = new PrivacyScreenController(overlay, false);
+        manager.PrivacyScreen = controller;
+        manager.HostGrantedCapabilities |= SessionCapabilities.PrivacyScreen;
+
+        // The request is accepted, then control is revoked while it is being applied.
+        var epoch = controller.Epoch;
+        input.IsEnabled.Returns(false);
+        controller.Disable("control_revoked");
+        manager.ProcessInputMessage(Off); // later "off" is rejected by policy, so nothing may stay on
+        controller.Set(true, epoch);
+
+        Assert.False(overlay.Visible);
+    }
+
+    [Fact]
+    public void OverlayFailure_TurnsStateOff_AndTellsViewer()
+    {
+        var overlay = new FakeOverlay();
+        var controller = new PrivacyScreenController(overlay, true);
+        var states = new List<(bool, string?)>();
+        controller.StateChanged += (e, r) => states.Add((e, r));
+        controller.Set(true, controller.Epoch);
+
+        overlay.Fail("overlay_failed");
+
+        Assert.False(controller.Enabled);
+        Assert.Equal((false, "overlay_failed"), states[^1]);
     }
 
     [Theory]

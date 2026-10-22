@@ -268,7 +268,7 @@ public class ScreenSenderService : IHostedService, IDisposable
                 {
                     if (OperatingSystem.IsWindows())
                     {
-                        _webrtcSessionWithInput.EnablePrivacyScreen(new Platforms.Windows.PrivacyOverlay(), _configuration.PrivacyScreenBlocksInput);
+                        _webrtcSessionWithInput.EnablePrivacyScreen(new Platforms.Windows.PrivacyOverlay((inputController as Platforms.Windows.WindowsInputController) is { } wic ? wic.SetLocalInputBlocked : null), _configuration.PrivacyScreenBlocksInput);
                         _logger.LogInformation("Privacy screen enabled (block local input: {Block})", _configuration.PrivacyScreenBlocksInput);
                     }
                     else

@@ -315,26 +315,31 @@ public sealed class WindowsInputController : IInputController
             _recentInputs.Enqueue(now);
             _lastInputTime = now;
 
-            // SendInput only reaches the desktop the calling thread is attached to; re-check at most every 100 ms.
-            if (Environment.TickCount64 >= _nextDesktopCheck)
+            // Always inject from the one injection thread (see OnInputThread): while BlockInput is active only the
+            // thread that called it can inject, so every SendInput must come from that thread.
+            bool success = OnInputThread(() =>
             {
-                _nextDesktopCheck = Environment.TickCount64 + 100;
-                _desktop.Refresh();
-            }
-            using var desktopScope = _desktop.Enter();
+                // SendInput only reaches the desktop the calling thread is attached to; re-check at most every 100 ms.
+                if (Environment.TickCount64 >= _nextDesktopCheck)
+                {
+                    _nextDesktopCheck = Environment.TickCount64 + 100;
+                    _desktop.Refresh();
+                }
+                using var desktopScope = _desktop.Enter();
 
-            // Validate and apply input
-            bool success = input.Type switch
-            {
-                InputMessageType.SecureAttention => SendSecureAttention(),
-                InputMessageType.MouseMove => ApplyMouseMove(input),
-                InputMessageType.MouseDown => ApplyMouseButton(input, true),
-                InputMessageType.MouseUp => ApplyMouseButton(input, false),
-                InputMessageType.MouseWheel => ApplyMouseWheel(input),
-                InputMessageType.KeyDown => ApplyKeyboard(input, true),
-                InputMessageType.KeyUp => ApplyKeyboard(input, false),
-                _ => false
-            };
+                // Validate and apply input
+                return input.Type switch
+                {
+                    InputMessageType.SecureAttention => SendSecureAttention(),
+                    InputMessageType.MouseMove => ApplyMouseMove(input),
+                    InputMessageType.MouseDown => ApplyMouseButton(input, true),
+                    InputMessageType.MouseUp => ApplyMouseButton(input, false),
+                    InputMessageType.MouseWheel => ApplyMouseWheel(input),
+                    InputMessageType.KeyDown => ApplyKeyboard(input, true),
+                    InputMessageType.KeyUp => ApplyKeyboard(input, false),
+                    _ => false
+                };
+            });
 
             if (success)
             {
@@ -347,6 +352,66 @@ public sealed class WindowsInputController : IInputController
 
             return success;
         }
+    }
+
+    // One thread owns all injection. It owns no windows or hooks, so it can also follow the input desktop.
+    private readonly System.Collections.Concurrent.BlockingCollection<Action> _work = new();
+    private Thread? _inputThread;
+    private bool _localInputBlocked;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool BlockInput([MarshalAs(UnmanagedType.Bool)] bool block);
+
+    /// <summary>Runs <paramref name="func"/> on the injection thread and waits for its result.</summary>
+    private T OnInputThread<T>(Func<T> func)
+    {
+        lock (_work)
+        {
+            if (_inputThread == null)
+            {
+                _inputThread = new Thread(() =>
+                {
+                    foreach (var item in _work.GetConsumingEnumerable())
+                        item();
+                }) { IsBackground = true, Name = "InputInjection" };
+                _inputThread.Start();
+            }
+        }
+
+        T result = default!;
+        Exception? error = null;
+        using var done = new ManualResetEventSlim();
+        _work.Add(() =>
+        {
+            try { result = func(); }
+            catch (Exception ex) { error = ex; }
+            finally { done.Set(); }
+        });
+        done.Wait();
+        if (error != null)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw();
+        return result;
+    }
+
+    /// <summary>
+    /// Blocks or unblocks the local mouse and keyboard (BlockInput; needs an elevated process). It runs on the
+    /// injection thread, so the viewer's input keeps working while the local user's is blocked.
+    /// </summary>
+    /// <returns>False when Windows refused (not elevated).</returns>
+    public bool SetLocalInputBlocked(bool block)
+    {
+        if (_disposed)
+            return false;
+        return OnInputThread(() =>
+        {
+            if (block == _localInputBlocked)
+                return true;
+            if (!BlockInput(block))
+                return false;
+            _localInputBlocked = block;
+            return true;
+        });
     }
 
     /// <inheritdoc />
@@ -632,6 +697,12 @@ public sealed class WindowsInputController : IInputController
         }
 
         RevokeAuthorization();
+        if (_inputThread != null)
+        {
+            if (_localInputBlocked)
+                OnInputThread(() => BlockInput(false)); // never leave the local user locked out
+            _work.CompleteAdding();
+        }
         _desktop.Dispose();
         _disposed = true;
 

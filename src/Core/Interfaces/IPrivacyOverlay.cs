@@ -14,6 +14,9 @@ public interface IPrivacyOverlay : IDisposable
     /// <summary>Shows the overlay; with <paramref name="blockInput"/> the local mouse and keyboard are blocked too.</summary>
     PrivacyShowResult TryShow(bool blockInput);
 
+    /// <summary>Raised (on any thread) when the overlay had to remove itself, for example after a monitor change it could not cover. Input is unblocked by then.</summary>
+    event Action<string>? Failed;
+
     /// <summary>Removes the overlay and unblocks local input. Safe to call when nothing is shown.</summary>
     void Hide();
 }

@@ -384,6 +384,7 @@ public sealed class DataChannelManager : IDisposable
             }
 
             using var doc = JsonDocument.Parse(message);
+            var privacyEpoch = PrivacyScreen?.Epoch ?? 0; // before the policy check: see PrivacyScreenController.Epoch
 
             // Default deny: an unknown type, or a capability the session lacks, never reaches a handler.
             if (!DataChannelPolicy.TryGetRequiredCapability(doc.RootElement, out var typeName, out var required))
@@ -429,7 +430,8 @@ public sealed class DataChannelManager : IDisposable
                 if (messageType == "privacy_screen")
                 {
                     // Passed the policy: PrivacyScreen and Control are both granted. The state goes back through StateChanged.
-                    PrivacyScreen?.Set(doc.RootElement.TryGetProperty("enabled", out var on) && on.ValueKind == JsonValueKind.True);
+                    PrivacyScreen?.Set(doc.RootElement.TryGetProperty("enabled", out var on) && on.ValueKind == JsonValueKind.True,
+                        privacyEpoch, () => (GrantedCapabilities & required) == required);
                     return;
                 }
 

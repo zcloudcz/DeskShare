@@ -56,8 +56,16 @@ public sealed class PrivacyOverlay : IPrivacyOverlay
     private string? _reason;
     private bool _disposed;
 
-    public PrivacyOverlay()
+    private readonly Func<bool, bool>? _setInputBlocked;
+
+    /// <param name="setInputBlocked">
+    /// Blocks/unblocks local input; pass <see cref="WindowsInputController.SetLocalInputBlocked"/> so it runs on the
+    /// input injection thread. Without it the overlay thread calls BlockInput itself, and the viewer's injected
+    /// input is blocked too.
+    /// </param>
+    public PrivacyOverlay(Func<bool, bool>? setInputBlocked = null)
     {
+        _setInputBlocked = setInputBlocked;
         _wndProc = HandleMessage;
         // Last line of defense when the process is torn down without Dispose; Windows also releases BlockInput itself.
         AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
@@ -107,6 +115,9 @@ public sealed class PrivacyOverlay : IPrivacyOverlay
             _ => new PrivacyShowResult(false, _reason ?? "overlay_failed")
         };
     }
+
+    /// <inheritdoc />
+    public event Action<string>? Failed;
 
     public void Hide()
     {
@@ -291,7 +302,10 @@ public sealed class PrivacyOverlay : IPrivacyOverlay
             DestroyOverlayWindows();
             if (!CreateOverlayWindows())
             {
-                HideAll(); // cannot cover the new layout safely; fail open rather than leave a gap unnoticed
+                HideAll(); // cannot cover the new layout safely; fail open and tell the controller
+                // Queued, not called here: the handler takes the controller's lock, which a thread blocked in TryShow
+                // (waiting for this very thread) may hold.
+                ThreadPool.QueueUserWorkItem(_ => Failed?.Invoke("overlay_failed"));
                 return;
             }
             ShowAllWindows(true);
@@ -309,7 +323,7 @@ public sealed class PrivacyOverlay : IPrivacyOverlay
     {
         if (block == _blocking)
             return true;
-        if (!BlockInput(block))
+        if (!(_setInputBlocked?.Invoke(block) ?? BlockInput(block)))
         {
             Log.Warning("BlockInput({Block}) failed, Win32 error {Error}; it needs an elevated process", block, Marshal.GetLastWin32Error());
             return false;
