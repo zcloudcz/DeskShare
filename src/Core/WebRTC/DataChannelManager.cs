@@ -339,7 +339,9 @@ public sealed class DataChannelManager : IDisposable
             // Default deny: an unknown type, or a capability the session lacks, never reaches a handler.
             if (!DataChannelPolicy.TryGetRequiredCapability(doc.RootElement, out var typeName, out var required))
             {
-                LogRejection(typeName, "unknown message type");
+                // One shared bucket for all unknown names: the names come from the peer, so counting them
+                // separately would let it grow the dictionary (and the log) without limit.
+                LogRejection("<unknown>", $"unknown message type '{typeName}'");
                 return;
             }
 
@@ -415,20 +417,25 @@ public sealed class DataChannelManager : IDisposable
 
     /// <summary>
     /// Logs a rejected message. Only the type name is logged, never the content (it may hold keystrokes or
-    /// clipboard text), and only the first few per type.
+    /// clipboard text), and only the first few per bucket.
     /// </summary>
-    private void LogRejection(string typeName, string reason)
+    /// <param name="bucket">A known type name or a fixed category such as "&lt;unknown&gt;"; never a raw peer
+    /// value, so the number of buckets stays finite.</param>
+    private void LogRejection(string bucket, string reason)
     {
-        var count = _rejectionCounts.AddOrUpdate(typeName, 1, (_, c) => c + 1);
+        var count = _rejectionCounts.AddOrUpdate(bucket, 1, (_, c) => c + 1);
         if (count <= MaxRejectionLogsPerType)
         {
-            _logger.Warning("DataChannel message rejected: Type={Type}, Reason={Reason}", typeName, reason);
+            _logger.Warning("DataChannel message rejected: Type={Type}, Reason={Reason}", bucket, reason);
         }
         else if (count == MaxRejectionLogsPerType + 1)
         {
-            _logger.Warning("DataChannel: further rejections of Type={Type} will not be logged", typeName);
+            _logger.Warning("DataChannel: further rejections of Type={Type} will not be logged", bucket);
         }
     }
+
+    /// <summary>Number of rejection buckets; exposed for tests that check it stays bounded.</summary>
+    internal int RejectionBucketCount => _rejectionCounts.Count;
 
     #endregion
 

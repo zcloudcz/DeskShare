@@ -183,4 +183,18 @@ public sealed class DataChannelCapabilityTests
         Assert.Equal(6, warnings.Count);
         Assert.DoesNotContain(warnings, c => c.GetArguments().Any(a => a?.ToString()?.Contains("secret") == true));
     }
+
+    [Fact]
+    public void ManyDistinctUnknownTypes_KeepRejectionBookkeepingAndLogBounded()
+    {
+        var logger = Substitute.For<ILogger>();
+        var manager = new DataChannelManager(logger, Substitute.For<IInputController>());
+
+        for (var i = 0; i < 1000; i++)
+            manager.ProcessInputMessage($$"""{"type":"unknown-{{i}}"}""");
+
+        Assert.Equal(1, manager.RejectionBucketCount);
+        // 5 rejection lines plus one "further rejections will not be logged" line.
+        Assert.Equal(6, logger.ReceivedCalls().Count(c => c.GetMethodInfo().Name == "Warning"));
+    }
 }
