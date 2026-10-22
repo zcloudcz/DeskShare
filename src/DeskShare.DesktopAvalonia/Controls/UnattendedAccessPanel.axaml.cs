@@ -78,7 +78,7 @@ public partial class UnattendedAccessPanel : UserControl
             {
                 UseShellExecute = true, // required for "runas"
                 Verb = "runas",
-                WorkingDirectory = SourceDir,
+                WorkingDirectory = Environment.SystemDirectory, // never the user-writable app folder for an elevated process
                 WindowStyle = ProcessWindowStyle.Hidden
             });
             if (p != null)

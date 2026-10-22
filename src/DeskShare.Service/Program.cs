@@ -43,7 +43,10 @@ static int RunConsole(string[] args)
     FileLog.Write($"Console mode, session {session}, agent {agent}");
 
     var supervisor = new Supervisor(() => session, _ =>
-        Process.Start(new ProcessStartInfo(agent, config is null ? "" : $"--config \"{config}\"") { UseShellExecute = false }));
+    {
+        var p = Process.Start(new ProcessStartInfo(agent, config is null ? "" : $"--config \"{config}\"") { UseShellExecute = false });
+        return p is null ? null : new ProcessAgent(p);
+    }, FileLog.Write);
     using var cts = new CancellationTokenSource();
     Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
     supervisor.RunAsync(cts.Token).GetAwaiter().GetResult();

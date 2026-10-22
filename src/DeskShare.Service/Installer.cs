@@ -8,8 +8,10 @@ using DeskShare.Unattended;
 namespace DeskShare.Service;
 
 /// <summary>
-/// Elevated install / update / uninstall. Runs from the app's (user-writable) copy of the service folder and copies it to
-/// %ProgramFiles%\DeskShare\Service, so the LocalSystem service only ever executes admin-protected binaries.
+/// Elevated install / update / uninstall. Runs from the app's (user-writable) copy of the service folder, so nothing
+/// there is trusted: files are copied into a protected staging folder under Program Files, verified THERE, and only
+/// then swapped in. The LocalSystem service therefore only ever executes admin-protected binaries.
+/// Every process started here uses an absolute path (System32), never PATH or the current directory.
 /// </summary>
 [SupportedOSPlatform("windows")]
 internal static class Installer
@@ -17,36 +19,55 @@ internal static class Installer
     public static int Install(string sourceDir)
     {
         if (!IsAdmin()) return Fail("Administrator rights are required.");
+        // First, so that everything we log (FileLog creates the folder) lands in the protected folder, not a user-made one.
+        try { PrepareDataDir(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException) { return Fail(ex.Message); }
         sourceDir = Path.GetFullPath(sourceDir);
-        var target = UnattendedPaths.InstallDir;
-        if (UnattendedPaths.IsInside(target, sourceDir) || Path.TrimEndingDirectorySeparator(sourceDir).Equals(Path.TrimEndingDirectorySeparator(target), StringComparison.OrdinalIgnoreCase))
-            return Fail("Source is already the install folder.");
+        var live = UnattendedPaths.InstallDir;
+        var staging = live + ".new";
+        var old = live + ".old";
+        foreach (var own in new[] { live, staging, old })
+            if (UnattendedPaths.IsInside(own, sourceDir) || Same(own, sourceDir))
+                return Fail("Source must not be inside the install folder.");
         if (!File.Exists(Path.Combine(sourceDir, UnattendedPaths.ServiceExeName)) || !File.Exists(UnattendedPaths.ResolveAgentPath(sourceDir)))
             return Fail("Service or agent binaries missing in " + sourceDir);
 
+        // A previous install that died between the two renames leaves only ".old": put it back first.
+        if (!Directory.Exists(live) && Directory.Exists(old)) Directory.Move(old, live);
+        DeleteDir(staging);
+        DeleteDir(old);
+
+        try
+        {
+            CopyDir(sourceDir, staging);
+            var problem = VerifyStaging(staging);
+            if (problem != null) { DeleteDir(staging); return Fail(problem); }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            DeleteDir(staging);
+            return Fail(ex.Message);
+        }
+
         StopService();
 
-        // Replace the folder wholesale so files dropped from a newer version do not linger. Program Files' inherited ACL protects the result.
-        for (var i = 0; ; i++)
+        var hadOld = Directory.Exists(live);
+        if (hadOld) MoveWithRetry(live, old);
+        Directory.Move(staging, live);
+
+        if (!RegisterAndStart(live))
         {
-            try { if (Directory.Exists(target)) Directory.Delete(target, true); break; }
-            catch (IOException) when (i < 10) { Thread.Sleep(500); } // exe still locked while the service winds down
+            FileLog.Write("New version failed to start, rolling back.");
+            StopService();
+            DeleteDir(live);
+            if (hadOld)
+            {
+                Directory.Move(old, live);
+                RegisterAndStart(live);
+            }
+            return Fail("Service did not start" + (hadOld ? "; previous version restored." : "."));
         }
-        CopyDir(sourceDir, target);
-
-        PrepareDataDir();
-
-        // sc.exe instead of the SCM API: no extra package and the semantics are well known. "binPath= " needs the space after '='.
-        var bin = $"\"{Path.Combine(target, UnattendedPaths.ServiceExeName)}\"";
-        var exists = Sc("query", UnattendedPaths.ServiceName) == 0;
-        if (Sc(exists ? "config" : "create", UnattendedPaths.ServiceName, "binPath=", bin, "start=", "auto", "obj=", "LocalSystem",
-                "DisplayName=", "DeskShare unattended access") != 0)
-            return Fail("sc create/config failed");
-        Sc("description", UnattendedPaths.ServiceName, "Keeps the DeskShare screen sender running in the active session.");
-        // Restart on crash: after 5 s, 5 s, 30 s; failure counter resets after a day.
-        Sc("failure", UnattendedPaths.ServiceName, "reset=", "86400", "actions=", "restart/5000/restart/5000/restart/30000");
-        if (Sc("start", UnattendedPaths.ServiceName) != 0)
-            return Fail("sc start failed");
+        DeleteDir(old);
         FileLog.Write("Installed and started.");
         return 0;
     }
@@ -56,20 +77,78 @@ internal static class Installer
         if (!IsAdmin()) return Fail("Administrator rights are required.");
         StopService();
         Sc("delete", UnattendedPaths.ServiceName);
-        try { if (Directory.Exists(UnattendedPaths.InstallDir)) Directory.Delete(UnattendedPaths.InstallDir, true); }
-        catch (IOException ex) { FileLog.Write("Could not remove install folder: " + ex.Message); }
+        foreach (var d in new[] { UnattendedPaths.InstallDir, UnattendedPaths.InstallDir + ".new", UnattendedPaths.InstallDir + ".old" })
+        {
+            try { DeleteDir(d); }
+            catch (IOException ex) { FileLog.Write("Could not remove " + d + ": " + ex.Message); }
+        }
         // %ProgramData%\DeskShare (server id, owner secret, config) is kept on purpose so re-enabling keeps the same identity.
         FileLog.Write("Uninstalled.");
         return 0;
     }
 
+    /// <summary>
+    /// Checks the staged (already admin-protected) copy. ponytail: integrity is only enforced when this helper is itself
+    /// Authenticode-signed; an unsigned build cannot tell a swapped DLL from a real one. Upgrade path: sign every release
+    /// binary (then the check below becomes mandatory automatically).
+    /// </summary>
+    private static string? VerifyStaging(string staging)
+    {
+        var helper = Environment.ProcessPath!;
+        var pinned = Authenticode.SignerThumbprint(helper);
+        if (pinned == null)
+        {
+            FileLog.Write("WARNING: DeskShare.Service.exe is not Authenticode-signed, so the files being installed cannot be verified. " +
+                          "A process running as your user could have replaced them; install only from a build you trust.");
+            return null;
+        }
+
+        var unverifiedThirdParty = 0;
+        foreach (var file in Directory.EnumerateFiles(staging, "*", SearchOption.AllDirectories))
+        {
+            var ext = Path.GetExtension(file);
+            if (!ext.Equals(".exe", StringComparison.OrdinalIgnoreCase) && !ext.Equals(".dll", StringComparison.OrdinalIgnoreCase))
+                continue;
+            var ours = Authenticode.SignerThumbprint(file) == pinned;
+            var firstParty = ext.Equals(".exe", StringComparison.OrdinalIgnoreCase) ||
+                             Path.GetFileName(file).StartsWith("DeskShare.", StringComparison.OrdinalIgnoreCase);
+            if (ours) continue;
+            if (firstParty) return $"{Path.GetRelativePath(staging, file)} is not signed by the same certificate as the installer.";
+            unverifiedThirdParty++; // third-party DLLs (Serilog, SIPSorcery, ...) keep their own / no signature
+        }
+        if (unverifiedThirdParty > 0)
+            FileLog.Write($"WARNING: {unverifiedThirdParty} third-party DLL(s) are not signed by our certificate and were not integrity-checked.");
+        return null;
+    }
+
+    /// <summary>
+    /// Makes sure %ProgramData%\DeskShare is a folder only SYSTEM/Administrators own and write. A standard user can pre-create
+    /// it (ProgramData allows that), so an existing folder is trusted only if it ALREADY has exactly our protected DACL and an
+    /// admin owner; otherwise it is renamed aside (we never reuse its config / ids / secret) and recreated with the
+    /// descriptor applied at creation time. Junctions / symlinks anywhere inside make us refuse.
+    /// </summary>
     private static void PrepareDataDir()
     {
         var dir = UnattendedPaths.DataDir;
-        Directory.CreateDirectory(dir);
-        var sec = new DirectorySecurity();
-        sec.SetSecurityDescriptorSddlForm(AclSpec.DataDirSddl);
-        new DirectoryInfo(dir).SetAccessControl(sec);
+        if (Directory.Exists(dir))
+        {
+            if (HasReparsePoint(dir)) throw new InvalidOperationException(dir + " contains a junction or symbolic link; remove it and retry.");
+            if (!IsTrusted(dir))
+            {
+                var aside = dir + ".untrusted-" + DateTime.Now.ToString("yyyyMMddHHmmss");
+                FileLog.Write($"Existing {dir} is not protected as expected, moving it to {aside}.");
+                try { Directory.Move(dir, aside); }
+                catch (IOException ex) { throw new InvalidOperationException("Cannot move an untrusted " + dir + " aside (" + ex.Message + "); delete it manually and retry."); }
+            }
+        }
+        if (!Directory.Exists(dir))
+        {
+            var sec = new DirectorySecurity();
+            sec.SetSecurityDescriptorSddlForm(AclSpec.DataDirSddl);
+            new DirectoryInfo(dir).Create(sec);
+        }
+        // Closes the race where someone re-creates the folder between our move and our create.
+        if (!IsTrusted(dir)) throw new InvalidOperationException(dir + " is not protected as expected after creation; aborting.");
 
         // ponytail: U1 keeps the rotating passkey (read it from the agent log). Permanent password + auth arrive in U3.
         if (!File.Exists(UnattendedPaths.ConfigPath))
@@ -79,6 +158,43 @@ internal static class Installer
                   "Security": { "EnableRemoteControl": false, "TrustClientPermanent": false }
                 }
                 """);
+    }
+
+    private static bool HasReparsePoint(string dir)
+    {
+        if (new DirectoryInfo(dir).Attributes.HasFlag(FileAttributes.ReparsePoint)) return true;
+        var opts = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = 0, IgnoreInaccessible = false };
+        return new DirectoryInfo(dir).EnumerateFileSystemInfos("*", opts).Any(e => e.Attributes.HasFlag(FileAttributes.ReparsePoint));
+    }
+
+    /// <summary>Owner is SYSTEM/Administrators, DACL is protected and consists of exactly Allow FullControl for SYSTEM and Administrators.</summary>
+    private static bool IsTrusted(string dir)
+    {
+        var sec = new DirectoryInfo(dir).GetAccessControl();
+        var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        var admins = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+        var owner = sec.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+        if (owner == null || (!owner.Equals(system) && !owner.Equals(admins))) return false;
+        if (!sec.AreAccessRulesProtected) return false;
+        var rules = sec.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>().ToList();
+        return rules.Count == 2
+            && rules.All(r => r.AccessControlType == AccessControlType.Allow && r.FileSystemRights == FileSystemRights.FullControl && !r.IsInherited)
+            && rules.Any(r => r.IdentityReference.Equals(system))
+            && rules.Any(r => r.IdentityReference.Equals(admins));
+    }
+
+    private static bool RegisterAndStart(string installDir)
+    {
+        // sc.exe instead of the SCM API: no extra package and the semantics are well known. "binPath= " needs the space after '='.
+        var bin = $"\"{Path.Combine(installDir, UnattendedPaths.ServiceExeName)}\"";
+        var exists = Sc("query", UnattendedPaths.ServiceName) == 0;
+        if (Sc(exists ? "config" : "create", UnattendedPaths.ServiceName, "binPath=", bin, "start=", "auto", "obj=", "LocalSystem",
+                "DisplayName=", "DeskShare unattended access") != 0)
+            return false;
+        Sc("description", UnattendedPaths.ServiceName, "Keeps the DeskShare screen sender running in the active session.");
+        // Restart on crash: after 5 s, 5 s, 30 s; failure counter resets after a day.
+        Sc("failure", UnattendedPaths.ServiceName, "reset=", "86400", "actions=", "restart/5000/restart/5000/restart/30000");
+        return Sc("start", UnattendedPaths.ServiceName) == 0;
     }
 
     private static void StopService()
@@ -102,9 +218,31 @@ internal static class Installer
         foreach (var d in Directory.GetDirectories(from)) CopyDir(d, Path.Combine(to, Path.GetFileName(d)));
     }
 
+    private static void DeleteDir(string dir)
+    {
+        if (Directory.Exists(dir)) Directory.Delete(dir, true);
+    }
+
+    private static void MoveWithRetry(string from, string to)
+    {
+        for (var i = 0; ; i++)
+        {
+            try { Directory.Move(from, to); return; }
+            catch (IOException) when (i < 10) { Thread.Sleep(500); } // exe still locked while the service winds down
+        }
+    }
+
+    private static bool Same(string a, string b) =>
+        Path.TrimEndingDirectorySeparator(a).Equals(Path.TrimEndingDirectorySeparator(b), StringComparison.OrdinalIgnoreCase);
+
     private static int Sc(params string[] args)
     {
-        var psi = new ProcessStartInfo("sc.exe") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true };
+        // Absolute path: a relative "sc.exe" would be searched in the current directory first.
+        var system32 = Environment.SystemDirectory;
+        var psi = new ProcessStartInfo(Path.Combine(system32, "sc.exe"))
+        {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, WorkingDirectory = system32
+        };
         foreach (var a in args) psi.ArgumentList.Add(a);
         using var p = Process.Start(psi)!;
         p.StandardOutput.ReadToEnd();

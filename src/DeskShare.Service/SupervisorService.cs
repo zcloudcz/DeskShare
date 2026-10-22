@@ -24,9 +24,16 @@ internal sealed class SupervisorService : ServiceBase
         var agent = UnattendedPaths.ResolveAgentPath(AppContext.BaseDirectory);
         var agentArgs = $"--config \"{UnattendedPaths.ConfigPath}\" \"--Serilog:WriteTo:1:Args:path={Path.Combine(UnattendedPaths.LogDir, "agent-.log")}\"";
 
-        _supervisor = new Supervisor(SessionLauncher.ActiveConsoleSessionId, session => SessionLauncher.Start(session, agent, agentArgs));
+        _supervisor = new Supervisor(SessionLauncher.ActiveConsoleSessionId, session => SessionLauncher.Start(session, agent, agentArgs), FileLog.Write);
         _cts = new CancellationTokenSource();
         _run = Task.Run(() => _supervisor.RunAsync(_cts.Token));
+        // If the supervisor ever dies, SCM would keep showing "Running" with nothing supervised. Exit non-zero instead so
+        // the service recovery action (restart) kicks in.
+        _run.ContinueWith(t =>
+        {
+            FileLog.Write("Supervisor faulted, exiting: " + t.Exception?.GetBaseException().Message);
+            Environment.Exit(1);
+        }, TaskContinuationOptions.OnlyOnFaulted);
         FileLog.Write("Service started");
     }
 

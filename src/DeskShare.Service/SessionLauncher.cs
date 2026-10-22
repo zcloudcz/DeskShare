@@ -1,5 +1,5 @@
 using System.ComponentModel;
-using System.Diagnostics;
+using DeskShare.Unattended;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 
@@ -19,7 +19,7 @@ internal static class SessionLauncher
     public static uint ActiveConsoleSessionId() => WTSGetActiveConsoleSessionId();
 
     /// <summary>Runs <paramref name="exe"/> with <paramref name="arguments"/> in <paramref name="sessionId"/> as SYSTEM on winsta0\default.</summary>
-    public static Process Start(uint sessionId, string exe, string arguments)
+    public static IAgentProcess Start(uint sessionId, string exe, string arguments)
     {
         if (!OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_SESSIONID, out var own))
             throw new Win32Exception();
@@ -40,8 +40,8 @@ internal static class SessionLauncher
                     CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW, env, Path.GetDirectoryName(exe), ref si, out var pi))
                 throw new Win32Exception();
             CloseHandle(pi.hThread);
-            CloseHandle(pi.hProcess);
-            return Process.GetProcessById(pi.dwProcessId);
+            // Keep hProcess: the supervisor reads the exit code after the process is gone (a PID lookup would throw by then).
+            return new HandleAgent(pi.hProcess, pi.dwProcessId);
         }
         finally
         {
@@ -50,6 +50,20 @@ internal static class SessionLauncher
             CloseHandle(own);
         }
     }
+
+    private sealed class HandleAgent(IntPtr handle, int pid) : IAgentProcess
+    {
+        private IntPtr _handle = handle;
+        public int Id => pid;
+        public bool HasExited => _handle == IntPtr.Zero || WaitForSingleObject(_handle, 0) == 0; // WAIT_OBJECT_0
+        public int ExitCode => GetExitCodeProcess(_handle, out var code) ? (int)code : -1;
+        public void Kill() { if (_handle != IntPtr.Zero) TerminateProcess(_handle, 1); }
+        public void Dispose() { if (_handle != IntPtr.Zero) { CloseHandle(_handle); _handle = IntPtr.Zero; } }
+    }
+
+    [DllImport("kernel32.dll")] private static extern uint WaitForSingleObject(IntPtr h, uint ms);
+    [DllImport("kernel32.dll")] private static extern bool GetExitCodeProcess(IntPtr h, out uint code);
+    [DllImport("kernel32.dll")] private static extern bool TerminateProcess(IntPtr h, uint code);
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct STARTUPINFO
