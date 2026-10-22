@@ -17,7 +17,8 @@ public class VideoSink : IVideoSink, IDisposable
 {
     private readonly ILogger<VideoSink> _logger;
     private readonly FFmpegVideoEndPoint? _ffmpegEndpoint;
-    private bool _disposed;
+    private volatile bool _disposed;
+    private int _decodesInFlight; // frames being decoded right now (native FFmpeg code) on the network thread
     private readonly ConcurrentQueue<byte[]> _frameQueue = new();
     private const int MaxQueueSize = 30; // Keep max 30 frames (1 second at 30fps)
     private bool _isInitialized;
@@ -131,9 +132,13 @@ public class VideoSink : IVideoSink, IDisposable
     /// </summary>
     public void GotVideoFrame(IPEndPoint remoteEndPoint, uint timestamp, byte[] frame, VideoFormat format)
     {
+        // Counted so Dispose can wait for a decode that is running in native code: freeing the FFmpeg decoder under
+        // it crashes the whole process. No lock on purpose: the decode raises FrameReceived, whose handler may block on
+        // the UI thread, and Dispose is called from the UI thread.
+        Interlocked.Increment(ref _decodesInFlight);
         try
         {
-            if (!_isInitialized || _ffmpegEndpoint == null)
+            if (_disposed || !_isInitialized || _ffmpegEndpoint == null)
             {
                 _logger.LogWarning("Decoder not initialized, cannot decode frame");
                 return;
@@ -147,6 +152,10 @@ public class VideoSink : IVideoSink, IDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to process video frame");
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _decodesInFlight);
         }
     }
 
@@ -275,8 +284,16 @@ public class VideoSink : IVideoSink, IDisposable
     {
         if (_disposed) return;
 
-        _disposed = true;
+        _disposed = true; // no new decode starts from here on
         _frameQueue.Clear();
+
+        // A decode that already started finishes first (bounded: its handler could be waiting for the UI thread, which
+        // is the one disposing us).
+        var waited = System.Diagnostics.Stopwatch.StartNew();
+        while (Volatile.Read(ref _decodesInFlight) > 0 && waited.ElapsedMilliseconds < 1000)
+        {
+            Thread.Sleep(2);
+        }
 
         if (_ffmpegEndpoint != null)
         {
