@@ -125,6 +125,7 @@ public partial class ProjectionWindow : Window
             _clientManager.HostAllowsFilesChanged += OnHostAllowsFilesChanged;
             _clientManager.HostAllowsPrivacyScreenChanged += OnHostAllowsPrivacyScreenChanged;
             _clientManager.PrivacyScreenStateChanged += OnPrivacyScreenStateChanged;
+            _clientManager.DisplaysChanged += OnDisplaysChanged;
 
             await _clientManager.ConnectAsync(_serverId, _password, null, _webSocketToken, _clientId, _iceServers, _resumeToken);
 
@@ -206,6 +207,37 @@ public partial class ProjectionWindow : Window
         var wanted = PrivacyButton.IsChecked == true;
         PrivacyButton.IsChecked = !wanted;
         _clientManager.SetPrivacyScreen(wanted);
+    }
+
+    // Set while the combo is filled from a "displays" message, so that filling it does not send a switch request.
+    private bool _updatingDisplays;
+
+    // The picker exists only while the host has several displays and authorized control (the host refuses a switch otherwise).
+    private void OnDisplaysChanged(object? sender, EventArgs e)
+    {
+        Dispatcher.UIThread.Invoke(() =>
+        {
+            _updatingDisplays = true;
+            try
+            {
+                DisplayCombo.ItemsSource = _clientManager.Displays.Select(d => d.Name).ToList();
+                DisplayCombo.SelectedIndex = _clientManager.CurrentDisplay;
+                DisplayCombo.IsVisible = _clientManager.CanSwitchDisplay;
+            }
+            finally
+            {
+                _updatingDisplays = false;
+            }
+        });
+    }
+
+    // The combo is put back by the host's answer (OnDisplaysChanged), so a refused switch is visible.
+    private void Display_Changed(object? sender, SelectionChangedEventArgs e)
+    {
+        var selected = DisplayCombo.SelectedIndex;
+        if (_updatingDisplays || selected < 0 || selected >= _clientManager.Displays.Count)
+            return;
+        _clientManager.SwitchDisplay(_clientManager.Displays[selected].Index);
     }
 
     private CancellationTokenSource? _fileSendCts;
@@ -647,6 +679,7 @@ public partial class ProjectionWindow : Window
         _clientManager.HostAllowsFilesChanged -= OnHostAllowsFilesChanged;
         _clientManager.HostAllowsPrivacyScreenChanged -= OnHostAllowsPrivacyScreenChanged;
         _clientManager.PrivacyScreenStateChanged -= OnPrivacyScreenStateChanged;
+        _clientManager.DisplaysChanged -= OnDisplaysChanged;
         _fileSendCts?.Cancel();
 
         _clientManager.DisconnectAsync().GetAwaiter().GetResult();
