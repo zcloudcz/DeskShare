@@ -30,7 +30,6 @@ public class ScreenSenderService : IHostedService, IDisposable
     private readonly SemaphoreSlim _registerLock = new(1, 1);
     private Task? _executingTask;
     private CancellationTokenSource? _stoppingCts;
-    private WebRTCSession? _webrtcSession;
     private WebRTCSessionWithInput? _webrtcSessionWithInput;
     private CapturePipeline? _pipeline;
     private bool _disposed;
@@ -51,6 +50,9 @@ public class ScreenSenderService : IHostedService, IDisposable
 
     // 1 while a signaling reconnect loop is running, so a burst of "connection lost" events starts only one loop.
     private int _reconnecting;
+
+    // e2e keys of the recent passkeys, used to verify each viewer's binding (memory only, never sent anywhere)
+    private readonly E2EKeyRing _e2eKeys = new();
 
     // Passkey rotation fields
     private string? _currentPasskey;
@@ -231,8 +233,9 @@ public class ScreenSenderService : IHostedService, IDisposable
                 enableFileReceive = false;
             }
 
-            // The data channel session is also needed for clipboard sharing or file receiving alone; input stays unauthorized then.
-            if (_configuration.EnableRemoteControl || _configuration.EnableClipboard || enableFileReceive || _configuration.EnablePrivacyScreen)
+            // The data channel session is always used, even for a view-only host: the end-to-end binding
+            // (E2EBinding) runs over the data channel, so a session without one could not verify its viewer.
+            // Input, clipboard and files stay unauthorized unless the host enabled them.
             {
                 _logger.LogInformation("Creating WebRTC session WITH data channel (remote control: {Control}, clipboard: {Clipboard})", _configuration.EnableRemoteControl, _configuration.EnableClipboard);
 
@@ -279,6 +282,7 @@ public class ScreenSenderService : IHostedService, IDisposable
                     }
                 }
                 ApplyIceServers(_webrtcSessionWithInput.VideoSource);
+                _webrtcSessionWithInput.EnableE2EBinding(_e2eKeys);
 
                 // Subscribe to events
                 _webrtcSessionWithInput.ConnectionStateChanged += (sender, state) =>
@@ -318,47 +322,6 @@ public class ScreenSenderService : IHostedService, IDisposable
                 videoSource = _webrtcSessionWithInput.VideoSource;
                 _logger.LogInformation("WebRTC session with input initialized. Client ID: {ClientId}", _webrtcSessionWithInput.ClientId);
                 if (!_webrtcSessionWithInput.IsSignalingConnected)
-                {
-                    OnSignalingConnectionLost(); // server was unreachable at startup: retry in the background
-                }
-            }
-            else
-            {
-                _logger.LogInformation("Creating WebRTC session WITHOUT remote control (view-only mode)");
-
-                // Create basic session (view-only)
-                _webrtcSession = new WebRTCSession();
-                ApplyIceServers(_webrtcSession.VideoSource);
-
-                // Subscribe to events
-                _webrtcSession.ConnectionStateChanged += (sender, state) =>
-                {
-                    _logger.LogInformation("WebRTC connection state: {State}", state);
-                };
-
-                _webrtcSession.ErrorOccurred += (sender, error) =>
-                {
-                    _logger.LogError("WebRTC error: {Error}", error);
-                };
-                _webrtcSession.SignalingConnectionLost += (sender, args) => OnSignalingConnectionLost();
-
-                // Initialize with configured ServerId
-                initialized = await _webrtcSession.InitializeAsync(
-                    outputWidth,
-                    outputHeight,
-                    _configuration.TargetFps,
-                    BuildSignalingUrl(),
-                    _configuration.ServerId);
-
-                if (!initialized)
-                {
-                    _logger.LogError("Failed to initialize WebRTC session");
-                    throw new InvalidOperationException("Failed to initialize WebRTC session");
-                }
-
-                videoSource = _webrtcSession.VideoSource;
-                _logger.LogInformation("WebRTC session initialized (view-only). Client ID: {ClientId}", _webrtcSession.ClientId);
-                if (!_webrtcSession.IsSignalingConnected)
                 {
                     OnSignalingConnectionLost(); // server was unreachable at startup: retry in the background
                 }
@@ -408,9 +371,6 @@ public class ScreenSenderService : IHostedService, IDisposable
 
             _pipeline?.Dispose();
             _pipeline = null;
-
-            _webrtcSession?.Dispose();
-            _webrtcSession = null;
 
             _webrtcSessionWithInput?.Dispose();
             _webrtcSessionWithInput = null;
@@ -500,8 +460,6 @@ public class ScreenSenderService : IHostedService, IDisposable
                     var url = BuildSignalingUrl();
                     if (_webrtcSessionWithInput != null)
                         await _webrtcSessionWithInput.ReconnectSignalingAsync(url, ServerId, stoppingToken);
-                    else if (_webrtcSession != null)
-                        await _webrtcSession.ReconnectSignalingAsync(url, ServerId, stoppingToken);
                     else
                         return; // service is shutting down, sessions are gone
 
@@ -528,7 +486,7 @@ public class ScreenSenderService : IHostedService, IDisposable
 
             // The socket may have dropped again after we connected but before the flag was cleared;
             // that event was ignored, so check once more.
-            var stillConnected = _webrtcSessionWithInput?.IsSignalingConnected ?? _webrtcSession?.IsSignalingConnected ?? true;
+            var stillConnected = _webrtcSessionWithInput?.IsSignalingConnected ?? true;
             if (!stillConnected)
                 OnSignalingConnectionLost();
         }
@@ -609,10 +567,16 @@ public class ScreenSenderService : IHostedService, IDisposable
             HttpResponseMessage response;
             for (var attempt = 1; ; attempt++)
             {
+                // The server never sees the passkey: it gets authKey (it only compares strings), while e2eKey stays
+                // here for the end-to-end check of the viewer (see E2EBinding). Derived per attempt because the
+                // ServerId is part of the salt and can change on a 403.
+                var keys = E2EBinding.DeriveKeys(_currentPasskey, ServerId);
+                _e2eKeys.Add(keys.E2EKey, _passkeyValidTo);
+
                 var registration = new ServerRegistrationMessage
                 {
                     ServerId = ServerId,
-                    Passkey = _currentPasskey,
+                    Passkey = keys.AuthKey,
                     ValidTo = _passkeyValidTo,
                     RemoteControlEnabled = _configuration.EnableRemoteControl,
                     TrustClientPermanent = _configuration.TrustClientPermanent,
@@ -645,7 +609,7 @@ public class ScreenSenderService : IHostedService, IDisposable
                         if (mapped.Count > 0)
                         {
                             _iceServers = mapped;
-                            ApplyIceServers(_webrtcSession?.VideoSource ?? _webrtcSessionWithInput?.VideoSource);
+                            ApplyIceServers(_webrtcSessionWithInput?.VideoSource);
                         }
                     }
                     _logger.LogInformation("Successfully registered with SignalingServer | ServerId: {ServerId}", ServerId);
@@ -724,7 +688,6 @@ public class ScreenSenderService : IHostedService, IDisposable
         _stoppingCts?.Dispose();
 
         _pipeline?.Dispose();
-        _webrtcSession?.Dispose();
         _webrtcSessionWithInput?.Dispose();
         _httpClient?.Dispose();
 

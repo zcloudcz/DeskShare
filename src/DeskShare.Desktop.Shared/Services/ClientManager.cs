@@ -43,6 +43,18 @@ public class ClientManager : IDisposable
     // which rotates every 45 s and is long stale by the time we need to reconnect.
     private string? _resumeToken;
     private static readonly HttpClient ResumeHttpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
+    // End-to-end binding (see E2EBinding). The key comes from the passkey the user typed and stays in memory for
+    // the whole session, so a re-negotiated peer connection (reconnect, resume) can prove itself again.
+    private byte[]? _e2eKey;
+    // Verification state of the CURRENT peer connection: a new object per connection (see PeerContext), so events and
+    // results of a replaced connection can only touch that connection's own, retired object.
+    private volatile PeerContext _peer = new();
+    private volatile bool _bindSent;
+    private string? _disconnectReason;
+
+    /// <summary>Shown (and raised via <see cref="Disconnected"/>) when the end-to-end check fails.</summary>
+    public const string BindFailedMessage = "Secure connection check failed. The connection may be intercepted. Do not continue.";
+
     private CancellationTokenSource? _receiveCts;
     private int _reconnectAttempts;
     private const int MaxReconnectAttempts = 5;
@@ -111,20 +123,28 @@ public class ClientManager : IDisposable
     /// <summary>Asks the host to turn its privacy screen on or off. The result arrives as <see cref="PrivacyScreenStateChanged"/>.</summary>
     public void SetPrivacyScreen(bool enabled)
     {
-        if (_dataChannel?.readyState == RTCDataChannelState.open)
-        {
-            _dataChannel.send("{\"type\":\"privacy_screen\",\"enabled\":" + (enabled ? "true" : "false") + "}");
-        }
+        // Only to the current peer's own channel, and only while it is verified (see PeerContext.TrySend).
+        var json = "{\"type\":\"privacy_screen\",\"enabled\":" + (enabled ? "true" : "false") + "}";
+        _peer.TrySend(channel => channel.send(json), requireVerified: true);
     }
 
-    private void SetHostAllowsPrivacyScreen(bool allowed)
+    // The three "host allows ..." flags describe the CURRENT connection. They change under _hostStateGate, which also
+    // refuses a change that comes from a retired peer, and their events are raised AFTER the gate is released: a
+    // handler may block on the UI thread, and the UI thread must be free to send input.
+    private readonly object _hostStateGate = new();
+
+    private void SetHostAllowsPrivacyScreen(bool allowed, PeerContext? peer = null)
     {
-        if (HostAllowsPrivacyScreen == allowed)
+        lock (_hostStateGate)
         {
-            return;
+            if ((peer != null && peer.IsRetired) || HostAllowsPrivacyScreen == allowed)
+            {
+                return;
+            }
+
+            HostAllowsPrivacyScreen = allowed;
         }
 
-        HostAllowsPrivacyScreen = allowed;
         HostAllowsPrivacyScreenChanged?.Invoke(this, allowed);
     }
 
@@ -168,12 +188,13 @@ public class ClientManager : IDisposable
     // Tells the host whether this viewer wants its clipboard; the host sends nothing until we subscribed.
     private void SendClipboardSubscription()
     {
-        if (!HostAllowsClipboard || _dataChannel?.readyState != RTCDataChannelState.open)
+        if (!HostAllowsClipboard)
         {
             return;
         }
 
-        _dataChannel.send($"{{\"type\":\"clipboard_subscribe\",\"enabled\":{(_shareClipboard ? "true" : "false")}}}");
+        var json = $"{{\"type\":\"clipboard_subscribe\",\"enabled\":{(_shareClipboard ? "true" : "false")}}}";
+        _peer.TrySend(channel => channel.send(json), requireVerified: true);
     }
 
     private void UpdateClipboardEnabled()
@@ -210,12 +231,12 @@ public class ClientManager : IDisposable
 
     private bool SendDataChannelJson(string json)
     {
-        if (!_isConnected || _dataChannel?.readyState != RTCDataChannelState.open)
+        // One read of the peer; check and send happen on ITS channel under its lock (see PeerContext.TrySend).
+        if (!_isConnected || !_peer.TrySend(channel => channel.send(json), requireVerified: true))
         {
             return false;
         }
 
-        _dataChannel.send(json);
         _logger.LogDebug("Sent clipboard message: Size={Size} bytes", Encoding.UTF8.GetByteCount(json));
         return true;
     }
@@ -227,6 +248,8 @@ public class ClientManager : IDisposable
     /// <param name="clientId">The ClientId sent to /authenticate; the token is bound to it, so we must use the same one.</param>
     /// <param name="iceServers">STUN/TURN servers from /authenticate; falls back to public STUN when null.</param>
     /// <param name="resumeToken">Resume token from /authenticate; used by reconnects instead of the passkey.</param>
+    /// <param name="e2eKey">Key from <see cref="E2EBinding.DeriveKeys"/> for the passkey the user typed. Without it the
+    /// sender cannot be verified and the connection is refused (video stays hidden, then it is dropped).</param>
     public async Task ConnectAsync(
         string serverId,
         string? password,
@@ -234,7 +257,8 @@ public class ClientManager : IDisposable
         string? webSocketToken = null,
         string? clientId = null,
         IReadOnlyList<IceServerInfo>? iceServers = null,
-        string? resumeToken = null)
+        string? resumeToken = null,
+        byte[]? e2eKey = null)
     {
         if (_isConnected)
         {
@@ -255,6 +279,8 @@ public class ClientManager : IDisposable
         _signalingUrl = signalingUrl;
         _iceServers = iceServers;
         _resumeToken = resumeToken;
+        _e2eKey = e2eKey;
+        _disconnectReason = null;
 
         try
         {
@@ -323,6 +349,14 @@ public class ClientManager : IDisposable
         };
 
         _peerConnection = new RTCPeerConnection(config);
+        _peer.Retire();
+        _peer = new PeerContext(_peerConnection); // every new peer connection must pass the end-to-end check again
+        var peer = _peer;
+        // What the previous connection's host allowed does not carry over to the new one.
+        SetHostAllowsClipboard(false);
+        SetHostAllowsFiles(false);
+        SetHostAllowsPrivacyScreen(false);
+        _bindSent = false;
 
         // Handle ICE candidates
         _peerConnection.onicecandidate += async (candidate) =>
@@ -358,10 +392,22 @@ public class ClientManager : IDisposable
         {
             _logger.LogInformation("WebRTC connection state: {State}", state);
 
+            // A replaced peer connection must not fail, reconnect or disconnect the new one.
+            if (peer.IsRetired) return;
+
+            // The sender drops a viewer whose binding does not verify. Losing the connection after we sent our
+            // binding but before the sender's arrived is treated as a failed check, not as a network glitch to retry.
+            if (!peer.IsRetired && _bindSent && !peer.IsVerified && state is RTCPeerConnectionState.failed or RTCPeerConnectionState.closed or RTCPeerConnectionState.disconnected)
+            {
+                await FailBindingAsync();
+                return;
+            }
+
             if (state == RTCPeerConnectionState.connected)
             {
                 _logger.LogInformation("WebRTC peer connection established");
                 _reconnectAttempts = 0;
+                StartBindDeadline(peer);
             }
             else if (state == RTCPeerConnectionState.disconnected)
             {
@@ -387,6 +433,9 @@ public class ClientManager : IDisposable
         _videoSink = new VideoSink(_videoSinkLogger);
         _videoSink.FrameReceived += (sender, args) =>
         {
+            // Nothing is shown until the sender proved (e2e binding) that nobody sits in the middle.
+            if (!peer.IsVerified) return;
+
             _logger.LogDebug("[ClientManager] VideoSink.FrameReceived event fired - frame size: {Size} bytes", args.FrameData.Length);
             FrameReceived?.Invoke(this, args);
 
@@ -411,31 +460,42 @@ public class ClientManager : IDisposable
 
         // Setup data channel for remote control input and clipboard
         _dataChannel = await _peerConnection.createDataChannel("input", new RTCDataChannelInit());
-        _dataChannel.onopen += () =>
+        var channel = _dataChannel;
+        peer.Channel = channel; // the peer's own transport: everything for this connection is sent through it
+        channel.onopen += () =>
         {
+            if (peer.IsRetired) return; // channel of a replaced connection
             _logger.LogInformation("Data channel opened");
             _clipboardManager?.StartMonitoring();
 
+            // Every send of this uploader goes to ITS channel and only while its own peer is current and verified:
+            // a transfer started on a replaced connection can never leak into the new one.
             _fileUploader = new FileUploader(
-                json => { if (_dataChannel?.readyState != RTCDataChannelState.open) return false; _dataChannel.send(json); return true; },
-                () => _dataChannel?.bufferedAmount ?? 0);
+                json => peer.TrySend(c => c.send(json), requireVerified: true),
+                () => channel.bufferedAmount);
 
-            // The host answers with authorization_response, which also says whether it shares the clipboard.
-            _dataChannel!.send("{\"type\":\"authorization_request\"}");
+            // First message on the channel is our e2e binding; the authorization_request follows once the
+            // sender's binding verified (see OnDataChannelMessage). Nothing else is sent before that.
+            if (!TrySendBind(peer))
+            {
+                _ = FailBindingAsync();
+            }
         };
-        _dataChannel.onclose += () =>
+        channel.onclose += () =>
         {
+            if (peer.IsRetired) return; // an old channel closing must not reset the new connection's state
             _logger.LogInformation("Data channel closed");
             _clipboardManager?.StopMonitoring();
-            SetHostAllowsClipboard(false);
-            SetHostAllowsFiles(false);
-            SetHostAllowsPrivacyScreen(false);
+            SetHostAllowsClipboard(false, peer);
+            SetHostAllowsFiles(false, peer);
+            SetHostAllowsPrivacyScreen(false, peer);
         };
         _dataChannel.onerror += (error) =>
         {
             _logger.LogError("Data channel error: {Error}", error);
         };
-        _dataChannel.onmessage += OnDataChannelMessage;
+        // Bound to THIS connection's context: a message is always judged against the peer whose channel delivered it.
+        channel.onmessage += (c, protocol, data) => OnDataChannelMessage(peer, c, data);
 
         _logger.LogInformation("WebRTC peer connection configured with video sink and data channel");
 
@@ -445,7 +505,16 @@ public class ClientManager : IDisposable
         _logger.LogInformation("WebRTC setup complete, waiting for offer from server");
     }
 
-    private void OnDataChannelMessage(RTCDataChannel channel, DataChannelPayloadProtocols protocol, byte[] data)
+    // Judged with the context of the connection whose channel delivered the message. No lock is held while it is
+    // handled: handling raises events (the UI may block on them) and sends, and the UI thread must stay free to send
+    // input (which takes the peer's lock). The state changes below are refused for a retired peer instead.
+    private void OnDataChannelMessage(PeerContext peer, RTCDataChannel channel, byte[] data)
+    {
+        if (peer.IsRetired) return;
+        HandlePeerMessage(peer, channel, data);
+    }
+
+    private void HandlePeerMessage(PeerContext peer, RTCDataChannel channel, byte[] data)
     {
         try
         {
@@ -457,15 +526,30 @@ public class ClientManager : IDisposable
             {
                 var messageType = typeElement.GetString();
 
+                if (messageType == "e2e_bind")
+                {
+                    if (!peer.IsVerified && !VerifySenderBind(peer, channel, doc.RootElement))
+                    {
+                        _ = FailBindingAsync();
+                    }
+                    return;
+                }
+
+                // Until the sender's binding verified, whatever else arrives is ignored (it could come from a man in the middle).
+                if (!peer.IsVerified)
+                {
+                    return;
+                }
+
                 if (messageType == "authorization_response")
                 {
-                    SetHostAllowsClipboard(doc.RootElement.TryGetProperty("clipboard", out var clip) && clip.ValueKind == JsonValueKind.True);
-                    SetHostAllowsFiles(doc.RootElement.TryGetProperty("files", out var files) && files.ValueKind == JsonValueKind.True);
+                    SetHostAllowsClipboard(doc.RootElement.TryGetProperty("clipboard", out var clip) && clip.ValueKind == JsonValueKind.True, peer);
+                    SetHostAllowsFiles(doc.RootElement.TryGetProperty("files", out var files) && files.ValueKind == JsonValueKind.True, peer);
                     SetHostAllowsPrivacyScreen(
                         doc.RootElement.TryGetProperty("privacy", out var privacy) && privacy.ValueKind == JsonValueKind.True
-                        && doc.RootElement.TryGetProperty("authorized", out var authorized) && authorized.ValueKind == JsonValueKind.True);
+                        && doc.RootElement.TryGetProperty("authorized", out var authorized) && authorized.ValueKind == JsonValueKind.True, peer);
                 }
-                else if (messageType == "privacy_screen_state")
+                else if (messageType == "privacy_screen_state" && !peer.IsRetired)
                 {
                     PrivacyScreenStateChanged?.Invoke(this, (
                         doc.RootElement.TryGetProperty("enabled", out var on) && on.ValueKind == JsonValueKind.True,
@@ -492,25 +576,117 @@ public class ClientManager : IDisposable
         }
     }
 
-    private void SetHostAllowsFiles(bool allowed)
+    // ---- End-to-end binding (see E2EBinding) ----
+
+    /// <summary>Fingerprints as this side sees them: (sender = remote description, viewer = local description).</summary>
+    private static (string? SenderFp, string? ViewerFp) GetFingerprints(PeerContext peer) =>
+        (E2EBinding.GetFingerprint(peer.Connection?.remoteDescription?.sdp?.ToString()),
+         E2EBinding.GetFingerprint(peer.Connection?.localDescription?.sdp?.ToString()));
+
+    private bool TrySendBind(PeerContext peer)
     {
-        if (HostAllowsFiles == allowed)
+        var (senderFp, viewerFp) = GetFingerprints(peer);
+        if (_e2eKey == null || senderFp == null || viewerFp == null)
         {
-            return;
+            return false;
         }
 
-        HostAllowsFiles = allowed;
+        var bind = E2EBinding.BuildBindMessage(E2EBinding.ViewerRole,
+            E2EBinding.ComputeMac(_e2eKey, E2EBinding.ViewerRole, senderFp, viewerFp));
+        // The bind is the one message allowed before verification (requireVerified: false).
+        if (!peer.TrySend(c => c.send(bind), requireVerified: false))
+        {
+            return false;
+        }
+
+        _bindSent = true;
+        return true;
+    }
+
+    /// <summary>Checks the sender's binding; on success releases video and asks the host what it allows.</summary>
+    private bool VerifySenderBind(PeerContext peer, RTCDataChannel channel, JsonElement message)
+    {
+        var (senderFp, viewerFp) = GetFingerprints(peer);
+        if (_e2eKey == null || senderFp == null || viewerFp == null
+            || !E2EBinding.TryReadBind(message, out var role, out var mac) || role != E2EBinding.SenderRole
+            || !E2EBinding.VerifyMac(_e2eKey, E2EBinding.SenderRole, senderFp, viewerFp, mac))
+        {
+            return false;
+        }
+
+        // Commits to this peer only, and only if it was not replaced meanwhile.
+        if (!peer.TryVerify())
+        {
+            return true; // a stale message of a replaced connection: neither a failure nor a verification of anything
+        }
+
+        _logger.LogInformation("Sender passed the end-to-end binding check");
+
+        // The host answers with authorization_response, which also says whether it shares the clipboard.
+        peer.TrySend(c => c.send("{\"type\":\"authorization_request\"}"), requireVerified: true);
+        return true;
+    }
+
+    /// <summary>Drops the connection if the sender has not verified within <see cref="E2EBinding.Timeout"/>.</summary>
+    private void StartBindDeadline(PeerContext peer)
+    {
+        if (peer.IsVerified) return;
+
+        _ = Task.Delay(E2EBinding.Timeout).ContinueWith(_ =>
+        {
+            // Only the peer connection that was waiting counts, not a newer one created by a reconnect.
+            if (!peer.IsVerified && !peer.IsRetired)
+            {
+                return FailBindingAsync();
+            }
+            return Task.CompletedTask;
+        }, TaskScheduler.Default).Unwrap();
+    }
+
+    private async Task FailBindingAsync()
+    {
+        // Only the fact is logged, never keys or fingerprints.
+        _logger.LogWarning("End-to-end check failed: the sender could not be verified. The connection may be intercepted.");
+        _bindSent = false;
+        _disconnectReason = BindFailedMessage;
+        try
+        {
+            await DisconnectAsync();
+        }
+        catch (Exception ex)
+        {
+            // Called from async-void event handlers and timers: an exception here would take the process down.
+            _logger.LogWarning(ex, "Disconnecting after a failed end-to-end check failed");
+        }
+    }
+
+    private void SetHostAllowsFiles(bool allowed, PeerContext? peer = null)
+    {
+        lock (_hostStateGate)
+        {
+            if ((peer != null && peer.IsRetired) || HostAllowsFiles == allowed)
+            {
+                return;
+            }
+
+            HostAllowsFiles = allowed;
+        }
+
         HostAllowsFilesChanged?.Invoke(this, allowed);
     }
 
-    private void SetHostAllowsClipboard(bool allowed)
+    private void SetHostAllowsClipboard(bool allowed, PeerContext? peer = null)
     {
-        if (HostAllowsClipboard == allowed)
+        lock (_hostStateGate)
         {
-            return;
+            if ((peer != null && peer.IsRetired) || HostAllowsClipboard == allowed)
+            {
+                return;
+            }
+
+            HostAllowsClipboard = allowed;
         }
 
-        HostAllowsClipboard = allowed;
         UpdateClipboardEnabled();
         if (allowed)
         {
@@ -953,17 +1129,18 @@ public class ClientManager : IDisposable
             throw new InvalidOperationException("Not connected or data channel not available");
         }
 
-        if (_dataChannel.readyState != RTCDataChannelState.open)
-        {
-            _logger.LogWarning("Data channel is not open, cannot send input");
-            return;
-        }
-
         try
         {
             var json = JsonSerializer.Serialize(input);
             var bytes = Encoding.UTF8.GetBytes(json);
-            _dataChannel.send(bytes);
+            // One read of the peer; no input to a peer that has not passed the end-to-end check, and never to a
+            // channel other than that peer's own.
+            if (!_peer.TrySend(c => c.send(bytes), requireVerified: true))
+            {
+                _logger.LogDebug("Input not sent: data channel not open or peer not verified");
+                return;
+            }
+
             _logger.LogDebug("Sent input: {Type}", input.Type);
         }
         catch (Exception ex)
@@ -1031,8 +1208,10 @@ public class ClientManager : IDisposable
         _isConnected = false;
         _serverId = null;
         _resumeToken = null;
+        _e2eKey = null; // the session is over: the next connect derives it again from the passkey
 
-        Disconnected?.Invoke(this, "User disconnected");
+        Disconnected?.Invoke(this, _disconnectReason ?? "User disconnected");
+        _disconnectReason = null;
         _logger.LogInformation("Disconnected successfully");
     }
 

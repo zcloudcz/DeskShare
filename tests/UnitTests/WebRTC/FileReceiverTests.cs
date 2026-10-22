@@ -53,6 +53,28 @@ public sealed class FileReceiverTests : IDisposable
     private void End(FileReceiver r, string id, byte[] all) =>
         Send(r, JsonSerializer.Serialize(new { type = "file_end", id, sha256 = Convert.ToHexString(SHA256.HashData(all)).ToLowerInvariant() }));
 
+    // ---- peer lifetime ----
+
+    [Fact]
+    public void OfferJudgedForARetiredPeer_IsDropped_AndTheNextPeersOfferIsAccepted()
+    {
+        using var r = Create();
+        var repliesToA = new List<string>();
+        var offerA = Msg(new { type = "file_offer", id = NewId(), name = "a.txt", size = 3 });
+
+        var generationOfA = r.Generation; // DataChannelManager judges A's offer (A still current) ...
+        r.Abort();                        // ... B replaces A before the effect runs ...
+        r.Handle("file_offer", offerA, json => { repliesToA.Add(json); return true; }, generationOfA); // ... A's late effect
+
+        Assert.Empty(repliesToA);         // no transfer was started for A
+        Assert.Empty(Files());
+
+        var idB = NewId();
+        r.Handle("file_offer", Msg(new { type = "file_offer", id = idB, name = "b.txt", size = 3 }), generation: r.Generation);
+        Assert.Equal("file_accept", LastType()); // not "busy"
+        Assert.Equal(new[] { "b.txt.part" }, Files());
+    }
+
     // ---- name sanitizing ----
 
     [Theory]
@@ -530,7 +552,9 @@ public sealed class FileReceiverTests : IDisposable
 
         manager.ProcessInputMessage("""{"type":"file_offer","id":"11111111-1111-1111-1111-111111111111","name":"a.txt","size":1}""");
 
-        Assert.Equal("file_accept", LastType());
+        // The reply is routed to the peer that sent the offer (here: a peer without a transport), so the proof that the
+        // receiver was reached is the transfer it started.
+        Assert.NotEmpty(Files());
     }
 
     [Fact]
