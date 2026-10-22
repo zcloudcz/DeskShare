@@ -77,10 +77,12 @@ void main() {
       expect(passkeyExpiration(DateTime.utc(2026, 1, 1, 0, 0, 45)), DateTime.utc(2026, 1, 1, 0, 1, 30));
     });
 
-    test('credential wire value is the raw passkey today (T3 adapter point)', () {
+    test('credential wire value is the HKDF auth key, never the raw passkey', () {
       final c = PasskeyCredential('abc-def-ghj');
       expect(c.isComplete, isTrue);
-      expect(c.wireValue('server-123456789'), 'ABCDEFGHJ');
+      // Independent value from Node's crypto.hkdfSync.
+      expect(c.wireValue('server-123456789'), '8DafN8Ubr2W_rLEAy-YwIWFK_Ccy2mIQY9U4FC1bvuc');
+      expect(c.wireValue('server-123456789'), isNot(contains('ABCDEFGHJ')));
       expect(PasskeyCredential('ABC').isComplete, isFalse);
     });
   });
@@ -213,11 +215,11 @@ void main() {
       final body = jsonDecode(seen.body) as Map<String, dynamic>;
       expect(body, {
         'ServerId': 'server-123456789',
-        'Passkey': 'ABCDEFGHJ',
+        'Passkey': '8DafN8Ubr2W_rLEAy-YwIWFK_Ccy2mIQY9U4FC1bvuc',
         'ClientId': 'client-x',
         'Timestamp': '2026-01-02T03:04:05.123Z',
         'Nonce': '11111111-2222-3333-4444-555555555555',
-        'Signature': 'rkC13GYZpPHAnZ9rOeTV4as/12QacJIj7ETqRwwxFS4=',
+        'Signature': 'jWWHYEH/plKy7MVlDlRsMxI/L++oXjX1uY34KxiH830=',
       });
       expect(grant.webSocketToken, 'tok');
       expect(grant.iceServers.single.toRtc(), {'urls': ['stun:a'], 'username': 'u', 'credential': 'c'});
@@ -281,7 +283,7 @@ void main() {
         ownerSecret: 'secret',
       );
       expect(body['ServerId'], 'server-123456789');
-      expect(body['Passkey'], 'ABCDEFGHJ');
+      expect(body['Passkey'], '8DafN8Ubr2W_rLEAy-YwIWFK_Ccy2mIQY9U4FC1bvuc');
       expect(body['RemoteControlEnabled'], true);
       expect(body['TrustClientPermanent'], false);
       expect(body['OwnerSecret'], 'secret');

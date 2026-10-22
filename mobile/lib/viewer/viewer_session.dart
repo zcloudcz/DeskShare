@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import '../core/credential.dart';
+import '../core/e2e_binding.dart';
 import '../core/ids.dart';
 import '../core/input_message.dart';
 import '../core/signaling_api.dart';
@@ -64,6 +65,17 @@ class WebRtcViewerSession extends ViewerSession {
   final List<SignalingMessage> _pendingIce = [];
   List<IceServer> _iceServers = const [];
 
+  /// Key of the e2e_bind handshake (derived from the typed passkey, never sent anywhere).
+  List<int>? _e2eKey;
+
+  /// Verification state of the CURRENT peer connection only. A new offer gets a new object and retires the old
+  /// one, so a late result of an old connection can never mark the new one verified.
+  PeerBinding? _binding;
+
+  /// Video of the current connection, held back until its binding verified.
+  MediaStream? _pendingStream;
+  Timer? _bindTimer;
+
   @override
   ViewerState get state => _state;
   @override
@@ -95,6 +107,7 @@ class WebRtcViewerSession extends ViewerSession {
     if (!credential.isComplete) return _set(ViewerState.failed, 'The passkey has 9 characters (XXX-XXX-XXX)');
 
     _serverId = id;
+    _e2eKey = credential.e2eKey(id);
     final gen = ++_gen;
     _set(ViewerState.connecting, 'Authenticating...');
     try {
@@ -134,7 +147,9 @@ class WebRtcViewerSession extends ViewerSession {
     if (_state == ViewerState.connected) {
       // Media flows peer to peer; a signaling outage must not end a running session.
       _set(ViewerState.connected, 'Signaling offline - video continues');
-    } else if (_state == ViewerState.connecting) {
+    } else if (_state == ViewerState.connecting &&
+        _pc?.connectionState != RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+      // (A peer that is already connected is waiting for its binding check; its own 10 s deadline decides.)
       _teardown();
       _set(ViewerState.failed, 'Disconnected from signaling server');
     }
@@ -221,14 +236,16 @@ class WebRtcViewerSession extends ViewerSession {
       return;
     }
     _pc = pc;
+    final binding = _binding = PeerBinding();
 
     pc.onTrack = (e) {
+      if (!identical(binding, _binding)) return;
       if (e.track.kind == 'video' && e.streams.isNotEmpty) {
-        _renderer!.srcObject = e.streams.first;
-        _notify();
+        _pendingStream = e.streams.first;
+        _showVideo(binding);
       }
     };
-    pc.onDataChannel = _setupDataChannel;
+    pc.onDataChannel = (channel) => _setupDataChannel(pc, binding, channel);
     pc.onIceCandidate = (c) {
       if (c.candidate == null) return;
       _send(SignalingMessage(
@@ -243,10 +260,20 @@ class WebRtcViewerSession extends ViewerSession {
       if (!identical(pc, _pc)) return;
       switch (s) {
         case RTCPeerConnectionState.RTCPeerConnectionStateConnected:
-          _set(ViewerState.connected, 'Receiving video stream');
+          if (!binding.isVerified) {
+            _set(ViewerState.connecting, 'Verifying secure connection...');
+            _startBindTimer(binding);
+          }
         case RTCPeerConnectionState.RTCPeerConnectionStateFailed:
         case RTCPeerConnectionState.RTCPeerConnectionStateClosed:
-          if (_state != ViewerState.idle) _set(ViewerState.failed, 'Connection to the host was lost');
+        case RTCPeerConnectionState.RTCPeerConnectionStateDisconnected:
+          // The host drops a viewer whose binding does not verify. Losing the connection after we sent ours but
+          // before the host's arrived is a failed check, not a network glitch.
+          if (binding.bindSent && !binding.isVerified && _state != ViewerState.idle) {
+            _failBinding();
+          } else if (s != RTCPeerConnectionState.RTCPeerConnectionStateDisconnected && _state != ViewerState.idle) {
+            _set(ViewerState.failed, 'Connection to the host was lost');
+          }
         default:
           break;
       }
@@ -293,12 +320,22 @@ class WebRtcViewerSession extends ViewerSession {
     await pc.addCandidate(RTCIceCandidate(text, mid, index));
   }
 
-  void _setupDataChannel(RTCDataChannel channel) {
+  void _setupDataChannel(RTCPeerConnection pc, PeerBinding binding, RTCDataChannel channel) {
+    if (!identical(binding, _binding) || binding.isRetired) {
+      channel.close(); // a channel of a replaced connection
+      return;
+    }
     _dc = channel;
+    bool current() => identical(binding, _binding) && identical(channel, _dc);
     channel.onDataChannelState = (s) {
+      if (!current()) return;
       if (s == RTCDataChannelState.RTCDataChannelOpen) {
-        // The reply tells us whether the host allows remote control.
-        _sendDc({'type': 'authorization_request', 'timestamp': DateTime.now().toUtc().toIso8601String()});
+        // First message on the channel is our binding; authorization_request follows only after the host's verified.
+        unawaited(_sendBind(pc, binding, channel).then((ok) {
+          if (!ok && current()) _failBinding();
+        }, onError: (Object _) {
+          if (current()) _failBinding();
+        }));
       } else if (s == RTCDataChannelState.RTCDataChannelClosed) {
         _controlAvailable = false;
         _controlEnabled = false;
@@ -306,29 +343,105 @@ class WebRtcViewerSession extends ViewerSession {
       }
     };
     channel.onMessage = (msg) {
-      if (msg.isBinary) return;
+      if (msg.isBinary || !current()) return;
+      final Object? j;
       try {
-        final j = jsonDecode(msg.text);
-        if (j is! Map<String, dynamic>) return;
-        switch (j['type']) {
-          case 'authorization_response':
-            _controlAvailable = j['authorized'] == true;
-            if (!_controlAvailable) _controlEnabled = false;
-            _set(_state, _controlAvailable ? 'Remote control is available' : 'View only: the host did not allow control');
-          case 'authorization_revoked':
-            _controlAvailable = false;
-            _controlEnabled = false;
-            _set(_state, 'The host revoked remote control');
-        }
+        j = jsonDecode(msg.text);
       } on FormatException {
-        // not JSON: ignore
+        return; // not JSON: ignore
+      }
+      if (j is! Map<String, dynamic>) return;
+      if (j['type'] == 'e2e_bind') {
+        if (binding.isVerified) return;
+        unawaited(_verifySenderBind(pc, j).then((ok) {
+          // Success AND failure only count for the connection the check started on.
+          if (!current()) return;
+          if (ok) {
+            _onVerified(binding);
+          } else {
+            _failBinding();
+          }
+        }, onError: (Object _) {
+          if (current()) _failBinding();
+        }));
+        return;
+      }
+      // Until the host's binding verified, whatever else arrives is ignored (it could come from a man in the middle).
+      if (!binding.isVerified) return;
+      switch (j['type']) {
+        case 'authorization_response':
+          _controlAvailable = j['authorized'] == true;
+          if (!_controlAvailable) _controlEnabled = false;
+          _set(_state, _controlAvailable ? 'Remote control is available' : 'View only: the host did not allow control');
+        case 'authorization_revoked':
+          _controlAvailable = false;
+          _controlEnabled = false;
+          _set(_state, 'The host revoked remote control');
       }
     };
   }
 
+  /// Fingerprints as this side sees them: the sender's is in the remote description (its offer), ours in the local one.
+  Future<({String? sender, String? viewer})> _fingerprints(RTCPeerConnection pc) async => (
+        sender: getFingerprint((await pc.getRemoteDescription())?.sdp),
+        viewer: getFingerprint((await pc.getLocalDescription())?.sdp),
+      );
+
+  Future<bool> _sendBind(RTCPeerConnection pc, PeerBinding binding, RTCDataChannel channel) async {
+    final key = _e2eKey;
+    final fp = await _fingerprints(pc);
+    if (binding.isRetired || !identical(channel, _dc)) return true; // replaced meanwhile: not a failure
+    if (key == null || fp.sender == null || fp.viewer == null) return false;
+    final mac = computeMac(key, viewerRole, fp.sender!, fp.viewer!);
+    await channel.send(RTCDataChannelMessage(buildBindMessage(viewerRole, mac)));
+    binding.bindSent = true;
+    return true;
+  }
+
+  Future<bool> _verifySenderBind(RTCPeerConnection pc, Map<String, dynamic> json) async {
+    final bind = tryReadBind(json);
+    final key = _e2eKey;
+    final fp = await _fingerprints(pc);
+    if (bind == null || key == null || fp.sender == null || fp.viewer == null || bind.role != senderRole) return false;
+    return verifyMac(key, senderRole, fp.sender!, fp.viewer!, bind.mac);
+  }
+
+  void _onVerified(PeerBinding binding) {
+    if (!binding.tryVerify()) return;
+    _bindTimer?.cancel();
+    _showVideo(binding);
+    _set(ViewerState.connected, 'Receiving video stream');
+    // The reply tells us whether the host allows remote control.
+    _sendDc({'type': 'authorization_request', 'timestamp': DateTime.now().toUtc().toIso8601String()});
+  }
+
+  void _showVideo(PeerBinding binding) {
+    final stream = _pendingStream;
+    if (stream == null || !binding.isVerified || !identical(binding, _binding)) return;
+    _renderer?.srcObject = stream;
+    _notify();
+  }
+
+  void _startBindTimer(PeerBinding binding) {
+    _bindTimer?.cancel();
+    if (binding.isVerified) return;
+    _bindTimer = Timer(bindTimeout, () {
+      // Only the connection that was waiting counts, not a newer one created by a reconnect.
+      if (!binding.isVerified && identical(binding, _binding)) _failBinding();
+    });
+  }
+
+  Future<void> _failBinding() async {
+    debugPrint('End-to-end check failed'); // no keys or fingerprints in the log
+    await _teardown();
+    _set(ViewerState.failed, bindFailedMessage);
+  }
+
+  /// Every outgoing data channel message passes here: nothing but the binding goes out before the host verified.
   void _sendDc(Map<String, dynamic> json) {
     final dc = _dc;
     if (dc == null || dc.state != RTCDataChannelState.RTCDataChannelOpen) return;
+    if (!(_binding?.isVerified ?? false)) return;
     dc.send(RTCDataChannelMessage(jsonEncode(json)));
   }
 
@@ -349,6 +462,10 @@ class WebRtcViewerSession extends ViewerSession {
     final pc = _pc;
     _dc = null;
     _pc = null;
+    _binding?.retire();
+    _binding = null;
+    _pendingStream = null;
+    _bindTimer?.cancel();
     _controlAvailable = false;
     _controlEnabled = false;
     await dc?.close();
