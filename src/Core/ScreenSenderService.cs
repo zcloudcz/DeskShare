@@ -65,6 +65,16 @@ public class ScreenSenderService : IHostedService, IDisposable
     {
     }
 
+    /// <summary>Same as the default constructor but with Server ID / owner secret kept at explicit paths (unattended agent: %ProgramData%).</summary>
+    public ScreenSenderService(
+        ILogger<ScreenSenderService> logger,
+        ScreenSenderConfiguration configuration,
+        string serverIdPath,
+        ServerOwnerSecretStore ownerSecretStore)
+        : this(logger, configuration, new HttpClient { Timeout = TimeSpan.FromSeconds(5) }, serverIdPath, ownerSecretStore)
+    {
+    }
+
     /// <summary>Lets tests supply a fake HTTP handler and temp files instead of the real ones.</summary>
     internal ScreenSenderService(
         ILogger<ScreenSenderService> logger,
@@ -116,6 +126,23 @@ public class ScreenSenderService : IHostedService, IDisposable
     /// <summary>Raised when a file from the viewer was received and verified (the UI shows a notice).</summary>
     public event EventHandler<ReceivedFile>? FileReceived;
 
+    private readonly TaskCompletionSource _streaming = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Completes when capture + WebRTC are up and frames are flowing; faults/cancels if the service stops before that.</summary>
+    public Task Streaming => _streaming.Task;
+
+    /// <summary>The running service task (faults when the service dies); completed task before StartAsync.</summary>
+    public Task Execution => _executingTask ?? Task.CompletedTask;
+
+    internal void SignalStreaming() => _streaming.TrySetResult();
+
+    /// <summary>If the service ends before it ever streamed, <see cref="Streaming"/> must not stay pending forever.</summary>
+    internal void WireStreamingSignal(Task execution) => execution.ContinueWith(t =>
+    {
+        if (t.IsFaulted) _streaming.TrySetException(t.Exception!.InnerExceptions);
+        else _streaming.TrySetCanceled();
+    }, TaskScheduler.Default);
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
         _logger.LogInformation("Starting ScreenSenderService with Server ID: {ServerId}", ServerId);
@@ -123,6 +150,7 @@ public class ScreenSenderService : IHostedService, IDisposable
         _stoppingCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         _executingTask = ExecuteAsync(_stoppingCts.Token);
+        WireStreamingSignal(_executingTask);
 
         if (_executingTask.IsCompleted)
         {
@@ -333,6 +361,7 @@ public class ScreenSenderService : IHostedService, IDisposable
             {
                 _logger.LogInformation("Capture pipeline started successfully");
                 _logger.LogInformation("ScreenSenderService is now streaming. Waiting for clients to connect...");
+                SignalStreaming();
 
                 // Keep service running until cancellation
                 while (!stoppingToken.IsCancellationRequested)

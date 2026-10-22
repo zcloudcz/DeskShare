@@ -71,6 +71,15 @@ jobs:
       - name: Publish desktop app
         run: dotnet publish src/DeskShare.DesktopAvalonia/DeskShare.DesktopAvalonia.csproj -c Release -r win-x64 --self-contained false -o publish -p:Version=${{ steps.version.outputs.version }}
 
+      # Unattended-access service + agent ride along in the Velopack package (publish/service/). The app's elevated
+      # helper copies them to %ProgramFiles%\DeskShare\Service, the agent must sit in the 'agent' sub folder.
+      - name: Publish unattended service and agent
+        shell: pwsh
+        run: |
+          dotnet publish src/DeskShare.Service/DeskShare.Service.csproj -c Release -r win-x64 --self-contained false -o publish/service -p:PublishSingleFile=true -p:Version=${{ steps.version.outputs.version }}
+          dotnet publish src/ScreenSenderApp/DeskShare.ScreenSenderApp.csproj -c Release -r win-x64 --self-contained false -o publish/service/agent -p:Version=${{ steps.version.outputs.version }}
+          Copy-Item publish/ffmpeg publish/service/agent/ffmpeg -Recurse
+
       - name: Install Velopack CLI
         run: dotnet tool install -g vpk --version ${{ env.VPK_VERSION }}
 

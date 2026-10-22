@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>DeskShare.Service</AssemblyName>
+    <!-- One exe holds ALL managed code (incl. DeskShare.Unattended + ServiceController), so the elevated installer cannot be
+         hijacked through a swapped DLL next to it and an Authenticode signature on the exe covers everything it runs.
+         Framework-dependent: the runtime itself comes from Program Files. -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- ServiceBase: needed instead of Microsoft.Extensions.Hosting.WindowsServices because that lifetime does not
+         subscribe to SERVICE_CONTROL_SESSIONCHANGE (CanHandleSessionChangeEvent stays false and is not overridable). -->
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DeskShare.Unattended\DeskShare.Unattended.csproj" />
+  </ItemGroup>
+
+</Project>

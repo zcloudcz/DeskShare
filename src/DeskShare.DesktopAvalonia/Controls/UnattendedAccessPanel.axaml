@@ -1,0 +1,18 @@
+<!-- "Unattended access" card of the Server Mode tab (Windows only; hides itself elsewhere). Logic: UnattendedAccessPanel.axaml.cs -->
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="DeskShare.DesktopAvalonia.Controls.UnattendedAccessPanel">
+    <Border Classes="card" Margin="10,10,10,10">
+        <StackPanel>
+            <TextBlock Text="Unattended access" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,10"/>
+            <TextBlock Text="Installs a Windows service that keeps the screen sender running, also at the sign-in screen and after a reboot. Requires administrator approval."
+                       FontSize="11" Foreground="#495057" TextWrapping="Wrap" Margin="0,0,0,10"/>
+            <TextBlock x:Name="StatusText" Text="Status: ..." FontSize="14" Margin="0,0,0,10"/>
+            <StackPanel Orientation="Horizontal" Spacing="10">
+                <Button x:Name="EnableButton" Content="Enable unattended access" Classes="modernButton" Click="OnEnable"/>
+                <Button x:Name="UpdateButton" Content="Update service" Classes="modernButton" Click="OnEnable" IsVisible="False"/>
+                <Button x:Name="DisableButton" Content="Disable unattended access" Classes="modernButton" Click="OnDisable" IsVisible="False"/>
+            </StackPanel>
+        </StackPanel>
+    </Border>
+</UserControl>
