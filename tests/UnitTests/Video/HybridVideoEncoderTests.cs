@@ -292,6 +292,51 @@ public sealed class HybridVideoEncoderTests
         Assert.Equal(5, sent);
     }
 
+    // Like a real GPU encoder: holds one frame back and releases it during the NEXT Encode call.
+    // The "packet" is the first byte of the input, so a test can see whose screen a packet shows.
+    private sealed class BufferingContext : IH264Context
+    {
+        private byte? _held;
+        public readonly List<bool> KeyFlags = new();
+        public byte[]? Encode(byte[] i420, bool forceKeyFrame)
+        {
+            KeyFlags.Add(forceKeyFrame);
+            var previous = _held;
+            _held = i420[0];
+            return previous is { } p ? new[] { p } : null;
+        }
+        public void Dispose() { }
+    }
+
+    [Fact]
+    public void PeerSwitch_DiscardsTheOldPeersBufferedFrame_AndTheNewPeerStartsWithAKeyframe()
+    {
+        var contexts = new List<BufferingContext>();
+        var h264 = new HardwareH264Encoder("fake", (_, _) => { var c = new BufferingContext(); contexts.Add(c); return c; });
+        using var hybrid = new HybridVideoEncoder(NSubstitute.Substitute.For<IVideoSource>(), h264);
+        hybrid.SetVideoSourceFormat(HardwareH264Encoder.Format);
+        var sent = new List<byte>();
+        hybrid.OnVideoSourceEncodedSample += (_, data) => sent.Add(data[0]);
+        void Push(byte screen)
+        {
+            var i420 = new byte[64 * 64 * 3 / 2];
+            i420[0] = screen;
+            hybrid.ExternalVideoSourceRawSample(33, 64, 64, i420, VideoPixelFormatsEnum.I420);
+        }
+        const byte A = 0xA, B = 0xB;
+
+        Push(A); Push(A);                // peer A: its second push releases its first frame, one A frame stays held
+        Assert.Equal(new[] { A }, sent);
+        sent.Clear();
+
+        hybrid.DiscardPending();         // what SIPSorceryVideoSource does before peer B's first frame
+        Push(B); Push(B); Push(B);
+
+        Assert.DoesNotContain(A, sent);  // without the discard B's first push would have released A's held frame
+        Assert.Equal(new[] { B, B }, sent);
+        Assert.True(contexts[^1].KeyFlags[0], "B's first frame must be a keyframe");
+    }
+
     private static bool HasNal(byte[] annexB, int nalType)
     {
         for (var i = 0; i + 3 < annexB.Length; i++)

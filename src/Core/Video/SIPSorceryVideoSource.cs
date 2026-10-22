@@ -322,6 +322,9 @@ public sealed class SIPSorceryVideoSource : IVideoSource
             // "verified" and "keyframe requested" in which a delta frame could slip out.
             if (!ReferenceEquals(_keyframedPeer, peer))
             {
+                // A buffering (hardware) encoder would release the previous peer's last frame during this push, tagged
+                // as this peer's. Drop it before the new peer's first frame goes in.
+                (_videoEncoder as HybridVideoEncoder)?.DiscardPending();
                 _framesSinceKeyframe = KeyframeInterval;
                 _keyframedPeer = peer;
             }

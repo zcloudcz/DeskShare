@@ -185,6 +185,22 @@ internal sealed class HardwareH264Encoder : IVideoSource, IDisposable
 
     public void ForceKeyFrame() => _forceKeyFrame = true;
 
+    /// <summary>
+    /// Throws away whatever the GPU still holds. A hardware encoder lags a frame: the packet it releases during the next
+    /// push is the PREVIOUS input. At a viewer switch that previous input is the old viewer's screen, and it would go to
+    /// the new viewer as a delta frame. Dropping the context loses that packet; the next push opens a fresh context,
+    /// which starts with an IDR.
+    /// </summary>
+    public void DiscardPending()
+    {
+        lock (_lock)
+        {
+            _context?.Dispose();
+            _context = null;
+            _forceKeyFrame = true;
+        }
+    }
+
     public List<VideoFormat> GetVideoSourceFormats() => new() { Format };
     public void SetVideoSourceFormat(VideoFormat videoFormat) { }
     public void RestrictFormats(Func<VideoFormat, bool> filter) { }
