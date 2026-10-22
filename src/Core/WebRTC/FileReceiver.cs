@@ -32,8 +32,12 @@ public sealed class FileReceiver : IDisposable
     private readonly TimeSpan _idleTimeout;
     private readonly object _gate = new();
     private readonly Timer _idleTimer;
+    private readonly TimeProvider _time;
 
     private Transfer? _active;
+    // Guarded by _gate. A timer callback can be queued before a chunk/new offer takes the lock, so the callback
+    // re-checks this instead of trusting that it fired for the current transfer.
+    private long _lastActivity;
     private bool _disposed;
 
     /// <summary>State of the single transfer in flight.</summary>
@@ -52,8 +56,9 @@ public sealed class FileReceiver : IDisposable
     /// <param name="folder">Destination folder; created when missing.</param>
     /// <param name="maxBytes">Largest accepted file.</param>
     /// <param name="send">Sends one JSON reply to the viewer.</param>
-    public FileReceiver(string folder, long maxBytes, Func<string, bool> send, ILogger logger, TimeSpan? idleTimeout = null)
+    public FileReceiver(string folder, long maxBytes, Func<string, bool> send, ILogger logger, TimeSpan? idleTimeout = null, TimeProvider? timeProvider = null)
     {
+        _time = timeProvider ?? TimeProvider.System;
         ArgumentException.ThrowIfNullOrWhiteSpace(folder);
         _folder = Path.GetFullPath(folder);
         _maxBytes = maxBytes;
@@ -164,7 +169,7 @@ public sealed class FileReceiver : IDisposable
         var (stream, partPath) = CreatePartFile(_folder, safeName);
 
         _active = new Transfer { Id = id, SafeName = safeName, Size = size, PartPath = partPath, Stream = stream };
-        _idleTimer.Change(_idleTimeout, Timeout.InfiniteTimeSpan);
+        TouchActivity();
         _logger.Information("Receiving file: {Name}, {Size} bytes", safeName, size);
         _send(JsonSerializer.Serialize(new { type = "file_accept", id }));
     }
@@ -208,7 +213,7 @@ public sealed class FileReceiver : IDisposable
         t.Hash.AppendData(buffer, 0, written);
         t.Received += written;
         t.NextSeq++;
-        _idleTimer.Change(_idleTimeout, Timeout.InfiniteTimeSpan);
+        TouchActivity();
     }
 
     private void HandleEnd(JsonElement root)
@@ -257,12 +262,26 @@ public sealed class FileReceiver : IDisposable
         }
     }
 
-    private void OnIdle()
+    private void TouchActivity()
+    {
+        _lastActivity = _time.GetTimestamp();
+        _idleTimer.Change(_idleTimeout, Timeout.InfiniteTimeSpan);
+    }
+
+    internal void OnIdle()
     {
         lock (_gate)
         {
             if (_active == null || _disposed)
             {
+                return;
+            }
+
+            // Stale callback (a chunk or a newer transfer refreshed the activity while it waited for the lock): re-arm for the rest.
+            var idle = _time.GetElapsedTime(_lastActivity);
+            if (idle < _idleTimeout)
+            {
+                _idleTimer.Change(_idleTimeout - idle, Timeout.InfiniteTimeSpan);
                 return;
             }
 

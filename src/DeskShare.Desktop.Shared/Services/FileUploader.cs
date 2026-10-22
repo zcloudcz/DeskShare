@@ -14,16 +14,21 @@ public sealed class FileUploader
     // Stop queuing chunks while this much is waiting in the data channel, otherwise a 2 GB file would sit in memory.
     private const ulong MaxBufferedBytes = 1024 * 1024;
     private static readonly TimeSpan ReplyTimeout = TimeSpan.FromSeconds(30);
+    // The final drain may legitimately take long on a slow link; it only fails when the buffer stops shrinking.
+    private static readonly TimeSpan NoProgressTimeout = TimeSpan.FromSeconds(30);
 
     private readonly Func<string, bool> _send;
     private readonly Func<ulong> _bufferedAmount;
+    private readonly TimeProvider _time;
     private volatile Channel<JsonElement>? _replies;
     private volatile string? _currentId;
 
     /// <param name="send">Sends one JSON message to the host; false when the channel is not open.</param>
     /// <param name="bufferedAmount">Bytes queued in the data channel and not yet sent.</param>
-    public FileUploader(Func<string, bool> send, Func<ulong> bufferedAmount)
+    /// <param name="timeProvider">Clock for the timeouts; tests inject a fake one.</param>
+    public FileUploader(Func<string, bool> send, Func<ulong> bufferedAmount, TimeProvider? timeProvider = null)
     {
+        _time = timeProvider ?? TimeProvider.System;
         _send = send ?? throw new ArgumentNullException(nameof(send));
         _bufferedAmount = bufferedAmount ?? throw new ArgumentNullException(nameof(bufferedAmount));
     }
@@ -93,6 +98,8 @@ public sealed class FileUploader
             }
 
             Send(new { type = "file_end", id, sha256 = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant() });
+            // The reply clock starts only once file_end has really left: on a slow link the queued data alone can take longer than the timeout.
+            await WaitForDrainAsync(replies, cancellationToken);
             var done = await NextReplyAsync(replies, cancellationToken);
             if (done.GetProperty("type").GetString() != "file_done")
             {
@@ -121,10 +128,37 @@ public sealed class FileUploader
         }
     }
 
-    private static async Task<JsonElement> NextReplyAsync(Channel<JsonElement> replies, CancellationToken cancellationToken)
+    // Waits until nothing is buffered; fails only when the buffer has not shrunk for NoProgressTimeout.
+    private async Task WaitForDrainAsync(Channel<JsonElement> replies, CancellationToken cancellationToken)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(ReplyTimeout);
+        var lowest = _bufferedAmount();
+        var lastProgress = _time.GetTimestamp();
+        while (lowest > 0)
+        {
+            // A reply (done or error) means the host already has everything it needs; NextReplyAsync consumes it.
+            if (replies.Reader.TryPeek(out _))
+            {
+                return;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(10), _time, cancellationToken);
+            var current = _bufferedAmount();
+            if (current < lowest)
+            {
+                lowest = current;
+                lastProgress = _time.GetTimestamp();
+            }
+            else if (_time.GetElapsedTime(lastProgress) >= NoProgressTimeout)
+            {
+                throw new IOException("The connection to the host stalled.");
+            }
+        }
+    }
+
+    private async Task<JsonElement> NextReplyAsync(Channel<JsonElement> replies, CancellationToken cancellationToken)
+    {
+        using var deadline = new CancellationTokenSource(ReplyTimeout, _time);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
         try
         {
             return await replies.Reader.ReadAsync(timeout.Token);

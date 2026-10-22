@@ -841,9 +841,19 @@ function nextHostReply(t) {
 }
 
 // bufferedAmountLowThreshold + event, with a short poll as safety net (the event does not fire on a closed channel).
-async function waitForChannelDrain() {
+// Waits until at most `limit` bytes are buffered. `stop` runs on every wake-up: it throws to abort (cancel, host error)
+// or returns true to leave early. Fails only when the buffer has not shrunk for FILE_REPLY_TIMEOUT_MS (a slow link is fine).
+async function waitForChannelDrain(limit, stop) {
     dataChannel.bufferedAmountLowThreshold = FILE_BUFFER_HIGH / 4;
-    while (dataChannel && dataChannel.readyState === 'open' && dataChannel.bufferedAmount > FILE_BUFFER_HIGH) {
+    let lowest = Infinity, lastProgress = Date.now();
+    while (dataChannel && dataChannel.readyState === 'open' && dataChannel.bufferedAmount > limit) {
+        if (stop()) return;
+        if (dataChannel.bufferedAmount < lowest) {
+            lowest = dataChannel.bufferedAmount;
+            lastProgress = Date.now();
+        } else if (Date.now() - lastProgress >= FILE_REPLY_TIMEOUT_MS) {
+            throw new Error('The connection to the host stalled');
+        }
         await new Promise((resolve) => {
             const done = () => { dataChannel && dataChannel.removeEventListener('bufferedamountlow', done); resolve(); };
             dataChannel.addEventListener('bufferedamountlow', done, { once: true });
@@ -896,7 +906,7 @@ async function sendFile(file) {
         let seq = 0, sent = 0, lastPercent = -1;
         for (let offset = 0; offset < file.size; offset += FILE_CHUNK_BYTES) {
             abortIfStopped();
-            await waitForChannelDrain();
+            await waitForChannelDrain(FILE_BUFFER_HIGH, abortIfStopped);
             abortIfStopped();
             const bytes = new Uint8Array(await file.slice(offset, offset + FILE_CHUNK_BYTES).arrayBuffer());
             hash.update(bytes);
@@ -911,6 +921,8 @@ async function sendFile(file) {
 
         abortIfStopped();
         send({ type: 'file_end', id: t.id, sha256: hash.hex() });
+        // The reply clock starts only once file_end has left; a host reply (done or error) ends the wait early.
+        await waitForChannelDrain(0, () => { if (t.replies.length) return true; abortIfStopped(); });
         const done = await nextHostReply(t);
         if (done.type !== 'file_done') throw new Error(`The host could not save ${file.name}: ${done.reason || done.type}`);
         updateStatus(`Sent ${file.name} (saved on the host as ${done.savedAs})`, 'success');
