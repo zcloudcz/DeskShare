@@ -1,0 +1,79 @@
+using System.Text.Json;
+using DeskShare.Core.Models;
+
+namespace DeskShare.Core.WebRTC;
+
+/// <summary>
+/// Single place that decides which data channel message needs which capability.
+/// Anything not listed here is rejected before it reaches a handler (default deny).
+/// </summary>
+internal static class DataChannelPolicy
+{
+    /// <summary>Largest accepted message in bytes. Real messages (input, clipboard text) are far smaller.</summary>
+    public const int MaxMessageBytes = 64 * 1024;
+
+    // Messages that carry a lowercase "type" string (authorization/clipboard protocol).
+    // Sent by: web viewer remote-control.js (authorization_request), .NET viewer ClientManager.cs (clipboard).
+    private static readonly Dictionary<string, SessionCapabilities> ProtocolMessages = new(StringComparer.Ordinal)
+    {
+        ["authorization_request"] = SessionCapabilities.View,
+        ["clipboard"] = SessionCapabilities.Clipboard
+    };
+
+    /// <summary>
+    /// Maps a parsed message to the capability it needs.
+    /// Input messages (web viewer) use a PascalCase "Type" holding an <see cref="InputMessageType"/> name
+    /// (or its number); all of them need <see cref="SessionCapabilities.Control"/>.
+    /// The two key spellings are kept apart on purpose: a lowercase "type":"MouseMove" would deserialize
+    /// into an InputMessage with the default type, so it must not be treated as input.
+    /// </summary>
+    /// <returns>False when the message is unknown; <paramref name="typeName"/> is then safe to log.</returns>
+    public static bool TryGetRequiredCapability(JsonElement root, out string typeName, out SessionCapabilities required)
+    {
+        typeName = "<none>";
+        required = SessionCapabilities.None;
+
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (root.TryGetProperty("type", out var protocolType))
+        {
+            // Truncate: the name comes from an untrusted peer and ends up in the log.
+            typeName = protocolType.ValueKind == JsonValueKind.String ? Truncate(protocolType.GetString()) : "<non-string>";
+            return protocolType.ValueKind == JsonValueKind.String
+                   && ProtocolMessages.TryGetValue(protocolType.GetString()!, out required);
+        }
+
+        if (root.TryGetProperty("Type", out var inputType))
+        {
+            if (inputType.ValueKind == JsonValueKind.String)
+            {
+                var name = inputType.GetString()!;
+                typeName = Truncate(name);
+                // Enum.TryParse would also accept "1" or "MouseMove,KeyUp"; only exact names pass.
+                if (Array.IndexOf(Enum.GetNames<InputMessageType>(), name) >= 0)
+                {
+                    required = SessionCapabilities.Control;
+                    return true;
+                }
+            }
+            else if (inputType.ValueKind == JsonValueKind.Number && inputType.TryGetInt32(out var number))
+            {
+                // The .NET serializer writes enums as numbers.
+                typeName = $"InputMessageType#{number}";
+                if (Enum.IsDefined(typeof(InputMessageType), number))
+                {
+                    required = SessionCapabilities.Control;
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static string Truncate(string? value) =>
+        value is null ? "<null>" : value.Length <= 40 ? value : value[..40];
+}

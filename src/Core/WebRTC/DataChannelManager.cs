@@ -36,12 +36,33 @@ public sealed class DataChannelManager : IDisposable
     private RTCDataChannel? _dataChannel;
     private bool _disposed;
 
+    // Rejections logged per message type; after the cap further ones are only counted, so a misbehaving
+    // viewer cannot flood the log.
+    private const int MaxRejectionLogsPerType = 5;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _rejectionCounts = new();
+
     // Statistics tracking
     private long _messagesReceived;
     private long _messagesSent;
     private long _bytesReceived;
     private long _bytesSent;
     private DateTime _channelOpenedAt;
+
+    /// <summary>
+    /// Capabilities the host grants on top of the always-granted <see cref="SessionCapabilities.View"/>
+    /// (for example <see cref="SessionCapabilities.Clipboard"/>). <see cref="SessionCapabilities.Control"/>
+    /// is not set here: it follows the input controller's authorization (see <see cref="GrantedCapabilities"/>).
+    /// </summary>
+    public SessionCapabilities HostGrantedCapabilities { get; set; } = SessionCapabilities.None;
+
+    /// <summary>
+    /// Capabilities of the current session. Control is derived from the input controller's
+    /// <c>IsEnabled</c> (the "Allow remote control" decision) so there is only one source of truth.
+    /// </summary>
+    public SessionCapabilities GrantedCapabilities =>
+        SessionCapabilities.View
+        | HostGrantedCapabilities
+        | (_inputController?.IsEnabled == true ? SessionCapabilities.Control : SessionCapabilities.None);
 
     /// <summary>
     /// Event raised when a message is received on the data channel.
@@ -271,6 +292,13 @@ public sealed class DataChannelManager : IDisposable
             Interlocked.Increment(ref _messagesReceived);
             Interlocked.Add(ref _bytesReceived, data.Length);
 
+            // Size gate before decoding: a huge frame must not be turned into a string at all.
+            if (data.Length > DataChannelPolicy.MaxMessageBytes)
+            {
+                LogRejection("<oversize>", $"{data.Length} bytes");
+                return;
+            }
+
             // Convert byte array to string
             var message = Encoding.UTF8.GetString(data);
 
@@ -293,15 +321,34 @@ public sealed class DataChannelManager : IDisposable
 
     /// <summary>
     /// Processes a message as an input command or clipboard message.
-    /// Deserializes JSON and applies to appropriate handler.
+    /// The message is first checked against the session policy; only allowed messages reach a handler.
     /// </summary>
     /// <param name="message">JSON message containing command.</param>
-    private void ProcessInputMessage(string message)
+    internal void ProcessInputMessage(string message)
     {
         try
         {
-            // Try to parse as a wrapper object with "type" field
+            if (message.Length > DataChannelPolicy.MaxMessageBytes)
+            {
+                LogRejection("<oversize>", $"{message.Length} chars");
+                return;
+            }
+
             using var doc = JsonDocument.Parse(message);
+
+            // Default deny: an unknown type, or a capability the session lacks, never reaches a handler.
+            if (!DataChannelPolicy.TryGetRequiredCapability(doc.RootElement, out var typeName, out var required))
+            {
+                LogRejection(typeName, "unknown message type");
+                return;
+            }
+
+            if ((GrantedCapabilities & required) != required)
+            {
+                LogRejection(typeName, $"capability {required} not granted");
+                return;
+            }
+
             if (doc.RootElement.TryGetProperty("type", out var typeElement))
             {
                 var messageType = typeElement.GetString();
@@ -317,17 +364,21 @@ public sealed class DataChannelManager : IDisposable
                     return;
                 }
 
-                if (messageType == "clipboard" && doc.RootElement.TryGetProperty("data", out var dataElement))
+                if (messageType == "clipboard")
                 {
-                    // This is a clipboard message
-                    var clipboardMessage = JsonSerializer.Deserialize<ClipboardMessage>(dataElement.GetRawText());
-                    if (clipboardMessage != null)
+                    if (doc.RootElement.TryGetProperty("data", out var dataElement))
                     {
-                        _logger.Information("Received clipboard message: Type={Type}, Size={Size}",
-                            clipboardMessage.ContentType, clipboardMessage.SizeBytes);
-                        ClipboardMessageReceived?.Invoke(this, clipboardMessage);
-                        return;
+                        var clipboardMessage = JsonSerializer.Deserialize<ClipboardMessage>(dataElement.GetRawText());
+                        if (clipboardMessage != null)
+                        {
+                            _logger.Information("Received clipboard message: Type={Type}, Size={Size}",
+                                clipboardMessage.ContentType, clipboardMessage.SizeBytes);
+                            ClipboardMessageReceived?.Invoke(this, clipboardMessage);
+                        }
                     }
+
+                    // Never fall through: a clipboard message without "data" must not be parsed as input.
+                    return;
                 }
             }
 
@@ -351,13 +402,31 @@ public sealed class DataChannelManager : IDisposable
                 }
             }
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
-            _logger.Warning(ex, "Invalid JSON format for message");
+            // No exception object in the log: its text can echo parts of the payload.
+            LogRejection("<malformed>", "invalid JSON");
         }
         catch (Exception ex)
         {
             _logger.Error(ex, "Error processing message");
+        }
+    }
+
+    /// <summary>
+    /// Logs a rejected message. Only the type name is logged, never the content (it may hold keystrokes or
+    /// clipboard text), and only the first few per type.
+    /// </summary>
+    private void LogRejection(string typeName, string reason)
+    {
+        var count = _rejectionCounts.AddOrUpdate(typeName, 1, (_, c) => c + 1);
+        if (count <= MaxRejectionLogsPerType)
+        {
+            _logger.Warning("DataChannel message rejected: Type={Type}, Reason={Reason}", typeName, reason);
+        }
+        else if (count == MaxRejectionLogsPerType + 1)
+        {
+            _logger.Warning("DataChannel: further rejections of Type={Type} will not be logged", typeName);
         }
     }
 
