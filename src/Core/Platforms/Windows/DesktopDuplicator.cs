@@ -34,6 +34,17 @@ public sealed class DesktopDuplicator : IScreenCapturer
     private long _failedAcquires;
     private DateTime _lastReinitialize = DateTime.MinValue;
 
+    // Secure desktop support (UAC, lock screen, sign-in). Only does anything when this process may open the
+    // Winlogon desktop, i.e. runs as SYSTEM; a normal app never sees a desktop change.
+    private const int DesktopCheckIntervalMs = 250;
+    private const int GdiFrameIntervalMs = 50; // BitBlt never blocks waiting for changes like DXGI, so pace it (~20 fps)
+    private readonly InputDesktop _desktop = new();
+    private long _nextDesktopCheck;
+    private bool _useGdi;
+    private long? _lastGdiFrame; // null until the first GDI frame, which must not wait
+    private int _originX, _originY;
+    private IntPtr _gdiMemDc, _gdiBitmap, _gdiBits, _gdiOldObject;
+
     /// <inheritdoc/>
     public int Width { get; private set; }
 
@@ -63,6 +74,30 @@ public sealed class DesktopDuplicator : IScreenCapturer
         if (_initialized)
             throw new InvalidOperationException("Capturer is already initialized.");
 
+        _desktop.Refresh();
+        using var desktopScope = _desktop.Enter();
+        _useGdi = false;
+        if (InitializeDxgi())
+            return true;
+
+        // Desktop Duplication is not available on every secure desktop; GDI still can read it when we are SYSTEM.
+        if (!DesktopRules.ShouldUseGdiFallback(_desktop.Name, duplicationFailed: true))
+            return false;
+        if (Width == 0)
+        {
+            Width = (DesktopNative.GetSystemMetrics(0) / 2) * 2;
+            Height = (DesktopNative.GetSystemMetrics(1) / 2) * 2;
+        }
+        if (Width == 0 || Height == 0)
+            return false;
+        Log.Warning("Desktop Duplication failed on desktop {Desktop}; using GDI capture", _desktop.Name);
+        _useGdi = true;
+        _initialized = true;
+        return true;
+    }
+
+    private bool InitializeDxgi()
+    {
         try
         {
             // Create DXGI factory to enumerate adapters and outputs
@@ -113,6 +148,7 @@ public sealed class DesktopDuplicator : IScreenCapturer
             // Get output description for dimensions
             var outputDesc = output.Description;
             Log.Information("Output found: {DeviceName}", outputDesc.DeviceName);
+            (_originX, _originY) = (outputDesc.DesktopCoordinates.Left, outputDesc.DesktopCoordinates.Top);
             Width = outputDesc.DesktopCoordinates.Right - outputDesc.DesktopCoordinates.Left;
             Height = outputDesc.DesktopCoordinates.Bottom - outputDesc.DesktopCoordinates.Top;
             Log.Information("Resolution: {Width}x{Height}", Width, Height);
@@ -173,6 +209,23 @@ public sealed class DesktopDuplicator : IScreenCapturer
         if (_frameAcquired)
             throw new InvalidOperationException("Previous frame has not been released.");
 
+        // Follow the input desktop (UAC / lock screen / sign-in). The thread is attached for this call only.
+        var desktopSwitched = false;
+        if (Environment.TickCount64 >= _nextDesktopCheck)
+        {
+            _nextDesktopCheck = Environment.TickCount64 + DesktopCheckIntervalMs;
+            desktopSwitched = _desktop.Refresh();
+        }
+        using var desktopScope = _desktop.Enter();
+        if (desktopSwitched)
+        {
+            _lastReinitialize = DateTime.MinValue; // a switch must not wait for the 1 s throttle
+            Reinitialize();
+        }
+
+        if (_useGdi)
+            return TryAcquireGdiFrame(out frame);
+
         // After a failed Reinitialize() there is no duplication object yet; try again (throttled inside).
         if (_duplication == null)
         {
@@ -197,6 +250,9 @@ public sealed class DesktopDuplicator : IScreenCapturer
                 {
                     // The duplication interface is dead for good (desktop switch, mode change, driver reset);
                     // Windows requires a new IDXGIOutputDuplication. Without this the capture silently stops forever.
+                    // Usually this is a desktop switch: re-read the input desktop so the new duplication is made on it.
+                    if (_desktop.Refresh())
+                        _lastReinitialize = DateTime.MinValue;
                     Reinitialize();
                 }
                 else if (result.Code != Vortice.DXGI.ResultCode.WaitTimeout.Code && _failedAcquires++ % 100 == 0)
@@ -272,6 +328,78 @@ public sealed class DesktopDuplicator : IScreenCapturer
     }
 
     /// <summary>
+    /// GDI capture of the current (secure) desktop. Slower than DXGI but works where duplication is refused.
+    /// ponytail: stays on GDI until the desktop changes again; upgrade path is a periodic DXGI retry.
+    /// </summary>
+    private bool TryAcquireGdiFrame(out Frame? frame)
+    {
+        frame = null;
+        var wait = DesktopRules.GdiWaitMs(Environment.TickCount64, _lastGdiFrame, GdiFrameIntervalMs);
+        if (wait > 0)
+            Thread.Sleep(wait);
+        _lastGdiFrame = Environment.TickCount64;
+
+        var screenDc = DesktopNative.GetDC(IntPtr.Zero);
+        if (screenDc == IntPtr.Zero)
+            return false;
+        try
+        {
+            if (_gdiMemDc == IntPtr.Zero && !CreateGdiSurface(screenDc))
+                return false;
+            if (!DesktopNative.BitBlt(_gdiMemDc, 0, 0, Width, Height, screenDc, _originX, _originY,
+                    DesktopNative.SrcCopy | DesktopNative.CaptureBlt))
+                return false;
+        }
+        finally
+        {
+            DesktopNative.ReleaseDC(IntPtr.Zero, screenDc);
+        }
+
+        DesktopNative.GdiFlush(); // the DIB section is read directly below
+        var stride = Width * 4;
+        var size = stride * Height;
+        var data = ArrayPool<byte>.Shared.Rent(size);
+        unsafe
+        {
+            fixed (byte* dest = data)
+                Buffer.MemoryCopy(_gdiBits.ToPointer(), dest, size, size);
+        }
+        frame = Frame.FromPooled(Width, Height, data, stride, DateTime.UtcNow);
+        return true;
+    }
+
+    private bool CreateGdiSurface(IntPtr screenDc)
+    {
+        // Negative height = top-down rows, the same layout as the DXGI staging texture.
+        var header = new DesktopNative.BitmapInfoHeader
+        {
+            Size = (uint)System.Runtime.InteropServices.Marshal.SizeOf<DesktopNative.BitmapInfoHeader>(),
+            Width = Width, Height = -Height, Planes = 1, BitCount = 32
+        };
+        _gdiMemDc = DesktopNative.CreateCompatibleDC(screenDc);
+        _gdiBitmap = DesktopNative.CreateDIBSection(screenDc, ref header, 0, out _gdiBits, IntPtr.Zero, 0);
+        if (_gdiMemDc == IntPtr.Zero || _gdiBitmap == IntPtr.Zero)
+        {
+            FreeGdiSurface();
+            return false;
+        }
+        _gdiOldObject = DesktopNative.SelectObject(_gdiMemDc, _gdiBitmap);
+        return true;
+    }
+
+    private void FreeGdiSurface()
+    {
+        // A bitmap still selected into a DC cannot be deleted: deselect it first, then delete both.
+        if (_gdiMemDc != IntPtr.Zero && _gdiOldObject != IntPtr.Zero)
+            DesktopNative.SelectObject(_gdiMemDc, _gdiOldObject);
+        if (_gdiBitmap != IntPtr.Zero && !DesktopNative.DeleteObject(_gdiBitmap))
+            Log.Warning("Could not delete the GDI capture bitmap");
+        if (_gdiMemDc != IntPtr.Zero && !DesktopNative.DeleteDC(_gdiMemDc))
+            Log.Warning("Could not delete the GDI capture device context");
+        (_gdiBitmap, _gdiMemDc, _gdiBits, _gdiOldObject) = (IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    /// <summary>
     /// Recreates the device and duplication after DXGI_ERROR_ACCESS_LOST. Throttled to once per second:
     /// while the secure desktop (UAC, lock screen) is up, every attempt fails again.
     /// </summary>
@@ -334,6 +462,7 @@ public sealed class DesktopDuplicator : IScreenCapturer
         }
 
         CleanupResources();
+        _desktop.Dispose();
         _disposed = true;
     }
 
@@ -364,6 +493,8 @@ public sealed class DesktopDuplicator : IScreenCapturer
     /// </summary>
     private void CleanupResources()
     {
+        FreeGdiSurface();
+
         _stagingTexture?.Dispose();
         _stagingTexture = null;
 

@@ -143,6 +143,7 @@ public partial class ProjectionWindow : Window
         Dispatcher.UIThread.Invoke(() =>
         {
             _isConnected = true;
+            CtrlAltDelButton.IsEnabled = true; // this viewer sends input as soon as it is connected (no separate "Enable control")
             ConnectionStatusOverlay.IsVisible = false;
             TopToolbar.IsVisible = true;
 
@@ -157,6 +158,17 @@ public partial class ProjectionWindow : Window
             VideoImage.Focus();
 
             _logger.LogInformation("Connection established, video rendering and input forwarding enabled");
+        });
+    }
+
+    // Ctrl+Alt+Del cannot be sent as key presses; the Windows host injects it as a secure attention sequence.
+    private async void CtrlAltDel_Click(object? sender, RoutedEventArgs e)
+    {
+        if (!_isConnected) return;
+        await _clientManager.SendInputAsync(new InputMessage
+        {
+            Type = InputMessageType.SecureAttention,
+            Timestamp = DateTime.UtcNow
         });
     }
 

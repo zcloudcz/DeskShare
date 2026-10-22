@@ -33,7 +33,12 @@ public enum InputMessageType
     /// <summary>
     /// Keyboard key release message.
     /// </summary>
-    KeyUp
+    KeyUp,
+
+    /// <summary>
+    /// Secure attention sequence (Ctrl+Alt+Del). Windows host only; it cannot be injected as key presses.
+    /// </summary>
+    SecureAttention
 }
 
 /// <summary>
