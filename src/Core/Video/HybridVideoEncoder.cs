@@ -22,8 +22,10 @@ internal sealed class HybridVideoEncoder : IVideoSource, IDisposable
         _h264.OnVideoSourceEncodedSample += (d, s) => OnVideoSourceEncodedSample?.Invoke(d, s);
     }
 
+    // Once the GPU encoder has given up, new negotiations must not offer H.264 (we would have nothing to send under it).
     public List<VideoFormat> GetVideoSourceFormats() =>
-        new List<VideoFormat> { HardwareH264Encoder.Format }.Concat(VideoEncoderFactory.AdvertisedFormats(_vp8)).ToList();
+        (_h264.Failed ? new List<VideoFormat>() : new List<VideoFormat> { HardwareH264Encoder.Format })
+            .Concat(VideoEncoderFactory.AdvertisedFormats(_vp8)).ToList();
 
     public void SetVideoSourceFormat(VideoFormat videoFormat)
     {

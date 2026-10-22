@@ -131,6 +131,75 @@ public sealed class HybridVideoEncoderTests
         Assert.Contains(samples.Skip(1), s => HasNal(s, 5)); // the forced keyframe, again with SPS/PPS in front
     }
 
+    [RequiresFfmpegFact]
+    public void RealHardwareEncoder_ColoursSurviveEncodeAndDecode()
+    {
+        (VideoEncoderFactory.Create(true, FindFfmpegFolder(), VideoCodecPreference.Vp8) as IDisposable)?.Dispose(); // initialises FFmpeg
+        var name = HardwareH264Encoder.FindAvailable();
+        if (name == null)
+            return; // no GPU encoder here
+        Assert.True(NativeH264Context.EncodesColoursCorrectly(name, HardwareH264Encoder.OptionsFor(name), out var detail), detail);
+    }
+
+    private sealed class FakeContext(Func<byte[]?> encode) : IH264Context
+    {
+        public bool Disposed;
+        public byte[]? Encode(byte[] i420, bool forceKeyFrame) => encode();
+        public void Dispose() => Disposed = true;
+    }
+
+    [Fact]
+    public void PersistentFailure_RebuildsContextOnce_ThenGivesUp()
+    {
+        var contexts = new List<FakeContext>();
+        var broken = false;
+        using var encoder = new HardwareH264Encoder("fake", (_, _) =>
+        {
+            var c = new FakeContext(() => broken ? throw new InvalidOperationException("gpu gone") : new byte[] { 1 });
+            contexts.Add(c);
+            return c;
+        });
+        var failedRaised = 0;
+        encoder.HardwareFailed += () => failedRaised++;
+        var sent = 0;
+        encoder.OnVideoSourceEncodedSample += (_, _) => sent++;
+        void Push() => encoder.ExternalVideoSourceRawSample(33, 64, 64, new byte[64 * 64 * 3 / 2], VideoPixelFormatsEnum.I420);
+
+        Push();
+        Assert.Equal(1, sent);
+
+        broken = true;
+        for (var i = 0; i < HardwareH264Encoder.FailuresBeforeRecreate; i++) Push();
+        Assert.False(encoder.Failed);          // first persistent failure: only rebuilds
+        Assert.True(contexts[0].Disposed);
+
+        for (var i = 0; i < HardwareH264Encoder.FailuresBeforeRecreate; i++) Push();
+        Assert.True(encoder.Failed);           // the rebuilt context failed as well
+        Assert.Equal(1, failedRaised);
+        Assert.Equal(2, contexts.Count);
+
+        var before = sent;
+        Push();                                // after giving up nothing is encoded or retried
+        Assert.Equal(before, sent);
+        Assert.Equal(2, contexts.Count);
+    }
+
+    [Fact]
+    public void RecoveryAfterRebuild_ResetsTheFailureState()
+    {
+        var calls = 0;
+        using var encoder = new HardwareH264Encoder("fake", (_, _) =>
+            new FakeContext(() => ++calls <= HardwareH264Encoder.FailuresBeforeRecreate ? throw new InvalidOperationException("glitch") : new byte[] { 1 }));
+        var sent = 0;
+        encoder.OnVideoSourceEncodedSample += (_, _) => sent++;
+
+        for (var i = 0; i < HardwareH264Encoder.FailuresBeforeRecreate + 5; i++)
+            encoder.ExternalVideoSourceRawSample(33, 64, 64, new byte[64 * 64 * 3 / 2], VideoPixelFormatsEnum.I420);
+
+        Assert.False(encoder.Failed);
+        Assert.Equal(5, sent);
+    }
+
     private static bool HasNal(byte[] annexB, int nalType)
     {
         for (var i = 0; i + 3 < annexB.Length; i++)

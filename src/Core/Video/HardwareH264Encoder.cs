@@ -1,16 +1,14 @@
-using FFmpeg.AutoGen;
 using Serilog;
 using SIPSorceryMedia.Abstractions;
-using SIPSorceryMedia.FFmpeg;
 
 namespace DeskShare.Core.Video;
 
 /// <summary>
 /// H.264 encoder on the GPU's fixed-function block, driven through the bundled LGPL FFmpeg
 /// (h264_amf, h264_nvenc, h264_qsv, h264_mf). Never libx264: that one is GPL.
-/// SIPSorceryMedia.FFmpeg's own <c>FFmpegVideoEndPoint</c> cannot be used because it always asks FFmpeg for the
-/// default H.264 encoder (libx264, missing in our build), so this wraps its public <see cref="FFmpegVideoEncoder"/>,
-/// which does accept an explicit encoder name.
+/// SIPSorceryMedia.FFmpeg's <c>FFmpegVideoEndPoint</c> cannot be used: it always asks for the default H.264 encoder
+/// (libx264, missing in our build) and its FFmpegVideoEncoder leaks a packet per frame and mislabels the pixel format
+/// (see <see cref="NativeH264Context"/>). Owns the failure handling: rebuild the context after repeated errors, then give up.
 /// </summary>
 internal sealed class HardwareH264Encoder : IVideoSource, IDisposable
 {
@@ -23,21 +21,40 @@ internal sealed class HardwareH264Encoder : IVideoSource, IDisposable
 
     private static readonly Lazy<string?> Available = new(Probe);
 
+    /// <summary>Consecutive failed frames (about 1 s at 30 fps) before the encoder context is rebuilt.</summary>
+    internal const int FailuresBeforeRecreate = 30;
+
     private readonly string _name;
+    private readonly Func<int, int, IH264Context> _createContext;
     private readonly object _lock = new();
-    private FFmpegVideoEncoder? _encoder;
+    private IH264Context? _context;
     private int _width, _height;
     private bool _forceKeyFrame;
     private int _failures;
+    private bool _recreated;
 
-    public HardwareH264Encoder(string encoderName) => _name = encoderName;
+    public HardwareH264Encoder(string encoderName, Func<int, int, IH264Context>? createContext = null)
+    {
+        _name = encoderName;
+        // ~0.1 bit per pixel at 30 fps: 6 Mbit/s at 1080p, 15 Mbit/s at 2880x1800. Text stays readable on a LAN.
+        _createContext = createContext ?? ((w, h) => new NativeH264Context(encoderName, OptionsFor(encoderName), w, h, w * (long)h * 3));
+    }
+
+    /// <summary>
+    /// True once the encoder failed again right after its context was rebuilt. From then on frames are dropped and
+    /// <see cref="HybridVideoEncoder"/> stops advertising H.264, so the next viewer negotiates VP8.
+    /// </summary>
+    public bool Failed { get; private set; }
+
+    /// <summary>Raised once, when <see cref="Failed"/> becomes true.</summary>
+    public event Action? HardwareFailed;
 
     /// <summary>Name of the first hardware encoder that really initialises on this machine, or null. Probed once.</summary>
     public static string? FindAvailable() => Available.Value;
 
     /// <summary>
     /// "Listed in FFmpeg" is not enough (h264_nvenc exists in every build, but fails without an NVIDIA driver),
-    /// so each candidate encodes a small test frame.
+    /// so each candidate must encode known colours that decode back correctly.
     /// </summary>
     private static string? Probe()
     {
@@ -45,10 +62,12 @@ internal sealed class HardwareH264Encoder : IVideoSource, IDisposable
         {
             try
             {
-                using var probe = new HardwareH264Encoder(name);
-                probe.Encode(320, 192, new byte[320 * 192 * 3 / 2]);
-                Log.Information("Hardware H.264 encoder available: {Encoder}", name);
-                return name;
+                if (NativeH264Context.EncodesColoursCorrectly(name, OptionsFor(name), out var detail))
+                {
+                    Log.Information("Hardware H.264 encoder available: {Encoder}", name);
+                    return name;
+                }
+                Log.Warning("H.264 encoder {Encoder} produced wrong output ({Detail}), skipped", name, detail);
             }
             catch (Exception ex)
             {
@@ -58,9 +77,9 @@ internal sealed class HardwareH264Encoder : IVideoSource, IDisposable
         return null;
     }
 
-    private static Dictionary<string, string> OptionsFor(string name) => name switch
+    internal static Dictionary<string, string> OptionsFor(string name) => name switch
     {
-        // forced_idr: without it AMF ignores ForceKeyFrame. header_insertion_mode: SPS/PPS before every IDR so a
+        // forced_idr: without it AMF ignores a requested keyframe. header_insertion_mode: SPS/PPS before every IDR so a
         // viewer that joins on a later keyframe can decode.
         "h264_amf" => new() { ["usage"] = "ultralowlatency", ["quality"] = "speed", ["rc"] = "cbr", ["profile"] = "constrained_baseline", ["forced_idr"] = "1", ["header_insertion_mode"] = "idr" },
         "h264_nvenc" => new() { ["preset"] = "p1", ["tune"] = "ull", ["zerolatency"] = "1", ["rc"] = "cbr", ["profile"] = "baseline", ["forced-idr"] = "1" },
@@ -68,30 +87,21 @@ internal sealed class HardwareH264Encoder : IVideoSource, IDisposable
         _ => new() { ["scenario"] = "display_remoting", ["rate_control"] = "cbr", ["low_latency"] = "1" },
     };
 
-    // Encoder is rebuilt per resolution because the options and the bitrate depend on the frame size.
+    // The context is rebuilt per resolution because the bitrate depends on the frame size.
     private byte[]? Encode(int width, int height, byte[] i420)
     {
-        if (_encoder == null || width != _width || height != _height)
+        if (_context == null || width != _width || height != _height)
         {
-            _encoder?.Dispose();
-            var options = OptionsFor(_name);
-            _encoder = new FFmpegVideoEncoder(options);
-            if (!_encoder.SetCodec(AVCodecID.AV_CODEC_ID_H264, _name, options))
-                throw new InvalidOperationException($"FFmpeg has no encoder '{_name}'.");
-            // ~0.1 bit per pixel at 30 fps: 6 Mbit/s at 1080p, 15 Mbit/s at 2880x1800. Text stays readable on a LAN.
-            _encoder.SetBitrate((long)(width * (long)height * 3), null, null, null);
+            _context?.Dispose();
+            _context = null;
+            _context = _createContext(width, height);
             _width = width;
             _height = height;
         }
 
-        if (_forceKeyFrame)
-        {
-            _encoder.ForceKeyFrame();
-            _forceKeyFrame = false;
-        }
-
-        // Returns null while the hardware encoder still buffers its first frame.
-        return _encoder.EncodeVideo(width, height, i420, VideoPixelFormatsEnum.I420, VideoCodecsEnum.H264);
+        var key = _forceKeyFrame;
+        _forceKeyFrame = false;
+        return _context.Encode(i420, key);
     }
 
     public string EncoderName => _name;
@@ -104,23 +114,45 @@ internal sealed class HardwareH264Encoder : IVideoSource, IDisposable
         byte[]? encoded;
         lock (_lock)
         {
+            if (Failed)
+                return;
             try
             {
                 encoded = Encode(width, height, sample);
                 _failures = 0;
+                _recreated = false;
             }
             catch (Exception ex)
             {
-                // A GPU reset or driver update can break the encoder mid-stream. Keep dropping frames (the viewer
-                // sees a frozen picture and can reconnect) instead of killing the capture pipeline.
-                if (_failures++ % 100 == 0)
-                    Log.Error(ex, "H.264 encoder {Encoder} failed ({Count} consecutive)", _name, _failures);
+                // A GPU reset or driver update can break the encoder mid-stream. Drop frames for a moment, then rebuild
+                // the context; if the fresh one fails too the hardware is gone for good.
+                if (_failures == 0)
+                    Log.Error(ex, "H.264 encoder {Encoder} failed", _name);
+                if (++_failures >= FailuresBeforeRecreate)
+                    OnPersistentFailure();
                 return;
             }
         }
 
         if (encoded is { Length: > 0 })
             OnVideoSourceEncodedSample?.Invoke(durationMilliseconds * 90, encoded); // RTP clock: 90 kHz
+    }
+
+    private void OnPersistentFailure()
+    {
+        _failures = 0;
+        _context?.Dispose();
+        _context = null;
+        _forceKeyFrame = true; // a fresh context must start with an IDR
+        if (!_recreated)
+        {
+            _recreated = true;
+            Log.Warning("H.264 encoder {Encoder} keeps failing, rebuilding it", _name);
+            return;
+        }
+        Failed = true;
+        Log.Error("H.264 encoder {Encoder} failed again after a rebuild, giving up: new viewers will get VP8", _name);
+        HardwareFailed?.Invoke();
     }
 
     public void ForceKeyFrame() => _forceKeyFrame = true;
@@ -148,8 +180,8 @@ internal sealed class HardwareH264Encoder : IVideoSource, IDisposable
     {
         lock (_lock)
         {
-            _encoder?.Dispose();
-            _encoder = null;
+            _context?.Dispose();
+            _context = null;
         }
     }
 }
