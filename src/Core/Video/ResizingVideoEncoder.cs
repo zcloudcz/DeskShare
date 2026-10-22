@@ -15,6 +15,9 @@ internal sealed class ResizingVideoEncoder : IVideoSource, IDisposable
     private IVideoSource _inner;
     private VideoFormat? _negotiated; // as the caller passed it, i.e. in the current VideoCodecsEnum numbering
     private int _width, _height;
+    // One lock for encode, recreate and dispose: a client being removed (Dispose) while a frame is being pushed
+    // (possibly in the middle of Recreate) waits for it, then disposes whatever encoder is current. Nothing leaks.
+    private readonly object _lock = new();
     private bool _disposed;
 
     /// <param name="create">Makes a fresh encoder; called again for every size change.</param>
@@ -37,20 +40,30 @@ internal sealed class ResizingVideoEncoder : IVideoSource, IDisposable
 
     public void SetVideoSourceFormat(VideoFormat videoFormat)
     {
-        _negotiated = videoFormat;
-        _inner.SetVideoSourceFormat(VideoEncoderFactory.ToEncoder(_inner, videoFormat));
+        lock (_lock)
+        {
+            if (_disposed)
+                return;
+            _negotiated = videoFormat;
+            _inner.SetVideoSourceFormat(VideoEncoderFactory.ToEncoder(_inner, videoFormat));
+        }
     }
 
     public void ExternalVideoSourceRawSample(uint durationMilliseconds, int width, int height, byte[] sample, VideoPixelFormatsEnum pixelFormat)
     {
-        if (_width != 0 && (width != _width || height != _height))
+        lock (_lock)
         {
-            // The hardware H.264 encoder rebuilds its own context per size; only the VP8 encoders need replacing.
-            if (_inner is not HybridVideoEncoder { ActiveCodec: VideoCodecsEnum.H264 })
-                Recreate(width, height);
+            if (_disposed)
+                return;
+            if (_width != 0 && (width != _width || height != _height))
+            {
+                // The hardware H.264 encoder rebuilds its own context per size; only the VP8 encoders need replacing.
+                if (_inner is not HybridVideoEncoder { ActiveCodec: VideoCodecsEnum.H264 })
+                    Recreate(width, height);
+            }
+            (_width, _height) = (width, height);
+            _inner.ExternalVideoSourceRawSample(durationMilliseconds, width, height, sample, pixelFormat);
         }
-        (_width, _height) = (width, height);
-        _inner.ExternalVideoSourceRawSample(durationMilliseconds, width, height, sample, pixelFormat);
     }
 
     private void Recreate(int width, int height)
@@ -67,7 +80,14 @@ internal sealed class ResizingVideoEncoder : IVideoSource, IDisposable
     public void ExternalVideoSourceRawSampleFaster(uint durationMilliseconds, RawImage rawImage) =>
         _inner.ExternalVideoSourceRawSampleFaster(durationMilliseconds, rawImage);
 
-    public void ForceKeyFrame() => _inner.ForceKeyFrame();
+    public void ForceKeyFrame()
+    {
+        lock (_lock)
+        {
+            if (!_disposed)
+                _inner.ForceKeyFrame();
+        }
+    }
     public void RestrictFormats(Func<VideoFormat, bool> filter) => _inner.RestrictFormats(filter);
     public bool HasEncodedVideoSubscribers() => OnVideoSourceEncodedSample != null;
     public bool IsVideoSourcePaused() => _inner.IsVideoSourcePaused();
@@ -85,10 +105,13 @@ internal sealed class ResizingVideoEncoder : IVideoSource, IDisposable
 
     public void Dispose()
     {
-        if (_disposed)
-            return;
-        _disposed = true;
-        _inner.OnVideoSourceEncodedSample -= Forward;
-        (_inner as IDisposable)?.Dispose();
+        lock (_lock)
+        {
+            if (_disposed)
+                return;
+            _disposed = true;
+            _inner.OnVideoSourceEncodedSample -= Forward;
+            (_inner as IDisposable)?.Dispose();
+        }
     }
 }

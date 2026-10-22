@@ -108,4 +108,61 @@ public sealed class EncoderResolutionChangeTests
         Assert.Equal(new[] { (640, 480), (1280, 720) }, contexts); // one context per size, not per frame
         Assert.Equal(3, sent);
     }
+
+    private sealed class FakeEncoder : IVideoSource, IDisposable
+    {
+        public bool Disposed;
+        public void Dispose() => Disposed = true;
+        public List<VideoFormat> GetVideoSourceFormats() => new();
+        public void SetVideoSourceFormat(VideoFormat videoFormat) { }
+        public void ExternalVideoSourceRawSample(uint durationMilliseconds, int width, int height, byte[] sample, VideoPixelFormatsEnum pixelFormat) { }
+        public void ExternalVideoSourceRawSampleFaster(uint durationMilliseconds, RawImage rawImage) { }
+        public void ForceKeyFrame() { }
+        public void RestrictFormats(Func<VideoFormat, bool> filter) { }
+        public bool HasEncodedVideoSubscribers() => false;
+        public bool IsVideoSourcePaused() => false;
+        public Task PauseVideo() => Task.CompletedTask;
+        public Task ResumeVideo() => Task.CompletedTask;
+        public Task StartVideo() => Task.CompletedTask;
+        public Task CloseVideo() => Task.CompletedTask;
+#pragma warning disable CS0067
+        public event EncodedSampleDelegate? OnVideoSourceEncodedSample;
+        public event RawVideoSampleDelegate? OnVideoSourceRawSample;
+        public event RawVideoSampleFasterDelegate? OnVideoSourceRawSampleFaster;
+        public event SourceErrorDelegate? OnVideoSourceError;
+#pragma warning restore CS0067
+    }
+
+    [Fact]
+    public void Dispose_DuringRecreate_DoesNotLeakTheNewEncoder()
+    {
+        var created = new List<FakeEncoder>();
+        using var inFactory = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var encoder = new ResizingVideoEncoder(() =>
+        {
+            var fake = new FakeEncoder();
+            lock (created) created.Add(fake);
+            if (created.Count > 1)
+            {
+                inFactory.Set();
+                release.Wait(); // the second (replacement) encoder is slow to create
+            }
+            return fake;
+        });
+        encoder.ExternalVideoSourceRawSample(33, 640, 480, new byte[640 * 480 * 3 / 2], VideoPixelFormatsEnum.I420);
+
+        var push = Task.Run(() => encoder.ExternalVideoSourceRawSample(33, 1280, 720, new byte[1280 * 720 * 3 / 2], VideoPixelFormatsEnum.I420));
+        Assert.True(inFactory.Wait(TimeSpan.FromSeconds(5)));
+        var dispose = Task.Run(encoder.Dispose); // e.g. the client is removed on a connection state change
+        Assert.False(dispose.Wait(100)); // it has to wait for the recreate instead of racing it
+        release.Set();
+
+        Assert.True(Task.WhenAll(push, dispose).Wait(TimeSpan.FromSeconds(5)));
+        Assert.Equal(2, created.Count);
+        Assert.All(created, f => Assert.True(f.Disposed));
+
+        encoder.ExternalVideoSourceRawSample(33, 320, 240, new byte[320 * 240 * 3 / 2], VideoPixelFormatsEnum.I420); // after Dispose: ignored
+        Assert.Equal(2, created.Count);
+    }
 }

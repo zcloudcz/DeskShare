@@ -286,17 +286,19 @@ public class ScreenSenderService : IHostedService, IDisposable
                 ApplyIceServers(_webrtcSessionWithInput.VideoSource);
 
                 inputController.SetCapturedDisplay(InputRectFor(displays[currentDisplay]));
-                _webrtcSessionWithInput.DataChannel.DisplaySwitcher = new DisplaySwitchService(displays, currentDisplay, async display =>
+                _webrtcSessionWithInput.DataChannel.DisplaySwitcher = new DisplaySwitchService(displays, currentDisplay, async (display, stillAllowed) =>
                 {
                     if (_pipeline == null)
                         return false;
                     var next = PlatformServiceFactory.CreateScreenCapturer(display.AdapterIndex, display.OutputIndex, _configuration.TargetFps);
-                    if (!await _pipeline.SwitchCapturerAsync(next))
-                        return false;
-                    // After the capture switched: pointer coordinates must now land on the new display.
-                    inputController.SetCapturedDisplay(InputRectFor(display));
-                    _logger.LogInformation("Now sharing {Display}", display.Name);
-                    return true;
+                    // Pointer input is mapped to the new display only once the viewer is actually receiving its picture,
+                    // otherwise clicks would hit the new monitor while the viewer still sees the old one.
+                    var switched = await _pipeline.SwitchCapturerAsync(next, stillAllowed, () =>
+                    {
+                        inputController.SetCapturedDisplay(InputRectFor(display));
+                        _logger.LogInformation("Now sharing {Display}", display.Name);
+                    });
+                    return switched;
                 });
 
                 // Subscribe to events

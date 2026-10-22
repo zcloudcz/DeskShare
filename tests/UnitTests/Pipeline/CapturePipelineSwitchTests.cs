@@ -78,6 +78,53 @@ public sealed class CapturePipelineSwitchTests
         await pipeline.StopAsync();
     }
 
+    [Fact]
+    public async Task Switch_NeverSendsOldDisplayFramesAfterTheFirstNewOne_AndRunsTheCallbackThen()
+    {
+        // A slow encoder keeps the queues full of old-display frames when the switch happens.
+        var source = new RecordingVideoSource { PushDelayMs = 40 };
+        using var pipeline = new CapturePipeline(new FakeCapturer(1920, 1080), new SimdPixelConverter(), source);
+        Assert.True(pipeline.Start(30));
+        await source.WaitForFrameAsync(1920, 1080);
+
+        var callbackRan = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Assert.True(await pipeline.SwitchCapturerAsync(new FakeCapturer(1280, 1024), onFirstFrameSent: () =>
+        {
+            source.Mark();
+            callbackRan.SetResult();
+        }).WaitAsync(Timeout));
+        await callbackRan.Task.WaitAsync(Timeout);
+        await source.WaitForFrameAsync(1280, 1024);
+        await pipeline.StopAsync();
+
+        var log = source.Log();
+        var marker = log.IndexOf((0, 0));
+        Assert.True(marker > 0);
+        Assert.Equal((1280, 1024), log[marker - 1]); // the callback follows a new-display frame, never an old one
+        Assert.DoesNotContain((1920, 1080), log.Skip(marker - 1)); // and no old frame is sent from the first new frame on
+    }
+
+    [Fact]
+    public async Task Switch_CancelledByTheGuard_KeepsTheOldCapturer_AndSkipsTheCallback()
+    {
+        var first = new FakeCapturer(1920, 1080);
+        var next = new FakeCapturer(1280, 1024);
+        var source = new RecordingVideoSource();
+        using var pipeline = new CapturePipeline(first, new SimdPixelConverter(), source);
+        Assert.True(pipeline.Start(30));
+        await source.WaitForFrameAsync(1920, 1080);
+        var callbackRan = false;
+
+        var switched = await pipeline.SwitchCapturerAsync(next, canCommit: () => false, onFirstFrameSent: () => callbackRan = true).WaitAsync(Timeout);
+
+        Assert.False(switched);
+        Assert.True(next.Disposed);
+        Assert.False(first.Disposed);
+        await Task.Delay(200);
+        Assert.False(callbackRan);
+        await pipeline.StopAsync();
+    }
+
     private sealed class FakeCapturer(int width, int height) : IScreenCapturer
     {
         public int Width { get; } = width;
@@ -116,11 +163,19 @@ public sealed class CapturePipelineSwitchTests
             return true;
         }
 
+        public int PushDelayMs { get; init; }
+
         public bool PushFrame(VideoFrame frame)
         {
             _sizes.Enqueue((frame.Width, frame.Height));
+            if (PushDelayMs > 0)
+                Thread.Sleep(PushDelayMs);
             return true;
         }
+
+        /// <summary>Puts a (0,0) entry into the push log, e.g. from a callback, to see what was sent before it.</summary>
+        public void Mark() => _sizes.Enqueue((0, 0));
+        public List<(int, int)> Log() => _sizes.ToList();
 
         public void RequestKeyFrame() => Interlocked.Increment(ref _keyFrames);
         public VideoSourceStatistics GetStatistics() => new();

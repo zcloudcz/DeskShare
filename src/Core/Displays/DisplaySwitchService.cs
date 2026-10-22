@@ -28,7 +28,7 @@ public sealed class DisplaySwitchService
     /// <summary>A viewer can switch at most once per this interval. Re-creating a capturer is heavy and flickers.</summary>
     public const int MinSwitchIntervalMs = 1000;
 
-    private readonly Func<DisplayInfo, Task<bool>> _apply;
+    private readonly Func<DisplayInfo, Func<bool>, Task<bool>> _apply;
     private readonly Func<long> _nowMs;
     private readonly SemaphoreSlim _busy = new(1, 1);
     private long _lastAttemptMs;
@@ -46,6 +46,12 @@ public sealed class DisplaySwitchService
     /// <param name="apply">Starts sharing the given display; true when it worked.</param>
     /// <param name="nowMs">Monotonic clock in milliseconds; tests inject their own.</param>
     public DisplaySwitchService(IReadOnlyList<DisplayInfo> displays, int current, Func<DisplayInfo, Task<bool>> apply, Func<long>? nowMs = null)
+        : this(displays, current, (display, _) => apply(display), nowMs)
+    {
+    }
+
+    /// <param name="apply">Like above, plus a check the callback must repeat right before it commits the switch (see <see cref="SwitchAsync"/>).</param>
+    public DisplaySwitchService(IReadOnlyList<DisplayInfo> displays, int current, Func<DisplayInfo, Func<bool>, Task<bool>> apply, Func<long>? nowMs = null)
     {
         ArgumentNullException.ThrowIfNull(displays);
         _apply = apply ?? throw new ArgumentNullException(nameof(apply));
@@ -72,8 +78,12 @@ public sealed class DisplaySwitchService
     }
 
     /// <summary>Validates, rate-limits and performs a switch.</summary>
-    public async Task<DisplaySwitchResult> SwitchAsync(int index)
+    /// <param name="index">Requested display.</param>
+    /// <param name="stillAllowed">Whether the requester may still switch (its Control grant was not revoked since the request).
+    /// A switch takes a while, so it is checked again before the switch is committed; false cancels it.</param>
+    public async Task<DisplaySwitchResult> SwitchAsync(int index, Func<bool>? stillAllowed = null)
     {
+        stillAllowed ??= () => true;
         if (index < 0 || index >= Displays.Count)
             return DisplaySwitchResult.InvalidIndex;
 
@@ -93,7 +103,7 @@ public sealed class DisplaySwitchService
             // Failed attempts count too, otherwise a viewer could hammer a broken display.
             (_hasAttempted, _lastAttemptMs) = (true, now);
 
-            if (!await _apply(Displays[index]))
+            if (!stillAllowed() || !await _apply(Displays[index], stillAllowed))
                 return DisplaySwitchResult.Failed;
 
             _current = index;
