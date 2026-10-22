@@ -123,6 +123,8 @@ public partial class ProjectionWindow : Window
             _clientManager.HostAllowsClipboardChanged += OnHostAllowsClipboardChanged;
             _clientManager.ClipboardRejected += OnClipboardRejected;
             _clientManager.HostAllowsFilesChanged += OnHostAllowsFilesChanged;
+            _clientManager.HostAllowsPrivacyScreenChanged += OnHostAllowsPrivacyScreenChanged;
+            _clientManager.PrivacyScreenStateChanged += OnPrivacyScreenStateChanged;
 
             await _clientManager.ConnectAsync(_serverId, _password, null, _webSocketToken, _clientId, _iceServers, _resumeToken);
 
@@ -176,6 +178,34 @@ public partial class ProjectionWindow : Window
     private void OnHostAllowsFilesChanged(object? sender, bool allowed)
     {
         Dispatcher.UIThread.Invoke(() => SendFileButton.IsVisible = allowed);
+    }
+
+    // The button exists only while the host offers its privacy screen and authorized control.
+    private void OnHostAllowsPrivacyScreenChanged(object? sender, bool allowed)
+    {
+        Dispatcher.UIThread.Invoke(() =>
+        {
+            PrivacyButton.IsVisible = allowed;
+            if (!allowed) PrivacyButton.IsChecked = false;
+        });
+    }
+
+    private void OnPrivacyScreenStateChanged(object? sender, (bool Enabled, string? Reason) state)
+    {
+        Dispatcher.UIThread.Invoke(() =>
+        {
+            PrivacyButton.IsChecked = state.Enabled;
+            if (!state.Enabled && state.Reason != null)
+                ToolTip.SetTip(PrivacyButton, $"Privacy screen is off: {state.Reason}");
+        });
+    }
+
+    // The toggle is put back by the host's answer (OnPrivacyScreenStateChanged), so a refusal is visible.
+    private void Privacy_Click(object? sender, RoutedEventArgs e)
+    {
+        var wanted = PrivacyButton.IsChecked == true;
+        PrivacyButton.IsChecked = !wanted;
+        _clientManager.SetPrivacyScreen(wanted);
     }
 
     private CancellationTokenSource? _fileSendCts;
@@ -615,6 +645,8 @@ public partial class ProjectionWindow : Window
         _clientManager.HostAllowsClipboardChanged -= OnHostAllowsClipboardChanged;
         _clientManager.ClipboardRejected -= OnClipboardRejected;
         _clientManager.HostAllowsFilesChanged -= OnHostAllowsFilesChanged;
+        _clientManager.HostAllowsPrivacyScreenChanged -= OnHostAllowsPrivacyScreenChanged;
+        _clientManager.PrivacyScreenStateChanged -= OnPrivacyScreenStateChanged;
         _fileSendCts?.Cancel();
 
         _clientManager.DisconnectAsync().GetAwaiter().GetResult();

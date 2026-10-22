@@ -96,6 +96,38 @@ public class ClientManager : IDisposable
     /// </summary>
     public event EventHandler<bool>? HostAllowsFilesChanged;
 
+    /// <summary>
+    /// Whether the host offers its privacy screen to this viewer (announced as "privacy" in authorization_response,
+    /// and only useful while the host also authorized control).
+    /// </summary>
+    public bool HostAllowsPrivacyScreen { get; private set; }
+
+    /// <summary>Fired when <see cref="HostAllowsPrivacyScreen"/> changes.</summary>
+    public event EventHandler<bool>? HostAllowsPrivacyScreenChanged;
+
+    /// <summary>Fired with the host's answer (privacy_screen_state): enabled, and a reason when it is off.</summary>
+    public event EventHandler<(bool Enabled, string? Reason)>? PrivacyScreenStateChanged;
+
+    /// <summary>Asks the host to turn its privacy screen on or off. The result arrives as <see cref="PrivacyScreenStateChanged"/>.</summary>
+    public void SetPrivacyScreen(bool enabled)
+    {
+        if (_dataChannel?.readyState == RTCDataChannelState.open)
+        {
+            _dataChannel.send("{\"type\":\"privacy_screen\",\"enabled\":" + (enabled ? "true" : "false") + "}");
+        }
+    }
+
+    private void SetHostAllowsPrivacyScreen(bool allowed)
+    {
+        if (HostAllowsPrivacyScreen == allowed)
+        {
+            return;
+        }
+
+        HostAllowsPrivacyScreen = allowed;
+        HostAllowsPrivacyScreenChanged?.Invoke(this, allowed);
+    }
+
     private FileUploader? _fileUploader;
 
     /// <summary>
@@ -397,6 +429,7 @@ public class ClientManager : IDisposable
             _clipboardManager?.StopMonitoring();
             SetHostAllowsClipboard(false);
             SetHostAllowsFiles(false);
+            SetHostAllowsPrivacyScreen(false);
         };
         _dataChannel.onerror += (error) =>
         {
@@ -428,6 +461,15 @@ public class ClientManager : IDisposable
                 {
                     SetHostAllowsClipboard(doc.RootElement.TryGetProperty("clipboard", out var clip) && clip.ValueKind == JsonValueKind.True);
                     SetHostAllowsFiles(doc.RootElement.TryGetProperty("files", out var files) && files.ValueKind == JsonValueKind.True);
+                    SetHostAllowsPrivacyScreen(
+                        doc.RootElement.TryGetProperty("privacy", out var privacy) && privacy.ValueKind == JsonValueKind.True
+                        && doc.RootElement.TryGetProperty("authorized", out var authorized) && authorized.ValueKind == JsonValueKind.True);
+                }
+                else if (messageType == "privacy_screen_state")
+                {
+                    PrivacyScreenStateChanged?.Invoke(this, (
+                        doc.RootElement.TryGetProperty("enabled", out var on) && on.ValueKind == JsonValueKind.True,
+                        doc.RootElement.TryGetProperty("reason", out var reason) && reason.ValueKind == JsonValueKind.String ? reason.GetString() : null));
                 }
                 else if (messageType is "file_accept" or "file_reject" or "file_done" or "file_error" or "file_cancel")
                 {

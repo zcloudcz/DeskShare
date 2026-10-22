@@ -64,6 +64,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        PrivacyScreenPanel.IsVisible = OperatingSystem.IsWindows(); // the overlay is Windows-only
 
         // Setup logging and services from DI container (same as WPF project)
         _logger = App.ServiceProvider?.GetService<ILogger<MainWindow>>()
@@ -178,9 +179,11 @@ public partial class MainWindow : Window
             bool enableClipboard = EnableClipboardCheckBox.IsChecked == true;
             bool enableFileReceive = EnableFileReceiveCheckBox.IsChecked == true;
             bool trustClientPermanent = TrustClientPermanentCheckBox.IsChecked == true;
+            bool enablePrivacyScreen = EnablePrivacyScreenCheckBox.IsChecked == true && OperatingSystem.IsWindows();
+            bool privacyBlocksInput = enablePrivacyScreen && PrivacyScreenBlocksInputCheckBox.IsChecked == true;
 
             _serverManager.FileReceived += OnFileReceived;
-            await _serverManager.StartAsync(serverId, password, enableRemoteControl, trustClientPermanent, enableClipboard, enableFileReceive);
+            await _serverManager.StartAsync(serverId, password, enableRemoteControl, trustClientPermanent, enableClipboard, enableFileReceive, enablePrivacyScreen, privacyBlocksInput);
 
             _logger.LogInformation("Server started with remote control {Status}",
                 enableRemoteControl ? "ENABLED" : "DISABLED");
@@ -220,6 +223,8 @@ public partial class MainWindow : Window
             EnableRemoteControlCheckBox.IsEnabled = false;
             EnableClipboardCheckBox.IsEnabled = false;
             EnableFileReceiveCheckBox.IsEnabled = false;
+            EnablePrivacyScreenCheckBox.IsEnabled = false;
+            PrivacyScreenBlocksInputCheckBox.IsEnabled = false;
             TrustClientPermanentCheckBox.IsEnabled = false;
 
             UpdateTabAvailability();
@@ -248,6 +253,8 @@ public partial class MainWindow : Window
             EnableRemoteControlCheckBox.IsEnabled = true;
             EnableClipboardCheckBox.IsEnabled = true;
             EnableFileReceiveCheckBox.IsEnabled = true;
+            EnablePrivacyScreenCheckBox.IsEnabled = true;
+            PrivacyScreenBlocksInputCheckBox.IsEnabled = true;
             TrustClientPermanentCheckBox.IsEnabled = true;
         }
     }
@@ -312,6 +319,8 @@ public partial class MainWindow : Window
             EnableRemoteControlCheckBox.IsEnabled = true;
             EnableClipboardCheckBox.IsEnabled = true;
             EnableFileReceiveCheckBox.IsEnabled = true;
+            EnablePrivacyScreenCheckBox.IsEnabled = true;
+            PrivacyScreenBlocksInputCheckBox.IsEnabled = true;
             TrustClientPermanentCheckBox.IsEnabled = true;
 
             UpdateTabAvailability();
