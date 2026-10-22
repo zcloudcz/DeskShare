@@ -1,0 +1,82 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <!-- Per-machine DeskShare for mass deployment. See docs/deployment.md.
+       Silent example: msiexec /i DeskShare-x64.msi /qn SIGNALING_URL=wss://signal.corp.example/signal ENABLE_UNATTENDED=1 -->
+  <Package Name="DeskShare" Manufacturer="Martin Zahálka" Version="$(ProductVersion)"
+           UpgradeCode="8534abe6-50a9-4de8-a2ec-25effcae36c3" Scope="perMachine" Language="1033">
+
+    <!-- Same UpgradeCode + higher version replaces the old install in one step. Pass the same properties again on upgrade. -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of DeskShare is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- Public properties for silent deployment (documented in docs/deployment.md).
+         ALLOW_*: 1 = enabled and locked, 0 = disabled and locked, anything else (e.g. "user") = not set, the user decides. -->
+    <Property Id="SIGNALING_URL" Value="wss://app.deskshare.zcloud.cz/signal" Secure="yes" />
+    <Property Id="ENABLE_UNATTENDED" Value="0" Secure="yes" />
+    <Property Id="ALLOW_REMOTE_CONTROL" Value="0" Secure="yes" />
+    <Property Id="ALLOW_CLIPBOARD" Value="0" Secure="yes" />
+    <Property Id="ALLOW_FILES" Value="0" Secure="yes" />
+    <Property Id="ALLOW_PRIVACY_SCREEN" Value="0" Secure="yes" />
+    <Property Id="DISABLE_AUTOUPDATE" Value="1" Secure="yes" />
+
+    <Icon Id="deskshare.ico" SourceFile="$(IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="deskshare.ico" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="CompanyFolder" Name="DeskShare">
+        <!-- %ProgramFiles%\DeskShare\App; the unattended service is installed by its own installer into ...\Service -->
+        <Directory Id="INSTALLFOLDER" Name="App">
+          <Directory Id="SERVICEPAYLOAD" Name="service" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="App" Title="DeskShare" Level="1" AllowAdvertise="no">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+
+    <!-- Only the install source for DeskShare.Service.exe: switched on by ENABLE_UNATTENDED=1 so the default install stays small. -->
+    <Feature Id="Unattended" Title="Unattended access service" Level="1000" AllowAdvertise="no">
+      <Level Value="1" Condition="ENABLE_UNATTENDED = &quot;1&quot;" />
+      <ComponentGroupRef Id="ServiceFiles" />
+    </Feature>
+
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(AppDir)\**">
+        <Exclude Files="$(AppDir)\DeskShare.exe" />
+      </Files>
+    </ComponentGroup>
+    <ComponentGroup Id="ServiceFiles" Directory="SERVICEPAYLOAD">
+      <Files Include="$(ServiceDir)\**" />
+    </ComponentGroup>
+
+    <!-- The exe is declared by hand (and excluded from the harvest above) so the Start menu shortcut hangs off its file;
+         per-machine ProgramMenuFolder = All Users. -->
+    <Component Id="StartMenuShortcut" Directory="INSTALLFOLDER">
+      <File Id="DeskShareExe" Source="$(AppDir)\DeskShare.exe" KeyPath="yes">
+        <Shortcut Id="DeskShareShortcut" Name="DeskShare" Directory="ProgramMenuFolder" WorkingDirectory="INSTALLFOLDER" Advertise="yes" />
+      </File>
+    </Component>
+
+    <!-- Custom actions: all deferred + Impersonate=no = run elevated as SYSTEM. They reuse the app / service executables
+         instead of duplicating their logic here (policy.json writer: PolicyCommand.cs; service install: Installer.cs). -->
+    <CustomAction Id="WritePolicy" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="no" Return="check"
+        ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --write-policy &quot;signaling=[SIGNALING_URL]&quot; &quot;remote=[ALLOW_REMOTE_CONTROL]&quot; &quot;clipboard=[ALLOW_CLIPBOARD]&quot; &quot;files=[ALLOW_FILES]&quot; &quot;privacy=[ALLOW_PRIVACY_SCREEN]&quot; &quot;noupdate=[DISABLE_AUTOUPDATE]&quot;" />
+    <CustomAction Id="RemovePolicy" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="no" Return="ignore"
+        ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --remove-policy" />
+    <CustomAction Id="InstallService" Directory="SERVICEPAYLOAD" Execute="deferred" Impersonate="no" Return="check"
+        ExeCommand="&quot;[SERVICEPAYLOAD]DeskShare.Service.exe&quot; install" />
+    <CustomAction Id="UninstallService" Directory="SERVICEPAYLOAD" Execute="deferred" Impersonate="no" Return="ignore"
+        ExeCommand="&quot;[SERVICEPAYLOAD]DeskShare.Service.exe&quot; uninstall" />
+
+    <InstallExecuteSequence>
+      <!-- Not during the removal of the OLD version in a major upgrade (UPGRADINGPRODUCTCODE is set then): the new version
+           writes the policy again and keeps the service. -->
+      <Custom Action="WritePolicy" After="InstallFiles" Condition="NOT (REMOVE = &quot;ALL&quot;)" />
+      <Custom Action="InstallService" After="WritePolicy" Condition="ENABLE_UNATTENDED = &quot;1&quot; AND NOT (REMOVE = &quot;ALL&quot;)" />
+      <Custom Action="RemovePolicy" Before="RemoveFiles" Condition="REMOVE = &quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <!-- Return="ignore": without the Unattended feature DeskShare.Service.exe is not there and nothing needs removing. -->
+      <Custom Action="UninstallService" Before="RemoveFiles" Condition="REMOVE = &quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

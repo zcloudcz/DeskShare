@@ -1,0 +1,31 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+
+  <!-- Per-machine MSI for IT admins (Intune / GPO / SCCM / PDQ). WiX Toolset v5 (MS-RL, free): v6+ moved to the OSMF EULA
+       with a fee for commercial use, so the SDK is pinned to 5.0.2. Not part of DeskShare.sln on purpose (needs the NuGet
+       WiX SDK + the publish below); build it with: dotnet build installer/DeskShare.Msi -c Release -p:Version=1.2.3 -->
+  <PropertyGroup>
+    <OutputName>DeskShare-x64</OutputName>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <!-- Release tag without the leading v. A pre-release suffix ("-beta.1") is not allowed in an MSI version, so only x.y.z is used. -->
+    <Version Condition="'$(Version)' == ''">0.0.1</Version>
+    <ProductVersion>$([System.Text.RegularExpressions.Regex]::Match($(Version), '^\d+\.\d+\.\d+').Value)</ProductVersion>
+    <RepoRoot>$(MSBuildThisFileDirectory)..\..\</RepoRoot>
+    <StageDir>$(MSBuildThisFileDirectory)obj\stage\</StageDir>
+    <DefineConstants>$(DefineConstants);ProductVersion=$(ProductVersion);AppDir=$(StageDir)app;ServiceDir=$(StageDir)service;IconFile=$(RepoRoot)src\DeskShare.DesktopAvalonia\deskshare.ico</DefineConstants>
+  </PropertyGroup>
+
+  <!-- Self-contained (no .NET runtime prerequisite on managed PCs). The service is one single-file exe on purpose (see
+       Installer.cs); its agent goes to the 'agent' sub folder, exactly the layout DeskShare.Service.exe install expects. -->
+  <Target Name="PublishPayload" BeforeTargets="BeforeBuild" Condition="'$(SkipPublish)' != 'true'">
+    <RemoveDir Directories="$(StageDir)" />
+    <Exec Command="dotnet publish &quot;$(RepoRoot)src\DeskShare.DesktopAvalonia\DeskShare.DesktopAvalonia.csproj&quot; -c Release -r win-x64 --self-contained true -o &quot;$(StageDir)app&quot; -p:Version=$(Version)" />
+    <Exec Command="dotnet publish &quot;$(RepoRoot)src\DeskShare.Service\DeskShare.Service.csproj&quot; -c Release -r win-x64 --self-contained true -o &quot;$(StageDir)service&quot; -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:Version=$(Version)" />
+    <Exec Command="dotnet publish &quot;$(RepoRoot)src\ScreenSenderApp\DeskShare.ScreenSenderApp.csproj&quot; -c Release -r win-x64 --self-contained true -o &quot;$(StageDir)service\agent&quot; -p:Version=$(Version)" />
+    <!-- FFmpeg DLLs (filled by download-ffmpeg.ps1 / CI) also for the agent -->
+    <ItemGroup>
+      <FfmpegFiles Include="$(StageDir)app\ffmpeg\**" />
+    </ItemGroup>
+    <Copy SourceFiles="@(FfmpegFiles)" DestinationFolder="$(StageDir)service\agent\ffmpeg\%(RecursiveDir)" />
+  </Target>
+
+</Project>
