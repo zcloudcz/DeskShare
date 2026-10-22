@@ -10,6 +10,16 @@ enum SignalingType {
   pong, // 7
 }
 
+/// `a=mid:` of the [index]-th media section of [sdp], or the index itself when it cannot be found
+/// (the default mid of a simple offer is its m-line number).
+String midOfMLine(String? sdp, int index) {
+  if (sdp != null) {
+    final mids = RegExp(r'^a=mid:(\S+)', multiLine: true).allMatches(sdp).map((m) => m[1]!).toList();
+    if (index < mids.length) return mids[index];
+  }
+  return '$index';
+}
+
 /// One WebSocket signaling message. Property names are PascalCase on the wire (default .NET serializer).
 class SignalingMessage {
   const SignalingMessage({

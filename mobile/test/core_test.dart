@@ -144,6 +144,14 @@ void main() {
       expect(m.candidate, isNull);
     });
 
+    test('resolves a null sdpMid from the SDP (Android WebRTC aborts on null)', () {
+      const sdp = 'v=0\r\nm=audio 9 RTP/AVP 0\r\na=mid:audio0\r\nm=video 9 RTP/AVP 96\r\na=mid:1\r\n';
+      expect(midOfMLine(sdp, 0), 'audio0');
+      expect(midOfMLine(sdp, 1), '1');
+      expect(midOfMLine(sdp, 5), '5');
+      expect(midOfMLine(null, 0), '0');
+    });
+
     test('unknown message type is ignored, not fatal', () {
       expect(SignalingMessage.fromJson({'Type': 99}), isNull);
       expect(SignalingMessage.fromJson({'Type': 'Offer'}), isNull);

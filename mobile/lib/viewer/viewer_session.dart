@@ -258,6 +258,9 @@ class WebRtcViewerSession extends ViewerSession {
     }
     if (text == null || text.isEmpty) return;
     if (!text.startsWith('candidate:')) text = 'candidate:$text';
+    // The .NET sender sends sdpMid:null. The browser accepts that, but the Android WebRTC library
+    // aborts the whole process on a null mid, so resolve it from the remote description.
+    mid ??= midOfMLine((await pc.getRemoteDescription())?.sdp, index ?? 0);
     await pc.addCandidate(RTCIceCandidate(text, mid, index));
   }
 

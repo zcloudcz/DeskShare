@@ -313,6 +313,7 @@ class WebRtcSenderSession extends SenderSession {
     }
     if (text == null || text.isEmpty) return;
     if (!text.startsWith('candidate:')) text = 'candidate:$text';
+    mid ??= midOfMLine((await pc.getRemoteDescription())?.sdp, index ?? 0); // null mid aborts Android WebRTC
     await pc.addCandidate(RTCIceCandidate(text, mid, index));
   }
 

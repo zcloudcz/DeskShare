@@ -295,6 +295,14 @@ if (capturer.Initialize())
 }
 ```
 
+## 📱 Mobilní aplikace (Flutter)
+
+Složka [`mobile/`](mobile/README.md): aplikace DeskShare pro Android a iOS (`cz.zcloud.deskshare`).
+- **Connect to computer** (Android + iOS): Server ID + passkey, zobrazení vzdálené plochy, pinch-zoom, ovládání dotykem (tap = klik, dva prsty = pravý klik, tah = drag) a klávesnice.
+- **Share this phone** (Android): sdílení obrazovky telefonu (MediaProjection), volitelné vzdálené ovládání přes Accessibility službu. iOS sdílení (ReplayKit Broadcast Extension) zatím není, ovládání iOS Apple neumožňuje.
+
+Build a testy: `cd mobile && flutter analyze && flutter test && flutter build apk --debug`.
+
 ## 📚 Dokumentace
 
 - **[Architecture Guide](docs/architecture.md)** - Detailní architektura a design patterns
