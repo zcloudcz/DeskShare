@@ -31,9 +31,11 @@ try
         SignalingServerUrl = configuration["Signaling:ServerUrl"] ?? "wss://app.deskshare.zcloud.cz/signal",
         TargetFps = configuration.GetValue("Capture:TargetFps", 30),
         MaxOutputWidth = configuration.GetValue("Capture:MaxOutputWidth", 0),
+        Codec = configuration["Capture:Codec"] ?? "vp8",
         AdapterIndex = configuration.GetValue("Capture:AdapterIndex", 0),
         OutputIndex = configuration.GetValue("Capture:OutputIndex", 0),
         EnableRemoteControl = configuration.GetValue("Security:EnableRemoteControl", false),
+        EnableClipboard = configuration.GetValue("Security:EnableClipboard", false),
         TrustClientPermanent = configuration.GetValue("Security:TrustClientPermanent", false)
     };
     var logger = new SerilogLoggerFactory(Log.Logger).CreateLogger<ScreenSenderService>();

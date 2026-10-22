@@ -96,6 +96,78 @@ public class LinuxE2ETests
         Assert.False(moved, $"Pointer moved to {XServer.PointerLocation()} although remote control is disabled");
     }
 
+    private static async Task<(ClientManager Client, Viewer.FakeClipboard Clipboard)> ConnectWithClipboardAsync(SenderProcess sender)
+    {
+        var clipboard = new Viewer.FakeClipboard();
+        var client = await Viewer.ConnectAsync(sender, clipboard: clipboard);
+        // The host answers the viewer's authorization_request on the data channel with its clipboard grant.
+        return (client, clipboard);
+    }
+
+    [E2EFact]
+    public async Task ClipboardEnabled_ViewerText_ReachesTheHostsRealClipboard()
+    {
+        using var sender = await SenderProcess.StartAsync(remoteControl: false, clipboard: true);
+        var (client, clipboard) = await ConnectWithClipboardAsync(sender);
+        using var _ = client;
+
+        Assert.True(await XServer.WaitUntilAsync(() => client.HostAllowsClipboard, TimeSpan.FromSeconds(45)),
+            "The host never reported that it allows the clipboard\n" + sender.Output + "\n" + Viewer.LogText());
+        client.ShareClipboard = true;
+
+        // The data channel can still be warming up, so copy again until the text arrives.
+        var arrived = await XServer.WaitUntilAsync(
+            () => XServer.GetClipboard() == "viewer->host \u00e9",
+            TimeSpan.FromSeconds(20),
+            () => { clipboard.Copy("viewer->host \u00e9"); return Task.CompletedTask; });
+
+        Assert.True(arrived, $"Host clipboard: '{XServer.GetClipboard()}'\n{sender.Output}\n{Viewer.LogText()}");
+    }
+
+    [E2EFact]
+    public async Task ClipboardDisabled_ViewerText_NeverReachesTheHost()
+    {
+        using var sender = await SenderProcess.StartAsync(remoteControl: false, clipboard: false);
+        var (client, clipboard) = await ConnectWithClipboardAsync(sender);
+        using var _ = client;
+        client.ShareClipboard = true; // the viewer opts in, but the host never granted it
+
+        var arrived = await XServer.WaitUntilAsync(
+            () => XServer.GetClipboard().Contains("must-not-arrive"),
+            TimeSpan.FromSeconds(8),
+            () => { clipboard.Copy("must-not-arrive"); return Task.CompletedTask; });
+
+        Assert.False(client.HostAllowsClipboard);
+        Assert.False(arrived, "Clipboard text reached a host that did not allow clipboard sharing");
+    }
+
+    [E2EFact]
+    public async Task ClipboardEnabled_HostText_ArrivesAtTheViewer_OnlyWhenViewerOptedIn()
+    {
+        using var sender = await SenderProcess.StartAsync(remoteControl: false, clipboard: true);
+        var (client, clipboard) = await ConnectWithClipboardAsync(sender);
+        using var _ = client;
+        string? received = null;
+        client.ClipboardReceived += (_, m) => received = m.TextContent;
+
+        Assert.True(await XServer.WaitUntilAsync(() => client.HostAllowsClipboard, TimeSpan.FromSeconds(45)),
+            "The host never reported that it allows the clipboard\n" + sender.Output + "\n" + Viewer.LogText());
+
+        // Viewer has not opted in: the host's text must not touch the viewer's clipboard.
+        var leaked = await XServer.WaitUntilAsync(() => clipboard.Text != null, TimeSpan.FromSeconds(4),
+            () => { XServer.SetClipboard("host-secret-1"); return Task.CompletedTask; });
+        Assert.False(leaked, "Host text was applied although the viewer did not opt in");
+        // Stronger than "not applied": the host must not even send it before the viewer subscribed.
+        Assert.DoesNotContain("Received clipboard message from host", Viewer.LogText());
+
+        client.ShareClipboard = true;
+        var got = await XServer.WaitUntilAsync(() => received == "host->viewer", TimeSpan.FromSeconds(20),
+            async () => { XServer.SetClipboard("host->viewer"); await Task.Delay(500); });
+
+        Assert.True(got, $"Viewer received: '{received}'\n{sender.Output}\n{Viewer.LogText()}");
+        Assert.Equal("host->viewer", clipboard.Text);
+    }
+
     [E2EFact]
     public async Task WrongPasskey_IsRejected()
     {

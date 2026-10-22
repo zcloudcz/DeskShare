@@ -88,6 +88,7 @@ public class ScreenSenderService : IHostedService, IDisposable
         _httpClient = httpClient;
         _serverIdPath = serverIdPath;
         _ownerSecretStore = ownerSecretStore;
+        VideoEncoderFactory.Preference = VideoEncoderFactory.ParsePreference(configuration.Codec);
     }
 
     /// <summary>
@@ -218,12 +219,13 @@ public class ScreenSenderService : IHostedService, IDisposable
             IVideoSource videoSource;
             bool initialized;
 
-            if (_configuration.EnableRemoteControl)
+            // The data channel session is also needed for clipboard sharing alone; input stays unauthorized then.
+            if (_configuration.EnableRemoteControl || _configuration.EnableClipboard)
             {
-                _logger.LogInformation("Creating WebRTC session WITH remote control support");
+                _logger.LogInformation("Creating WebRTC session WITH data channel (remote control: {Control}, clipboard: {Clipboard})", _configuration.EnableRemoteControl, _configuration.EnableClipboard);
 
                 // macOS ignores injected input until Accessibility is granted; asking now shows the system prompt.
-                if (OperatingSystem.IsMacOS() && !Platforms.macOS.MacAccessibility.IsTrustedPromptingUser())
+                if (_configuration.EnableRemoteControl && OperatingSystem.IsMacOS() && !Platforms.macOS.MacAccessibility.IsTrustedPromptingUser())
                 {
                     _logger.LogWarning("Accessibility permission is not granted yet: remote control will not work until the app is enabled in System Settings > Privacy & Security > Accessibility, then restart sharing.");
                 }
@@ -234,7 +236,9 @@ public class ScreenSenderService : IHostedService, IDisposable
 
                 // Create session with input support
                 var serilogSessionLogger = Serilog.Log.ForContext<WebRTCSessionWithInput>();
-                _webrtcSessionWithInput = new WebRTCSessionWithInput(serilogSessionLogger, inputController, clipboardManager: null);
+                var clipboardManager = _configuration.EnableClipboard ? PlatformServiceFactory.CreateClipboardManager() : null;
+                _webrtcSessionWithInput = new WebRTCSessionWithInput(serilogSessionLogger, inputController, clipboardManager);
+                _webrtcSessionWithInput.ClipboardSharingEnabled = _configuration.EnableClipboard;
                 ApplyIceServers(_webrtcSessionWithInput.VideoSource);
 
                 // Subscribe to events
@@ -265,9 +269,12 @@ public class ScreenSenderService : IHostedService, IDisposable
 
                 // Auto-authorize remote control since user explicitly enabled it via checkbox. The controller
                 // asks AuthorizationRequested for consent; the checkbox is that consent, so answer yes.
-                _logger.LogInformation("Auto-authorizing remote control (user enabled via checkbox)");
-                inputController.AuthorizationRequested = _ => true;
-                await inputController.RequestAuthorizationAsync("auto-authorized", stoppingToken);
+                if (_configuration.EnableRemoteControl)
+                {
+                    _logger.LogInformation("Auto-authorizing remote control (user enabled via checkbox)");
+                    inputController.AuthorizationRequested = _ => true;
+                    await inputController.RequestAuthorizationAsync("auto-authorized", stoppingToken);
+                }
 
                 videoSource = _webrtcSessionWithInput.VideoSource;
                 _logger.LogInformation("WebRTC session with input initialized. Client ID: {ClientId}", _webrtcSessionWithInput.ClientId);
@@ -714,6 +721,12 @@ public class ScreenSenderConfiguration
     public int MaxOutputWidth { get; set; } = 0;
 
     /// <summary>
+    /// Video codec: "vp8" (default, software), "h264" (hardware H.264 when a GPU encoder initialises, VP8 as
+    /// fallback) or "auto" (same, but a missing GPU encoder is not a warning).
+    /// </summary>
+    public string Codec { get; set; } = "vp8";
+
+    /// <summary>
     /// Adapter index for screen capture (0 = primary GPU).
     /// </summary>
     public int AdapterIndex { get; set; } = 0;
@@ -734,6 +747,12 @@ public class ScreenSenderConfiguration
     /// We default to false (view-only) to prevent unauthorized control.
     /// </remarks>
     public bool EnableRemoteControl { get; set; } = false;
+
+    /// <summary>
+    /// Whether the connected viewer may exchange text clipboard content with this machine (both directions).
+    /// Default is false: the clipboard often holds passwords, so the host must opt in.
+    /// </summary>
+    public bool EnableClipboard { get; set; } = false;
 
     /// <summary>
     /// Whether to trust the connected client permanently (no passkey required for reconnection).

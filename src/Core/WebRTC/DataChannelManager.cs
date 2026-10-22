@@ -36,12 +36,45 @@ public sealed class DataChannelManager : IDisposable
     private RTCDataChannel? _dataChannel;
     private bool _disposed;
 
+    // Rejections logged per message type; after the cap further ones are only counted, so a misbehaving
+    // viewer cannot flood the log.
+    private const int MaxRejectionLogsPerType = 5;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _rejectionCounts = new();
+
     // Statistics tracking
     private long _messagesReceived;
     private long _messagesSent;
     private long _bytesReceived;
     private long _bytesSent;
     private DateTime _channelOpenedAt;
+
+    /// <summary>
+    /// Capabilities the host grants on top of the always-granted <see cref="SessionCapabilities.View"/>
+    /// (for example <see cref="SessionCapabilities.Clipboard"/>). <see cref="SessionCapabilities.Control"/>
+    /// is not set here: it follows the input controller's authorization (see <see cref="GrantedCapabilities"/>).
+    /// </summary>
+    public SessionCapabilities HostGrantedCapabilities { get; set; } = SessionCapabilities.None;
+
+    /// <summary>
+    /// Capabilities of the current session. Control is derived from the input controller's
+    /// <c>IsEnabled</c> (the "Allow remote control" decision) so there is only one source of truth.
+    /// </summary>
+    public SessionCapabilities GrantedCapabilities =>
+        SessionCapabilities.View
+        | HostGrantedCapabilities
+        | (_inputController?.IsEnabled == true ? SessionCapabilities.Control : SessionCapabilities.None);
+
+    /// <summary>
+    /// True when the viewer on the current channel asked for the host's clipboard ("clipboard_subscribe").
+    /// The grant alone is not enough: a viewer that never opted in must not receive clipboard text.
+    /// Reset whenever the channel is attached, detached or closed.
+    /// </summary>
+    public bool ClipboardSubscribed { get; private set; }
+
+    /// <summary>
+    /// Sends a clipboard message to the viewer, only while it is subscribed and the channel is open.
+    /// </summary>
+    public bool TrySendClipboard(string json) => ClipboardSubscribed && IsOpen && SendMessage(json);
 
     /// <summary>
     /// Event raised when a message is received on the data channel.
@@ -102,6 +135,7 @@ public sealed class DataChannelManager : IDisposable
 
         _dataChannel = dataChannel;
         _channelOpenedAt = DateTime.UtcNow;
+        ClipboardSubscribed = false; // a new channel is a new viewer session: it must subscribe again
 
         // Subscribe to data channel events
         _dataChannel.onopen += OnDataChannelOpen;
@@ -244,6 +278,7 @@ public sealed class DataChannelManager : IDisposable
     {
         _logger.Information("DataChannel closed: Label={Label}, ID={Id}",
             _dataChannel?.label, _dataChannel?.id);
+        ClipboardSubscribed = false;
 
         ChannelClosed?.Invoke(this, EventArgs.Empty);
     }
@@ -271,6 +306,13 @@ public sealed class DataChannelManager : IDisposable
             Interlocked.Increment(ref _messagesReceived);
             Interlocked.Add(ref _bytesReceived, data.Length);
 
+            // Size gate before decoding: a huge frame must not be turned into a string at all.
+            if (data.Length > DataChannelPolicy.MaxMessageBytes)
+            {
+                LogRejection("<oversize>", $"{data.Length} bytes");
+                return;
+            }
+
             // Convert byte array to string
             var message = Encoding.UTF8.GetString(data);
 
@@ -293,15 +335,36 @@ public sealed class DataChannelManager : IDisposable
 
     /// <summary>
     /// Processes a message as an input command or clipboard message.
-    /// Deserializes JSON and applies to appropriate handler.
+    /// The message is first checked against the session policy; only allowed messages reach a handler.
     /// </summary>
     /// <param name="message">JSON message containing command.</param>
-    private void ProcessInputMessage(string message)
+    internal void ProcessInputMessage(string message)
     {
         try
         {
-            // Try to parse as a wrapper object with "type" field
+            if (message.Length > DataChannelPolicy.MaxMessageBytes)
+            {
+                LogRejection("<oversize>", $"{message.Length} chars");
+                return;
+            }
+
             using var doc = JsonDocument.Parse(message);
+
+            // Default deny: an unknown type, or a capability the session lacks, never reaches a handler.
+            if (!DataChannelPolicy.TryGetRequiredCapability(doc.RootElement, out var typeName, out var required))
+            {
+                // One shared bucket for all unknown names: the names come from the peer, so counting them
+                // separately would let it grow the dictionary (and the log) without limit.
+                LogRejection("<unknown>", $"unknown message type '{typeName}'");
+                return;
+            }
+
+            if ((GrantedCapabilities & required) != required)
+            {
+                LogRejection(typeName, $"capability {required} not granted");
+                return;
+            }
+
             if (doc.RootElement.TryGetProperty("type", out var typeElement))
             {
                 var messageType = typeElement.GetString();
@@ -313,21 +376,35 @@ public sealed class DataChannelManager : IDisposable
                     // it got authorized = true.
                     bool authorized = _inputController?.IsEnabled ?? false;
                     _logger.Information("Remote control requested by viewer, authorized: {Authorized}", authorized);
-                    SendJson(new { type = "authorization_response", authorized, timestamp = DateTime.UtcNow });
+                    // "clipboard" tells the viewer whether the host shares the text clipboard (only then its buttons are usable).
+                    var clipboard = (GrantedCapabilities & SessionCapabilities.Clipboard) != 0;
+                    SendJson(new { type = "authorization_response", authorized, clipboard, timestamp = DateTime.UtcNow });
                     return;
                 }
 
-                if (messageType == "clipboard" && doc.RootElement.TryGetProperty("data", out var dataElement))
+                if (messageType == "clipboard_subscribe")
                 {
-                    // This is a clipboard message
-                    var clipboardMessage = JsonSerializer.Deserialize<ClipboardMessage>(dataElement.GetRawText());
-                    if (clipboardMessage != null)
+                    // Already passed the policy: only sessions with the Clipboard grant get here.
+                    ClipboardSubscribed = doc.RootElement.TryGetProperty("enabled", out var enabled) && enabled.ValueKind == JsonValueKind.True;
+                    _logger.Information("Viewer clipboard subscription: {Subscribed}", ClipboardSubscribed);
+                    return;
+                }
+
+                if (messageType == "clipboard")
+                {
+                    if (doc.RootElement.TryGetProperty("data", out var dataElement))
                     {
-                        _logger.Information("Received clipboard message: Type={Type}, Size={Size}",
-                            clipboardMessage.ContentType, clipboardMessage.SizeBytes);
-                        ClipboardMessageReceived?.Invoke(this, clipboardMessage);
-                        return;
+                        var clipboardMessage = JsonSerializer.Deserialize<ClipboardMessage>(dataElement.GetRawText());
+                        if (clipboardMessage != null)
+                        {
+                            _logger.Information("Received clipboard message: Type={Type}, Size={Size}",
+                                clipboardMessage.ContentType, clipboardMessage.SizeBytes);
+                            ClipboardMessageReceived?.Invoke(this, clipboardMessage);
+                        }
                     }
+
+                    // Never fall through: a clipboard message without "data" must not be parsed as input.
+                    return;
                 }
             }
 
@@ -351,15 +428,38 @@ public sealed class DataChannelManager : IDisposable
                 }
             }
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
-            _logger.Warning(ex, "Invalid JSON format for message");
+            // No exception object in the log: its text can echo parts of the payload.
+            LogRejection("<malformed>", "invalid JSON");
         }
         catch (Exception ex)
         {
             _logger.Error(ex, "Error processing message");
         }
     }
+
+    /// <summary>
+    /// Logs a rejected message. Only the type name is logged, never the content (it may hold keystrokes or
+    /// clipboard text), and only the first few per bucket.
+    /// </summary>
+    /// <param name="bucket">A known type name or a fixed category such as "&lt;unknown&gt;"; never a raw peer
+    /// value, so the number of buckets stays finite.</param>
+    private void LogRejection(string bucket, string reason)
+    {
+        var count = _rejectionCounts.AddOrUpdate(bucket, 1, (_, c) => c + 1);
+        if (count <= MaxRejectionLogsPerType)
+        {
+            _logger.Warning("DataChannel message rejected: Type={Type}, Reason={Reason}", bucket, reason);
+        }
+        else if (count == MaxRejectionLogsPerType + 1)
+        {
+            _logger.Warning("DataChannel: further rejections of Type={Type} will not be logged", bucket);
+        }
+    }
+
+    /// <summary>Number of rejection buckets; exposed for tests that check it stays bounded.</summary>
+    internal int RejectionBucketCount => _rejectionCounts.Count;
 
     #endregion
 
@@ -381,6 +481,7 @@ public sealed class DataChannelManager : IDisposable
         _dataChannel.onmessage -= OnDataChannelMessage;
 
         _dataChannel = null;
+        ClipboardSubscribed = false;
     }
 
     /// <summary>

@@ -98,6 +98,14 @@ public sealed class SIPSorceryVideoSource : IVideoSource
 
         _peerConnection = new RTCPeerConnection(config);
 
+        // Frames pushed while DTLS is still connecting are dropped by SIPSorcery, including the keyframe forced above.
+        // Force another one once the connection is up, otherwise the viewer waits for the next periodic keyframe.
+        _peerConnection.onconnectionstatechange += state =>
+        {
+            if (state == RTCPeerConnectionState.connected)
+                _framesSinceKeyframe = KeyframeInterval;
+        };
+
         // Add video track to peer connection (send-only, we don't receive)
         var videoTrack = new MediaStreamTrack(
             VideoEncoderFactory.AdvertisedFormats(_videoEncoder!),

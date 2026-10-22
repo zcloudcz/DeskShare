@@ -45,7 +45,7 @@ public sealed class SenderProcess : IDisposable
     private volatile string? _serverId;
     private volatile string? _passkey;
 
-    private SenderProcess(bool remoteControl, string? display)
+    private SenderProcess(bool remoteControl, string? display, bool clipboard)
     {
         var psi = new ProcessStartInfo("dotnet")
         {
@@ -57,6 +57,7 @@ public sealed class SenderProcess : IDisposable
         psi.ArgumentList.Add(SenderDll);
         psi.ArgumentList.Add($"--Signaling:ServerUrl={SignalingWsUrl}");
         psi.ArgumentList.Add($"--Security:EnableRemoteControl={(remoteControl ? "true" : "false")}");
+        psi.ArgumentList.Add($"--Security:EnableClipboard={(clipboard ? "true" : "false")}");
 
         _process = new Process { StartInfo = psi };
         _process.OutputDataReceived += (_, e) => OnLine(e.Data);
@@ -74,9 +75,9 @@ public sealed class SenderProcess : IDisposable
     public string Output { get { lock (_output) return string.Join('\n', _output); } }
 
     /// <summary>Starts the sender and waits until it has registered and is streaming.</summary>
-    public static async Task<SenderProcess> StartAsync(bool remoteControl, string? display = null)
+    public static async Task<SenderProcess> StartAsync(bool remoteControl, string? display = null, bool clipboard = false)
     {
-        var sender = new SenderProcess(remoteControl, display);
+        var sender = new SenderProcess(remoteControl, display, clipboard);
         try
         {
             // The service starts in the background (the console "Streaming." line comes too early), so wait for its own
@@ -137,7 +138,7 @@ public static class Viewer
     /// <summary>Viewer log lines, appended to failure messages so a failed run explains itself.</summary>
     public static readonly List<string> Log = new();
 
-    public static async Task<ClientManager> ConnectAsync(SenderProcess sender, EventHandler<VideoFrameReceivedEventArgs>? onFrame = null)
+    public static async Task<ClientManager> ConnectAsync(SenderProcess sender, EventHandler<VideoFrameReceivedEventArgs>? onFrame = null, IClipboardManager? clipboard = null)
     {
         lock (Log) Log.Clear();
         var loggers = LoggerFactory.Create(b => b.SetMinimumLevel(LogLevel.Information).AddProvider(new ListLoggerProvider(Log)));
@@ -149,7 +150,7 @@ public static class Viewer
             loggers.CreateLogger<ClientManager>(),
             loggers.CreateLogger<VideoSink>(),
             new ConfigurationBuilder().Build(),
-            new NoClipboard());
+            clipboard ?? new FakeClipboard());
         if (onFrame != null) client.FrameReceived += onFrame;
 
         await client.ConnectAsync(sender.ServerId, null, SenderProcess.SignalingWsUrl,
@@ -175,13 +176,15 @@ public static class Viewer
         }
     }
 
-    /// <summary>Clipboard is out of scope for the E2E tests; the viewer just needs a harmless implementation.</summary>
-    private sealed class NoClipboard : IClipboardManager
+    /// <summary>In-memory viewer clipboard: the test "copies" with <see cref="Copy"/> and reads what the viewer applied.</summary>
+    public sealed class FakeClipboard : IClipboardManager
     {
-        public event EventHandler<ClipboardChangedEventArgs>? ClipboardChanged { add { } remove { } }
+        public event EventHandler<ClipboardChangedEventArgs>? ClipboardChanged;
+        public string? Text { get; private set; }
         public bool IsMonitoring => false;
-        public Task<string?> GetTextAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
-        public Task<bool> SetTextAsync(string text, CancellationToken cancellationToken = default) => Task.FromResult(false);
+        public void Copy(string text) => ClipboardChanged?.Invoke(this, new ClipboardChangedEventArgs { Text = text });
+        public Task<string?> GetTextAsync(CancellationToken cancellationToken = default) => Task.FromResult(Text);
+        public Task<bool> SetTextAsync(string text, CancellationToken cancellationToken = default) { Text = text; return Task.FromResult(true); }
         public void StartMonitoring() { }
         public void StopMonitoring() { }
         public void Dispose() { }
@@ -200,6 +203,25 @@ public static class XServer
     }
 
     public static void MovePointer(int x, int y) => Run($"mousemove {x} {y}");
+
+    /// <summary>What a real X client sees on the CLIPBOARD selection of the sender display (empty when nobody owns it).</summary>
+    public static string GetClipboard()
+    {
+        using var p = Process.Start(new ProcessStartInfo("xclip", "-o -selection clipboard") { RedirectStandardOutput = true, RedirectStandardError = true })!;
+        var output = p.StandardOutput.ReadToEnd();
+        p.WaitForExit();
+        return p.ExitCode == 0 ? output : "";
+    }
+
+    /// <summary>Takes ownership of the clipboard like another application would (xclip stays alive to serve it).</summary>
+    public static void SetClipboard(string text)
+    {
+        // Only stdin is redirected: xclip forks a daemon that keeps stdout/stderr open, so reading them would hang.
+        using var p = Process.Start(new ProcessStartInfo("xclip", "-selection clipboard -i") { RedirectStandardInput = true })!;
+        p.StandardInput.Write(text);
+        p.StandardInput.Close();
+        p.WaitForExit();
+    }
 
     private static string Run(string args)
     {

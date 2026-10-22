@@ -91,12 +91,27 @@ public sealed class X11ClipboardManager : IClipboardManager
     private static extern int XPending(IntPtr display);
 
     [DllImport("libX11.so.6")]
+    private static extern int XFree(IntPtr data);
+
+    [DllImport("libX11.so.6")]
+    private static extern int XChangeProperty(IntPtr display, IntPtr window, IntPtr property, IntPtr type,
+        int format, int mode, byte[] data, int nelements);
+
+    // format 32 data is an array of C longs (8 bytes on 64-bit Linux), not ints
+    [DllImport("libX11.so.6", EntryPoint = "XChangeProperty")]
+    private static extern int XChangePropertyLongs(IntPtr display, IntPtr window, IntPtr property, IntPtr type,
+        int format, int mode, long[] data, int nelements);
+
+    [DllImport("libX11.so.6")]
+    private static extern int XSendEvent(IntPtr display, IntPtr window, bool propagate, long eventMask, ref XEvent sendEvent);
+
+    [DllImport("libX11.so.6")]
     private static extern int XGetWindowProperty(IntPtr display, IntPtr window, IntPtr property,
         long long_offset, long long_length, bool delete, IntPtr req_type,
         out IntPtr actual_type_return, out int actual_format_return,
         out ulong nitems_return, out ulong bytes_after_return, out IntPtr prop_return);
 
-    [StructLayout(LayoutKind.Explicit)]
+    [StructLayout(LayoutKind.Explicit, Size = 192)]
     private struct XEvent
     {
         [FieldOffset(0)]
@@ -141,6 +156,14 @@ public sealed class X11ClipboardManager : IClipboardManager
     // X11 event types
     private const int SelectionNotify = 31;
     private const int SelectionRequest = 30;
+    private const int PropModeReplace = 0;
+    private const int MaxReadLongs = 32768; // 128 KB of property data; larger texts need the INCR protocol (not supported)
+
+    // Xlib is not thread safe without XInitThreads: the monitor thread and callers share one display, so
+    // every X call that touches the event queue happens under this lock.
+    private readonly object _xLock = new();
+    private IntPtr _atomAtom;
+    private IntPtr _atomString;
 
     public event EventHandler<ClipboardChangedEventArgs>? ClipboardChanged;
 
@@ -170,6 +193,8 @@ public sealed class X11ClipboardManager : IClipboardManager
             _atomUtf8String = XInternAtom(_display, "UTF8_STRING", false);
             _atomTargets = XInternAtom(_display, "TARGETS", false);
             _atomText = XInternAtom(_display, "TEXT", false);
+            _atomAtom = XInternAtom(_display, "ATOM", false);
+            _atomString = XInternAtom(_display, "STRING", false);
 
             // Start monitoring thread
             _monitorCts = new CancellationTokenSource();
@@ -201,62 +226,70 @@ public sealed class X11ClipboardManager : IClipboardManager
         Log.Information("Clipboard monitoring stopped");
     }
 
-    public async Task<string?> GetTextAsync(CancellationToken cancellationToken = default)
+    public Task<string?> GetTextAsync(CancellationToken cancellationToken = default)
+    {
+        return Task.Run(() =>
+        {
+            lock (_xLock)
+            {
+                return ReadSelection();
+            }
+        }, cancellationToken);
+    }
+
+    // Asks the current clipboard owner for UTF8_STRING and waits for the answer. Caller holds _xLock.
+    private string? ReadSelection()
     {
         if (_display == IntPtr.Zero)
             return null;
 
         try
         {
-            // Request clipboard content
             XConvertSelection(_display, _atomClipboard, _atomUtf8String,
                 _atomClipboard, _window, IntPtr.Zero);
             XFlush(_display);
 
-            // Wait for SelectionNotify event (with timeout)
-            var startTime = DateTime.UtcNow;
-            var timeout = TimeSpan.FromSeconds(2);
-
-            while (DateTime.UtcNow - startTime < timeout)
+            var deadline = DateTime.UtcNow.AddSeconds(2);
+            while (DateTime.UtcNow < deadline)
             {
-                if (XPending(_display) > 0)
+                if (XPending(_display) == 0)
                 {
-                    XNextEvent(_display, out XEvent xEvent);
-
-                    if (xEvent.type == SelectionNotify)
-                    {
-                        var selEvent = xEvent.xselection;
-
-                        if (selEvent.property != IntPtr.Zero)
-                        {
-                            // Read the property containing clipboard data
-                            XGetWindowProperty(_display, _window, _atomClipboard,
-                                0, 1024, false, _atomUtf8String,
-                                out IntPtr actualType, out int actualFormat,
-                                out ulong nItems, out ulong bytesAfter, out IntPtr data);
-
-                            if (data != IntPtr.Zero && nItems > 0)
-                            {
-                                try
-                                {
-                                    byte[] buffer = new byte[nItems];
-                                    Marshal.Copy(data, buffer, 0, (int)nItems);
-                                    string text = Encoding.UTF8.GetString(buffer);
-                                    return text;
-                                }
-                                finally
-                                {
-                                    // Free the property data
-                                    Marshal.FreeHGlobal(data);
-                                }
-                            }
-                        }
-
-                        break;
-                    }
+                    Thread.Sleep(10);
+                    continue;
                 }
 
-                await Task.Delay(10, cancellationToken);
+                XNextEvent(_display, out XEvent xEvent);
+
+                if (xEvent.type == SelectionRequest)
+                {
+                    HandleSelectionRequest(xEvent.xselectionrequest);
+                }
+                else if (xEvent.type == SelectionNotify)
+                {
+                    if (xEvent.xselection.property == IntPtr.Zero)
+                        return null; // owner could not convert to UTF8_STRING
+
+                    // delete = true: reading removes the property, so it does not pile up on our window
+                    XGetWindowProperty(_display, _window, _atomClipboard,
+                        0, MaxReadLongs, true, _atomUtf8String,
+                        out _, out _, out ulong nItems, out _, out IntPtr data);
+
+                    if (data == IntPtr.Zero)
+                        return null;
+
+                    try
+                    {
+                        if (nItems == 0)
+                            return null;
+                        var buffer = new byte[nItems];
+                        Marshal.Copy(data, buffer, 0, (int)nItems);
+                        return Encoding.UTF8.GetString(buffer);
+                    }
+                    finally
+                    {
+                        XFree(data); // memory owned by Xlib, not Marshal.AllocHGlobal
+                    }
+                }
             }
 
             return null;
@@ -268,35 +301,29 @@ public sealed class X11ClipboardManager : IClipboardManager
         }
     }
 
-    public async Task<bool> SetTextAsync(string text, CancellationToken cancellationToken = default)
+    public Task<bool> SetTextAsync(string text, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(text) || _display == IntPtr.Zero)
-            return false;
+            return Task.FromResult(false);
 
         try
         {
-            // Store the text locally (X11 clipboard is pull-based, not push-based)
-            _lastClipboardText = text;
-
-            // Become the clipboard owner
-            XSetSelectionOwner(_display, _atomClipboard, _window, IntPtr.Zero);
-            XFlush(_display);
-
-            // Verify we own the selection
-            IntPtr owner = XGetSelectionOwner(_display, _atomClipboard);
-            bool success = owner == _window;
-
-            if (success)
+            lock (_xLock)
             {
-                Log.Debug("Clipboard text set successfully");
-            }
+                // Store the text locally (X11 clipboard is pull-based, not push-based): other apps ask us for it
+                // through SelectionRequest events, answered by HandleSelectionRequest.
+                _lastClipboardText = text;
 
-            return await Task.FromResult(success);
+                XSetSelectionOwner(_display, _atomClipboard, _window, IntPtr.Zero);
+                XFlush(_display);
+
+                return Task.FromResult(XGetSelectionOwner(_display, _atomClipboard) == _window);
+            }
         }
         catch (Exception ex)
         {
             Log.Error(ex, "SetTextAsync failed");
-            return false;
+            return Task.FromResult(false);
         }
     }
 
@@ -308,41 +335,36 @@ public sealed class X11ClipboardManager : IClipboardManager
         {
             while (_monitorCts?.Token.IsCancellationRequested == false)
             {
-                // Poll for clipboard owner changes
-                IntPtr currentOwner = XGetSelectionOwner(_display, _atomClipboard);
+                string? newText = null;
 
-                if (currentOwner != lastOwner && currentOwner != _window)
+                lock (_xLock)
                 {
-                    lastOwner = currentOwner;
+                    // Poll for clipboard owner changes
+                    IntPtr currentOwner = XGetSelectionOwner(_display, _atomClipboard);
 
-                    // Clipboard owner changed, read new content
-                    Task.Run(async () =>
+                    if (currentOwner != lastOwner && currentOwner != _window)
                     {
-                        string? newText = await GetTextAsync();
-                        if (newText != null && newText != _lastClipboardText)
+                        lastOwner = currentOwner;
+                        newText = ReadSelection();
+                    }
+
+                    // Answer selection requests (other apps pasting what we put on the clipboard)
+                    while (XPending(_display) > 0)
+                    {
+                        XNextEvent(_display, out XEvent xEvent);
+
+                        if (xEvent.type == SelectionRequest)
                         {
-                            _lastClipboardText = newText;
-
-                            var eventArgs = new ClipboardChangedEventArgs
-                            {
-                                Text = newText,
-                                Timestamp = DateTime.UtcNow
-                            };
-
-                            ClipboardChanged?.Invoke(this, eventArgs);
+                            HandleSelectionRequest(xEvent.xselectionrequest);
                         }
-                    });
+                    }
                 }
 
-                // Check for selection request events (when other apps request our clipboard)
-                while (XPending(_display) > 0)
+                // Outside the lock: handlers may call SetTextAsync.
+                if (newText != null && newText != _lastClipboardText)
                 {
-                    XNextEvent(_display, out XEvent xEvent);
-
-                    if (xEvent.type == SelectionRequest)
-                    {
-                        HandleSelectionRequest(xEvent.xselectionrequest);
-                    }
+                    _lastClipboardText = newText;
+                    ClipboardChanged?.Invoke(this, new ClipboardChangedEventArgs { Text = newText, Timestamp = DateTime.UtcNow });
                 }
 
                 Thread.Sleep(200); // Poll every 200ms
@@ -354,38 +376,45 @@ public sealed class X11ClipboardManager : IClipboardManager
         }
     }
 
-    private void HandleSelectionRequest(XSelectionRequestEvent requestEvent)
+    private void HandleSelectionRequest(XSelectionRequestEvent request)
     {
-        // Another application is requesting our clipboard data
-        // We need to provide the data we stored in _lastClipboardText
-
-        if (_lastClipboardText == null)
-            return;
+        // Another application asks for our clipboard: write the answer into a property on its window,
+        // then tell it with a SelectionNotify event (property = None means "cannot convert").
+        var reply = new XEvent();
+        reply.xselection.type = SelectionNotify;
+        reply.xselection.display = request.display;
+        reply.xselection.requestor = request.requestor;
+        reply.xselection.selection = request.selection;
+        reply.xselection.target = request.target;
+        reply.xselection.time = request.time;
+        reply.xselection.property = IntPtr.Zero;
 
         try
         {
-            byte[] data = Encoding.UTF8.GetBytes(_lastClipboardText);
-            IntPtr dataPtr = Marshal.AllocHGlobal(data.Length);
+            // Old clients send no property: the convention is to use the target atom.
+            var property = request.property != IntPtr.Zero ? request.property : request.target;
 
-            try
+            if (request.target == _atomTargets)
             {
-                Marshal.Copy(data, 0, dataPtr, data.Length);
-
-                // Set the property with our clipboard data
-                // Note: This is a simplified implementation
-                // Full implementation would use XChangeProperty
-
-                XFlush(_display);
+                var targets = new[] { (long)_atomTargets, (long)_atomUtf8String, (long)_atomString, (long)_atomText };
+                XChangePropertyLongs(_display, request.requestor, property, _atomAtom, 32, PropModeReplace, targets, targets.Length);
+                reply.xselection.property = property;
             }
-            finally
+            else if (_lastClipboardText != null &&
+                     (request.target == _atomUtf8String || request.target == _atomString || request.target == _atomText))
             {
-                Marshal.FreeHGlobal(dataPtr);
+                var data = Encoding.UTF8.GetBytes(_lastClipboardText);
+                XChangeProperty(_display, request.requestor, property, _atomUtf8String, 8, PropModeReplace, data, data.Length);
+                reply.xselection.property = property;
             }
         }
         catch (Exception ex)
         {
             Log.Error(ex, "HandleSelectionRequest failed");
         }
+
+        XSendEvent(_display, request.requestor, false, 0, ref reply);
+        XFlush(_display);
     }
 
     public void Dispose()
