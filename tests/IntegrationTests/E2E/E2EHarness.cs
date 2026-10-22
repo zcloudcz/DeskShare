@@ -45,8 +45,9 @@ public sealed class SenderProcess : IDisposable
     private volatile string? _serverId;
     private volatile string? _passkey;
 
-    private SenderProcess(bool remoteControl, string? display, bool clipboard)
+    private SenderProcess(bool remoteControl, string? display, bool clipboard, string? receiveFolder)
     {
+        ReceiveFolder = receiveFolder;
         var psi = new ProcessStartInfo("dotnet")
         {
             RedirectStandardOutput = true,
@@ -58,6 +59,9 @@ public sealed class SenderProcess : IDisposable
         psi.ArgumentList.Add($"--Signaling:ServerUrl={SignalingWsUrl}");
         psi.ArgumentList.Add($"--Security:EnableRemoteControl={(remoteControl ? "true" : "false")}");
         psi.ArgumentList.Add($"--Security:EnableClipboard={(clipboard ? "true" : "false")}");
+        psi.ArgumentList.Add($"--Security:EnableFileReceive={(receiveFolder != null ? "true" : "false")}");
+        // Without a folder the feature is off; the folder is only passed when it is on.
+        if (receiveFolder != null) psi.ArgumentList.Add($"--Security:FileReceiveFolder={receiveFolder}");
 
         _process = new Process { StartInfo = psi };
         _process.OutputDataReceived += (_, e) => OnLine(e.Data);
@@ -72,12 +76,24 @@ public sealed class SenderProcess : IDisposable
     /// <summary>Latest passkey without dashes. It rotates every 45 s, so read it right before use.</summary>
     public string Passkey => AuthenticationService.UnformatPasskey(_passkey ?? throw new InvalidOperationException("No passkey yet"));
 
+    /// <summary>Folder the sender saves received files into (the sender runs in the same container); null when file receiving is off.</summary>
+    public string? ReceiveFolder { get; }
+
+    /// <summary>Names of the files the sender has saved so far (including unfinished .part files).</summary>
+    public string[] ReceivedFiles() =>
+        ReceiveFolder != null && Directory.Exists(ReceiveFolder)
+            ? Directory.GetFiles(ReceiveFolder).Select(f => Path.GetFileName(f)).OrderBy(n => n).ToArray()
+            : [];
+
+    /// <summary>Reads a received file back, to compare it byte for byte with what the viewer sent.</summary>
+    public byte[] ReadReceived(string name) => File.ReadAllBytes(Path.Combine(ReceiveFolder!, name));
+
     public string Output { get { lock (_output) return string.Join('\n', _output); } }
 
     /// <summary>Starts the sender and waits until it has registered and is streaming.</summary>
-    public static async Task<SenderProcess> StartAsync(bool remoteControl, string? display = null, bool clipboard = false)
+    public static async Task<SenderProcess> StartAsync(bool remoteControl, string? display = null, bool clipboard = false, string? receiveFolder = null)
     {
-        var sender = new SenderProcess(remoteControl, display, clipboard);
+        var sender = new SenderProcess(remoteControl, display, clipboard, receiveFolder);
         try
         {
             // The service starts in the background (the console "Streaming." line comes too early), so wait for its own

@@ -184,6 +184,21 @@ public sealed class WebRTCSessionWithInput : IDisposable
         }
     }
 
+    /// <summary>Raised after a file from the viewer was received completely and verified.</summary>
+    public event EventHandler<ReceivedFile>? FileReceived;
+
+    /// <summary>
+    /// Lets the connected viewer send files into <paramref name="folder"/> (grants
+    /// <see cref="SessionCapabilities.FileTransfer"/>). Off until called; the host's decision, like the clipboard.
+    /// </summary>
+    public void EnableFileReceive(string folder, long maxBytes)
+    {
+        var receiver = new FileReceiver(folder, maxBytes, _dataChannelManager.SendMessage, _logger);
+        receiver.FileReceived += (_, file) => FileReceived?.Invoke(this, file);
+        _dataChannelManager.FileReceiver = receiver;
+        _dataChannelManager.HostGrantedCapabilities |= SessionCapabilities.FileTransfer;
+    }
+
     private async void OnRemoteClipboardMessageReceived(object? sender, ClipboardMessage message)
     {
         try
@@ -455,6 +470,7 @@ public sealed class WebRTCSessionWithInput : IDisposable
         _clipboardManager?.StopMonitoring();
 
         _dataChannelManager.Dispose();
+        _dataChannelManager.FileReceiver?.Dispose();
         _baseSession.Dispose();
         _clipboardManager?.Dispose();
         // Owned like the clipboard manager: on Wayland it holds a desktop portal session (and its D-Bus connection)

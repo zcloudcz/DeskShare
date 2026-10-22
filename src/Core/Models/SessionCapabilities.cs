@@ -23,6 +23,6 @@ public enum SessionCapabilities
     /// <summary>Exchange clipboard content.</summary>
     Clipboard = 4,
 
-    /// <summary>Transfer files (reserved, no handler yet).</summary>
+    /// <summary>Send files to the host (viewer to host only).</summary>
     FileTransfer = 8
 }

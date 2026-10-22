@@ -219,6 +219,82 @@ public class LinuxE2ETests
         Assert.Equal("host->viewer", clipboard.Text);
     }
 
+    private static string NewReceiveFolder() => Path.Combine(Path.GetTempPath(), "deskshare-e2e-recv-" + Guid.NewGuid().ToString("N"));
+
+    private static async Task<(string Path, byte[] Content)> WriteRandomFileAsync(int bytes)
+    {
+        var content = System.Security.Cryptography.RandomNumberGenerator.GetBytes(bytes);
+        var path = Path.Combine(Path.GetTempPath(), "deskshare-e2e-src-" + Guid.NewGuid().ToString("N") + ".bin");
+        await File.WriteAllBytesAsync(path, content);
+        return (path, content);
+    }
+
+    [E2EFact]
+    public async Task FileReceiveEnabled_ViewerFile_ArrivesWithIdenticalBytes()
+    {
+        var folder = NewReceiveFolder();
+        using var sender = await SenderProcess.StartAsync(remoteControl: false, receiveFolder: folder);
+        using var client = await Viewer.ConnectAsync(sender);
+        Assert.True(await XServer.WaitUntilAsync(() => client.HostAllowsFiles, TimeSpan.FromSeconds(45)),
+            "The host never reported that it accepts files\n" + sender.Output + "\n" + Viewer.LogText());
+        var (path, content) = await WriteRandomFileAsync(5 * 1024 * 1024);
+        try
+        {
+            var savedAs = await client.SendFileAsync(path).WaitAsync(TimeSpan.FromSeconds(60));
+
+            Assert.Equal(System.Security.Cryptography.SHA256.HashData(content),
+                System.Security.Cryptography.SHA256.HashData(sender.ReadReceived(savedAs)));
+            Assert.Equal([savedAs], sender.ReceivedFiles()); // no .part left behind
+        }
+        finally { File.Delete(path); Directory.Delete(folder, recursive: true); }
+    }
+
+    [E2EFact]
+    public async Task FileReceiveDisabled_OfferIsRejected_AndNothingIsWritten()
+    {
+        var folder = NewReceiveFolder();
+        // Remote control on only so that the sender has a data channel at all (a pure view-only sender has none and
+        // never answers); file receiving itself stays off.
+        using var sender = await SenderProcess.StartAsync(remoteControl: true, receiveFolder: null);
+        using var client = await Viewer.ConnectAsync(sender);
+        // A modified viewer could offer a file anyway; the host must refuse it.
+        var (path, _) = await WriteRandomFileAsync(10_000);
+        try
+        {
+            await Task.Delay(2000); // let the data channel open and the authorization_response arrive
+            Assert.False(client.HostAllowsFiles);
+            var ex = await Assert.ThrowsAsync<IOException>(() => client.SendFileAsync(path).WaitAsync(TimeSpan.FromSeconds(30)));
+
+            Assert.Contains("disabled", ex.Message);
+            Assert.Empty(sender.ReceivedFiles());
+            Assert.False(Directory.Exists(folder));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [E2EFact]
+    public async Task FileReceiveEnabled_TraversalName_IsSavedSanitizedInsideTheFolder()
+    {
+        var folder = NewReceiveFolder();
+        using var sender = await SenderProcess.StartAsync(remoteControl: false, receiveFolder: folder);
+        using var client = await Viewer.ConnectAsync(sender);
+        Assert.True(await XServer.WaitUntilAsync(() => client.HostAllowsFiles, TimeSpan.FromSeconds(45)),
+            "The host never reported that it accepts files\n" + sender.Output + "\n" + Viewer.LogText());
+        var (path, content) = await WriteRandomFileAsync(1000);
+        try
+        {
+            // The real viewer sends the plain file name; a hostile one would put the path in the offer.
+            var realPasswd = File.ReadAllBytes("/etc/passwd");
+            var savedAs = await client.SendFileAsync(path, offeredName: "../../etc/passwd").WaitAsync(TimeSpan.FromSeconds(30));
+
+            Assert.Equal("passwd", savedAs);
+            Assert.Equal(["passwd"], sender.ReceivedFiles());
+            Assert.Equal(content, sender.ReadReceived("passwd"));
+            Assert.Equal(realPasswd, File.ReadAllBytes("/etc/passwd")); // the real system file is untouched
+        }
+        finally { File.Delete(path); Directory.Delete(folder, recursive: true); }
+    }
+
     [E2EFact]
     public async Task WrongPasskey_IsRejected()
     {
