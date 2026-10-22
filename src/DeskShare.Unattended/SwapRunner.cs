@@ -190,7 +190,9 @@ public static class RecoveryRunner
     /// <summary>
     /// A leftover Service.old or install.pending means a previous swap never finished cleanly. The old folder is the last
     /// known-good version, so it is put back (the current live folder is quarantined, never deleted first) BEFORE anything else.
-    /// Returns false when the restored version could not be started (the caller must not continue the install).
+    /// Returns false when the restored version could not be started, or when a leftover backup of a confirmed update
+    /// could not be deleted (the caller must not continue the install: a new swap would mark it "pending" again and a later
+    /// recovery could restore that half-deleted backup over the working version).
     /// </summary>
     public static bool Run(IRecoveryOps ops)
     {
@@ -211,7 +213,8 @@ public static class RecoveryRunner
         // keep a "confirmed" marker until that worked so the next install retries.
         if (ops.OldExists)
         {
-            try { ops.DeleteOld(); } catch (IOException) { return true; }
+            try { ops.DeleteOld(); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; } // marker stays "confirmed"
         }
         if (ops.Marker == MarkerState.Confirmed) ops.ClearMarker();
         return true;

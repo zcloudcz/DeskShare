@@ -180,10 +180,10 @@ public class RecoveryRunnerTests
     }
 
     [Fact]
-    public void ConfirmedMarker_DeleteStillFailing_KeepsMarkerForTheNextTry()
+    public void ConfirmedMarker_DeleteStillFailing_StopsTheInstallAndKeepsMarker()
     {
         var r = new FakeRecovery { Marker = MarkerState.Confirmed, OldExists = true, LiveExists = true, DeleteOldFails = true };
-        Assert.True(RecoveryRunner.Run(r));
+        Assert.False(RecoveryRunner.Run(r));
         Assert.Equal(new[] { "deleteOld" }, r.Calls);
     }
 

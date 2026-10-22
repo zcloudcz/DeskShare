@@ -41,7 +41,7 @@ internal static class Installer
         try
         {
             if (!RecoveryRunner.Run(new RecoveryOps(live, old)))
-                return Fail("A previous update was interrupted and the old version could not be restored/started; fix that first.", 4);
+                return Fail("A previous update left the backup folder Service.old behind and it could not be restored/started or deleted; fix that first.", 4);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
