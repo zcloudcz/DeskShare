@@ -55,6 +55,9 @@ msiexec /i DeskShare-x64-novejsi.msi /qn
 msiexec /i DeskShare-x64-novejsi.msi /qn SIGNALING_URL=wss://novy.firma.cz/signal
 ```
 
+**Změna konfigurace** = spuštění téhož MSI znovu s novými vlastnostmi (`msiexec /i DeskShare-x64.msi /qn SIGNALING_URL=...`).
+`policy.json` i uložené hodnoty v registru se přepíšou při každém běhu, ne jen při první instalaci.
+
 **Služba (`ENABLE_UNATTENDED`).** Odebrání služby bez odinstalace aplikace:
 `msiexec /i DeskShare-x64.msi REMOVE=Unattended ENABLE_UNATTENDED=0 /qn` (feature `Unattended` zmizí a MSI zavolá
 `DeskShare.Service.exe uninstall`). Při upgradu s `ENABLE_UNATTENDED=0` se služba z předchozí verze automaticky neodstraní;

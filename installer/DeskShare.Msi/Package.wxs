@@ -46,6 +46,10 @@
     <SetProperty Action="UseSavedAllowPrivacyScreen" Id="ALLOW_PRIVACY_SCREEN" Value="[ALLOW_PRIVACY_SCREEN_SAVED]" Sequence="both" After="DefaultAllowPrivacyScreen" Condition="NOT ALLOW_PRIVACY_SCREEN" />
     <SetProperty Action="UseSavedDisableAutoupdate" Id="DISABLE_AUTOUPDATE" Value="[DISABLE_AUTOUPDATE_SAVED]" Sequence="both" After="DefaultDisableAutoupdate" Condition="NOT DISABLE_AUTOUPDATE" />
 
+    <!-- Id of this install transaction (set once, before the script is generated); the policy backup is stamped with it so a
+         rollback only restores a backup made by THIS run. -->
+    <SetProperty Action="SetTransactionId" Id="TXN" Value="[Date] [Time] [ProductCode]" Sequence="execute" After="AppSearch" />
+
     <!-- Is the service already registered (by an earlier install or by the app)? Decides whether the rollback may remove it. -->
     <Property Id="SERVICE_EXISTS" Secure="yes"><RegistrySearch Id="ExistingService" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\DeskShareService" Name="ImagePath" Type="raw" Bitness="always64" /></Property>
 
@@ -64,7 +68,6 @@
     <Feature Id="App" Title="DeskShare" Level="1" AllowAdvertise="no">
       <ComponentGroupRef Id="AppFiles" />
       <ComponentRef Id="StartMenuShortcut" />
-      <ComponentRef Id="RememberedSettings" />
     </Feature>
 
     <!-- Only the install source for DeskShare.Service.exe: switched on by ENABLE_UNATTENDED=1 so the default install stays small. -->
@@ -90,23 +93,13 @@
       </File>
     </Component>
 
-    <!-- The values this install ran with, read back by the RegistrySearches above on repair / upgrade. -->
-    <Component Id="RememberedSettings" Directory="INSTALLFOLDER" Guid="{7C1E5D3A-2B94-4F0E-A6D8-3B5F9E1C4A72}">
-      <RegistryValue Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="SIGNALING_URL" Type="string" Value="[SIGNALING_URL]" KeyPath="yes" />
-      <RegistryValue Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="ENABLE_UNATTENDED" Type="string" Value="[ENABLE_UNATTENDED]" />
-      <RegistryValue Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="ALLOW_REMOTE_CONTROL" Type="string" Value="[ALLOW_REMOTE_CONTROL]" />
-      <RegistryValue Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="ALLOW_CLIPBOARD" Type="string" Value="[ALLOW_CLIPBOARD]" />
-      <RegistryValue Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="ALLOW_FILES" Type="string" Value="[ALLOW_FILES]" />
-      <RegistryValue Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="ALLOW_PRIVACY_SCREEN" Type="string" Value="[ALLOW_PRIVACY_SCREEN]" />
-      <RegistryValue Root="HKLM" Key="SOFTWARE\DeskShare\Msi" Name="DISABLE_AUTOUPDATE" Type="string" Value="[DISABLE_AUTOUPDATE]" />
-    </Component>
 
     <!-- Custom actions: all deferred + Impersonate=no = run elevated as SYSTEM. They reuse the app / service executables
          instead of duplicating their logic here (policy.json writer: PolicyCommand.cs; service install: Installer.cs). -->
     <CustomAction Id="WritePolicy" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="no" Return="check"
-        ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --write-policy &quot;signaling=[SIGNALING_URL]&quot; &quot;remote=[ALLOW_REMOTE_CONTROL]&quot; &quot;clipboard=[ALLOW_CLIPBOARD]&quot; &quot;files=[ALLOW_FILES]&quot; &quot;privacy=[ALLOW_PRIVACY_SCREEN]&quot; &quot;noupdate=[DISABLE_AUTOUPDATE]&quot;" />
+        ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --write-policy &quot;txn=[TXN]&quot; &quot;enable=[ENABLE_UNATTENDED]&quot; &quot;signaling=[SIGNALING_URL]&quot; &quot;remote=[ALLOW_REMOTE_CONTROL]&quot; &quot;clipboard=[ALLOW_CLIPBOARD]&quot; &quot;files=[ALLOW_FILES]&quot; &quot;privacy=[ALLOW_PRIVACY_SCREEN]&quot; &quot;noupdate=[DISABLE_AUTOUPDATE]&quot;" />
     <CustomAction Id="RemovePolicy" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="no" Return="ignore"
-        ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --remove-policy" />
+        ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --remove-policy &quot;txn=[TXN]&quot;" />
     <CustomAction Id="InstallService" Directory="SERVICEPAYLOAD" Execute="deferred" Impersonate="no" Return="check"
         ExeCommand="&quot;[SERVICEPAYLOAD]DeskShare.Service.exe&quot; install" />
     <CustomAction Id="UninstallService" Directory="SERVICEPAYLOAD" Execute="deferred" Impersonate="no" Return="check"
@@ -115,9 +108,9 @@
     <!-- Rollback / commit: the policy verbs move the old folder to DeskShare.Policy.bak first. Rollback puts it back (or
          removes the new folder when there was none), commit deletes the backup. -->
     <CustomAction Id="RollbackWritePolicy" Directory="INSTALLFOLDER" Execute="rollback" Impersonate="no" Return="ignore"
-        ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --restore-policy" />
+        ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --restore-policy &quot;txn=[TXN]&quot;" />
     <CustomAction Id="RollbackRemovePolicy" Directory="INSTALLFOLDER" Execute="rollback" Impersonate="no" Return="ignore"
-        ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --restore-policy" />
+        ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --restore-policy &quot;txn=[TXN]&quot;" />
     <!-- cmd.exe instead of DeskShare.exe: on uninstall the app is already gone when commit scripts run. -->
     <CustomAction Id="CommitPolicy" Directory="TARGETDIR" Execute="commit" Impersonate="no" Return="ignore"
         ExeCommand="&quot;[System64Folder]cmd.exe&quot; /c rd /s /q &quot;[CommonAppDataFolder]DeskShare.Policy.bak&quot;" />
