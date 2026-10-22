@@ -210,6 +210,12 @@ public class ClientManager : IDisposable
 
             _clientId = clientId ?? Guid.NewGuid().ToString();
 
+            // The peer connection must exist before we ask for an offer and before the receive loop runs:
+            // an offer that arrives earlier is dropped ("peer connection not initialized") and never answered.
+            // Setup (FFmpeg init) can take longer than the sender needs to build its offer, e.g. on first start.
+            // The reconnect path below uses the same order.
+            await SetupWebRtcConnectionAsync();
+
             // Send connection request
             var joinMessage = new SignalingMessage
             {
@@ -223,9 +229,6 @@ public class ClientManager : IDisposable
             // Start receiving messages
             _receiveCts = new CancellationTokenSource();
             _ = ReceiveSignalingMessagesAsync(_receiveCts.Token);
-
-            // Setup WebRTC peer connection
-            await SetupWebRtcConnectionAsync();
 
             _isConnected = true;
             Connected?.Invoke(this, EventArgs.Empty);
