@@ -65,6 +65,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         PrivacyScreenPanel.IsVisible = OperatingSystem.IsWindows(); // the overlay is Windows-only
+        ApplyPolicyLocks();
 
         // Setup logging and services from DI container (same as WPF project)
         _logger = App.ServiceProvider?.GetService<ILogger<MainWindow>>()
@@ -157,6 +158,28 @@ public partial class MainWindow : Window
         LogTab.IsVisible = App.ShowLogTab;
 
         _logger.LogInformation("MainWindow initialized (Avalonia)");
+    }
+
+    /// <summary>
+    /// Options fixed by the administrator's machine policy (MSI) are shown at their enforced value, disabled, with a hint.
+    /// Called again whenever the handlers re-enable the checkboxes. ServerManager enforces the same values, so this is only the display.
+    /// </summary>
+    private void ApplyPolicyLocks()
+    {
+        var policy = DeskShare.Unattended.MachinePolicy.Current;
+        void Lock(CheckBox box, bool? forced)
+        {
+            if (forced is not { } value) return;
+            box.IsChecked = value;
+            box.IsEnabled = false;
+            const string hint = " (Set by your administrator)";
+            if (box.Content is string text && !text.EndsWith(hint, StringComparison.Ordinal)) box.Content = text + hint;
+        }
+        Lock(EnableRemoteControlCheckBox, policy.RemoteControl);
+        Lock(EnableClipboardCheckBox, policy.Clipboard);
+        Lock(EnableFileReceiveCheckBox, policy.FileReceive);
+        Lock(EnablePrivacyScreenCheckBox, policy.PrivacyScreen);
+        if (policy.PrivacyScreen == false) PrivacyScreenBlocksInputCheckBox.IsEnabled = false;
     }
 
     #region Server Mode Event Handlers
@@ -256,6 +279,7 @@ public partial class MainWindow : Window
             EnablePrivacyScreenCheckBox.IsEnabled = true;
             PrivacyScreenBlocksInputCheckBox.IsEnabled = true;
             TrustClientPermanentCheckBox.IsEnabled = true;
+            ApplyPolicyLocks();
         }
     }
 
@@ -322,6 +346,7 @@ public partial class MainWindow : Window
             EnablePrivacyScreenCheckBox.IsEnabled = true;
             PrivacyScreenBlocksInputCheckBox.IsEnabled = true;
             TrustClientPermanentCheckBox.IsEnabled = true;
+            ApplyPolicyLocks();
 
             UpdateTabAvailability();
 

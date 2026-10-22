@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using DeskShare.Core;
+using DeskShare.Unattended;
 
 namespace DeskShare.Desktop.Shared.Services;
 
@@ -60,6 +61,13 @@ public class ServerManager : IDisposable
         _logger.LogInformation("Starting server with ID: {ServerId}, RemoteControl: {RemoteControl}, TrustClientPermanent: {TrustClientPermanent}",
             serverId, enableRemoteControl, trustClientPermanent);
         _serverId = serverId;
+
+        // Options locked by the administrator's machine policy beat whatever the UI passed in.
+        var policy = MachinePolicy.Current;
+        enableRemoteControl = policy.RemoteControl ?? enableRemoteControl;
+        enableClipboard = policy.Clipboard ?? enableClipboard;
+        enableFileReceive = policy.FileReceive ?? enableFileReceive;
+        enablePrivacyScreen = policy.PrivacyScreen ?? enablePrivacyScreen;
 
         try
         {

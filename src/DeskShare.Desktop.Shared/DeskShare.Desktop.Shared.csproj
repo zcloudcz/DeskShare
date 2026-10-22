@@ -12,6 +12,7 @@
   <!-- References to shared project libraries -->
   <ItemGroup>
     <ProjectReference Include="..\Core\DeskShare.Core.csproj" />
+    <ProjectReference Include="..\DeskShare.Unattended\DeskShare.Unattended.csproj" />
   </ItemGroup>
 
   <!-- NuGet packages shared by both WPF and Avalonia desktop clients -->
