@@ -24,16 +24,6 @@ internal static class Installer
         try { aside = PrepareDataDir(); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException) { return Fail(ex.Message, 3); }
         FileLog.FileEnabled = true;
-        // Lets the agent send Ctrl+Alt+Del to the sign-in screen. Best effort: a failure must not block the install.
-        try
-        {
-            if (SasPolicy.EnableForServices(new SasRegistryStore()))
-                FileLog.Write("Set SoftwareSASGeneration=1 so remote Ctrl+Alt+Del works; it is removed again on uninstall.");
-        }
-        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or System.Security.SecurityException)
-        {
-            FileLog.Write("WARNING: could not set SoftwareSASGeneration, remote Ctrl+Alt+Del will not work: " + ex.Message);
-        }
         if (aside != null) FileLog.Write($"Existing {UnattendedPaths.DataDir} was not protected as expected, moved to {aside}; configuration reset to defaults.");
 
         sourceDir = Path.GetFullPath(sourceDir);
@@ -79,6 +69,17 @@ internal static class Installer
         switch (result)
         {
             case SwapResult.Success:
+                // Only after the new version is confirmed running, so a failed or rolled-back install leaves the policy alone.
+                // Lets the agent send Ctrl+Alt+Del to the sign-in screen. Best effort: a failure must not fail the install.
+                try
+                {
+                    if (SasPolicy.EnableForServices(new SasRegistryStore()))
+                        FileLog.Write("Set SoftwareSASGeneration=1 so remote Ctrl+Alt+Del works; it is removed again on uninstall.");
+                }
+                catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or System.Security.SecurityException)
+                {
+                    FileLog.Write("WARNING: could not set SoftwareSASGeneration, remote Ctrl+Alt+Del will not work: " + ex.Message);
+                }
                 FileLog.Write("Installed and started.");
                 return 0;
             case SwapResult.FailedRolledBack:

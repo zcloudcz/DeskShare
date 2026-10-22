@@ -33,6 +33,13 @@ internal static class DesktopRules
         inputDesktop is not null && !string.Equals(inputDesktop, homeDesktop, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
+    /// How long to sleep before the next GDI frame. All math in long: TickCount64 exceeds int range after ~24.9 days of uptime.
+    /// The first frame (no previous one) never waits; the result is always within [0, intervalMs].
+    /// </summary>
+    public static int GdiWaitMs(long nowTicks, long? lastFrameTicks, int intervalMs) =>
+        lastFrameTicks is null ? 0 : (int)Math.Clamp(intervalMs - (nowTicks - lastFrameTicks.Value), 0, intervalMs);
+
+    /// <summary>
     /// GDI is the fallback only when Desktop Duplication failed on a non-default desktop. On the default desktop a
     /// failure keeps today's behaviour (retry DXGI); with an unknown desktop (null) nothing changes either.
     /// </summary>

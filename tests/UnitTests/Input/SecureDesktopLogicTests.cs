@@ -56,10 +56,93 @@ public class SasPolicyTests
     private sealed class FakeStore : ISasPolicyStore
     {
         public int? Value;
-        public bool InstallerSetIt { get; set; }
+        public SasMarker Marker { get; set; }
+        public bool FailMarkerWrite, FailValueWrite;
+        public int? ReadSoftwareSasGeneration() => Value;
+        public void WriteSoftwareSasGeneration(int value) { if (FailValueWrite) throw new IOException(); Value = value; }
+        public void DeleteSoftwareSasGeneration() => Value = null;
+    }
+
+    // Fails the n-th marker write (1 = the Pending write, 2 = the Done write); reverting to None is always allowed.
+    private sealed class FlakyMarkerStore : ISasPolicyStore
+    {
+        private int _writes;
+        private SasMarker _marker;
+        public int FailOnWrite;
+        public int? Value;
+        public SasMarker Marker
+        {
+            get => _marker;
+            set { if (value != SasMarker.None && ++_writes == FailOnWrite) throw new IOException(); _marker = value; }
+        }
         public int? ReadSoftwareSasGeneration() => Value;
         public void WriteSoftwareSasGeneration(int value) => Value = value;
         public void DeleteSoftwareSasGeneration() => Value = null;
+    }
+
+    [Fact]
+    public void Install_PendingMarkerWriteFails_WritesNothing()
+    {
+        var s = new FlakyMarkerStore { FailOnWrite = 1 };
+
+        Assert.Throws<IOException>(() => SasPolicy.EnableForServices(s));
+
+        Assert.Null(s.Value);
+        Assert.Equal(SasMarker.None, s.Marker);
+    }
+
+    [Fact]
+    public void Install_PolicyWriteFails_RevertsMarker()
+    {
+        var s = new FakeStore { FailValueWrite = true };
+
+        Assert.Throws<IOException>(() => SasPolicy.EnableForServices(s));
+
+        Assert.Null(s.Value);
+        Assert.Equal(SasMarker.None, s.Marker);
+    }
+
+    [Fact]
+    public void Install_DoneMarkerWriteFails_RemovesThePolicyAgain()
+    {
+        var s = new FlakyMarkerStore { FailOnWrite = 2 };
+
+        Assert.Throws<IOException>(() => SasPolicy.EnableForServices(s));
+
+        Assert.Null(s.Value);
+        Assert.Equal(SasMarker.None, s.Marker);
+    }
+
+    [Fact]
+    public void Install_CompletesOrDropsAPendingMarkerFromAnInterruptedRun()
+    {
+        var wrote = new FakeStore { Marker = SasMarker.Pending, Value = 1 };
+        var didNot = new FakeStore { Marker = SasMarker.Pending };
+
+        Assert.False(SasPolicy.EnableForServices(wrote));
+        Assert.True(SasPolicy.EnableForServices(didNot));
+
+        Assert.Equal(SasMarker.Done, wrote.Marker); // uninstall will now remove it
+        Assert.Equal(1, didNot.Value);
+        Assert.Equal(SasMarker.Done, didNot.Marker);
+    }
+
+    [Theory]
+    [InlineData(40L, 10)]
+    [InlineData(50L, 0)]
+    [InlineData(500L, 0)]
+    [InlineData(-5000L, 50)] // clock oddity: never longer than the interval
+    public void GdiWait_IsClamped(long elapsed, int expected) =>
+        Assert.Equal(expected, DesktopRules.GdiWaitMs(1000 + elapsed, 1000, 50));
+
+    [Fact]
+    public void GdiWait_FirstFrameNeverWaits_EvenAfterMonthsOfUptime()
+    {
+        var uptime = 30L * 24 * 3600 * 1000; // > int.MaxValue ms
+
+        Assert.Equal(0, DesktopRules.GdiWaitMs(uptime, null, 50));
+        Assert.Equal(50, DesktopRules.GdiWaitMs(uptime, uptime, 50));
+        Assert.Equal(0, DesktopRules.GdiWaitMs(uptime + 80, uptime, 50));
     }
 
     [Fact]
@@ -70,7 +153,7 @@ public class SasPolicyTests
         Assert.True(SasPolicy.EnableForServices(s));
 
         Assert.Equal(1, s.Value);
-        Assert.True(s.InstallerSetIt);
+        Assert.Equal(SasMarker.Done, s.Marker);
     }
 
     [Theory]
@@ -84,7 +167,7 @@ public class SasPolicyTests
         Assert.False(SasPolicy.EnableForServices(s));
 
         Assert.Equal(existing, s.Value);
-        Assert.False(s.InstallerSetIt);
+        Assert.Equal(SasMarker.None, s.Marker);
     }
 
     [Fact]
@@ -95,7 +178,7 @@ public class SasPolicyTests
 
         Assert.False(SasPolicy.EnableForServices(s));
 
-        Assert.True(s.InstallerSetIt);
+        Assert.Equal(SasMarker.Done, s.Marker);
         Assert.Equal(1, s.Value);
     }
 
@@ -110,7 +193,7 @@ public class SasPolicyTests
         Assert.False(SasPolicy.RestoreOnUninstall(theirs));
 
         Assert.Null(ours.Value);
-        Assert.False(ours.InstallerSetIt);
+        Assert.Equal(SasMarker.None, ours.Marker);
         Assert.Equal(1, theirs.Value);
     }
 
@@ -124,6 +207,6 @@ public class SasPolicyTests
         Assert.False(SasPolicy.RestoreOnUninstall(s));
 
         Assert.Equal(3, s.Value);
-        Assert.False(s.InstallerSetIt); // claim dropped, value is theirs now
+        Assert.Equal(SasMarker.None, s.Marker); // claim dropped, value is theirs now
     }
 }

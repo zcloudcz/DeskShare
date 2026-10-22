@@ -33,19 +33,19 @@ internal sealed class SasRegistryStore : ISasPolicyStore
         key?.DeleteValue(ValueName, throwOnMissingValue: false);
     }
 
-    public bool InstallerSetIt
+    public SasMarker Marker
     {
         get
         {
             using var key = Hklm.OpenSubKey(OurKey);
-            return key?.GetValue(MarkerName) as int? == 1;
+            return (key?.GetValue(MarkerName) as int?) switch { 1 => SasMarker.Done, 2 => SasMarker.Pending, _ => SasMarker.None };
         }
         set
         {
-            if (value)
+            if (value != SasMarker.None)
             {
                 using var key = Hklm.CreateSubKey(OurKey);
-                key.SetValue(MarkerName, 1, RegistryValueKind.DWord);
+                key.SetValue(MarkerName, value == SasMarker.Done ? 1 : 2, RegistryValueKind.DWord);
             }
             else
             {

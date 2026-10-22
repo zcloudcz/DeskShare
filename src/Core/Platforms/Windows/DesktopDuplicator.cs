@@ -41,9 +41,9 @@ public sealed class DesktopDuplicator : IScreenCapturer
     private readonly InputDesktop _desktop = new();
     private long _nextDesktopCheck;
     private bool _useGdi;
-    private long _lastGdiFrame;
+    private long? _lastGdiFrame; // null until the first GDI frame, which must not wait
     private int _originX, _originY;
-    private IntPtr _gdiMemDc, _gdiBitmap, _gdiBits;
+    private IntPtr _gdiMemDc, _gdiBitmap, _gdiBits, _gdiOldObject;
 
     /// <inheritdoc/>
     public int Width { get; private set; }
@@ -334,7 +334,7 @@ public sealed class DesktopDuplicator : IScreenCapturer
     private bool TryAcquireGdiFrame(out Frame? frame)
     {
         frame = null;
-        var wait = GdiFrameIntervalMs - (int)(Environment.TickCount64 - _lastGdiFrame);
+        var wait = DesktopRules.GdiWaitMs(Environment.TickCount64, _lastGdiFrame, GdiFrameIntervalMs);
         if (wait > 0)
             Thread.Sleep(wait);
         _lastGdiFrame = Environment.TickCount64;
@@ -383,17 +383,20 @@ public sealed class DesktopDuplicator : IScreenCapturer
             FreeGdiSurface();
             return false;
         }
-        DesktopNative.SelectObject(_gdiMemDc, _gdiBitmap);
+        _gdiOldObject = DesktopNative.SelectObject(_gdiMemDc, _gdiBitmap);
         return true;
     }
 
     private void FreeGdiSurface()
     {
-        if (_gdiBitmap != IntPtr.Zero)
-            DesktopNative.DeleteObject(_gdiBitmap);
-        if (_gdiMemDc != IntPtr.Zero)
-            DesktopNative.DeleteDC(_gdiMemDc);
-        (_gdiBitmap, _gdiMemDc, _gdiBits) = (IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        // A bitmap still selected into a DC cannot be deleted: deselect it first, then delete both.
+        if (_gdiMemDc != IntPtr.Zero && _gdiOldObject != IntPtr.Zero)
+            DesktopNative.SelectObject(_gdiMemDc, _gdiOldObject);
+        if (_gdiBitmap != IntPtr.Zero && !DesktopNative.DeleteObject(_gdiBitmap))
+            Log.Warning("Could not delete the GDI capture bitmap");
+        if (_gdiMemDc != IntPtr.Zero && !DesktopNative.DeleteDC(_gdiMemDc))
+            Log.Warning("Could not delete the GDI capture device context");
+        (_gdiBitmap, _gdiMemDc, _gdiBits, _gdiOldObject) = (IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
     }
 
     /// <summary>

@@ -19,6 +19,9 @@ internal sealed class InputDesktop : IDisposable
     private readonly DesktopChangeTracker _tracker = new();
     private IntPtr _handle; // desktop to attach to; zero = the process's own desktop is already the input desktop
     private bool _attachFailureLogged;
+    // A desktop handle cannot be closed while a thread is attached to it. Replaced handles wait here until no scope is active.
+    private readonly List<IntPtr> _retired = new();
+    private int _activeScopes;
 
     public string? Name => _tracker.Current;
 
@@ -46,9 +49,11 @@ internal sealed class InputDesktop : IDisposable
             _handle = IntPtr.Zero;
             DesktopNative.CloseDesktop(h);
         }
-        // Fails (ignored) while some thread is still attached to it; threads restore in Scope.Dispose so it normally works.
         if (old != IntPtr.Zero)
-            DesktopNative.CloseDesktop(old);
+        {
+            lock (_retired) _retired.Add(old);
+            CloseRetired();
+        }
 
         Log.Information("Input desktop is now {Desktop}", name);
         return true;
@@ -75,22 +80,39 @@ internal sealed class InputDesktop : IDisposable
             }
             return default;
         }
-        return new Scope(previous);
+        Interlocked.Increment(ref _activeScopes);
+        return new Scope(this, previous);
+    }
+
+    private void CloseRetired()
+    {
+        if (Volatile.Read(ref _activeScopes) != 0)
+            return;
+        lock (_retired)
+        {
+            foreach (var h in _retired)
+                DesktopNative.CloseDesktop(h);
+            _retired.Clear();
+        }
     }
 
     public void Dispose()
     {
         if (_handle != IntPtr.Zero)
-            DesktopNative.CloseDesktop(_handle);
+            lock (_retired) _retired.Add(_handle);
         _handle = IntPtr.Zero;
+        CloseRetired();
     }
 
-    public readonly struct Scope(IntPtr previous) : IDisposable
+    public readonly struct Scope(InputDesktop owner, IntPtr previous) : IDisposable
     {
         public void Dispose()
         {
-            if (previous != IntPtr.Zero)
-                DesktopNative.SetThreadDesktop(previous);
+            if (owner is null)
+                return; // default scope: nothing was attached
+            DesktopNative.SetThreadDesktop(previous);
+            Interlocked.Decrement(ref owner._activeScopes);
+            owner.CloseRetired();
         }
     }
 
