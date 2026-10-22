@@ -8,7 +8,7 @@ namespace DeskShare.DesktopAvalonia;
 
 /// <summary>
 /// Command-line verbs the MSI runs elevated (deferred custom action, as SYSTEM) to create / delete the machine policy:
-/// <c>DeskShare.exe --write-policy txn=ID signaling=wss://... remote=0 clipboard=0 files=0 privacy=0 noupdate=1 enable=0</c>,
+/// <c>DeskShare.exe --write-policy txn=ID en=0 sig=wss://... rc=0 cb=0 fl=0 pv=0 nu=1</c>,
 /// <c>--remove-policy txn=ID</c> and, from the MSI rollback, <c>--restore-policy txn=ID</c>.
 /// Anything that is not "0"/"1" (or an empty URL) means "not set": the user stays free to choose that option.
 /// Besides policy.json the write also stores the raw MSI property values in HKLM\SOFTWARE\DeskShare\Msi, where the next
@@ -42,7 +42,7 @@ internal static class PolicyCommand
             if (txn.Length == 0) return 2;
             if (args[0] == "--restore-policy") return Restore(dir, backup, txn);
 
-            var url = Get("signaling");
+            var url = Get("sig");
             if (args[0] == "--write-policy" && !string.IsNullOrEmpty(url) && !MachinePolicy.IsWebSocketUrl(url))
             {
                 Console.Error.WriteLine("SIGNALING_URL must be an absolute ws:// or wss:// URL, got: " + url);
@@ -59,7 +59,7 @@ internal static class PolicyCommand
             bool? Flag(string key) => Get(key) switch { "1" => true, "0" => false, _ => null };
             CreateProtectedDir(dir);
             File.WriteAllText(MachinePolicy.DefaultPath, MachinePolicy.ToJson(
-                string.IsNullOrEmpty(url) ? null : url, Flag("remote"), Flag("clipboard"), Flag("files"), Flag("privacy"), Flag("noupdate") == true));
+                string.IsNullOrEmpty(url) ? null : url, Flag("rc"), Flag("cb"), Flag("fl"), Flag("pv"), Flag("nu") == true));
 
             using var key = Registry.LocalMachine.CreateSubKey(RegKey);
             foreach (var (name, arg) in RememberedValues) key.SetValue(name, Get(arg) ?? "");
@@ -75,8 +75,8 @@ internal static class PolicyCommand
     /// <summary>MSI property name stored in the registry -> command-line argument carrying it.</summary>
     private static readonly (string Name, string Arg)[] RememberedValues =
     {
-        ("SIGNALING_URL", "signaling"), ("ENABLE_UNATTENDED", "enable"), ("ALLOW_REMOTE_CONTROL", "remote"),
-        ("ALLOW_CLIPBOARD", "clipboard"), ("ALLOW_FILES", "files"), ("ALLOW_PRIVACY_SCREEN", "privacy"), ("DISABLE_AUTOUPDATE", "noupdate"),
+        ("SIGNALING_URL", "sig"), ("ENABLE_UNATTENDED", "en"), ("ALLOW_REMOTE_CONTROL", "rc"),
+        ("ALLOW_CLIPBOARD", "cb"), ("ALLOW_FILES", "fl"), ("ALLOW_PRIVACY_SCREEN", "pv"), ("DISABLE_AUTOUPDATE", "nu"),
     };
 
     /// <summary>Any failure here (e.g. a stale backup that cannot be deleted) propagates BEFORE the live folder is moved.</summary>

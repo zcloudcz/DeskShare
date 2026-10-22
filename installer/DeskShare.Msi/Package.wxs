@@ -48,7 +48,7 @@
 
     <!-- Id of this install transaction (set once, before the script is generated); the policy backup is stamped with it so a
          rollback only restores a backup made by THIS run. -->
-    <SetProperty Action="SetTransactionId" Id="TXN" Value="[Date] [Time] [ProductCode]" Sequence="execute" After="AppSearch" />
+    <SetProperty Action="SetTransactionId" Id="TXN" Value="[Date]@[Time]" Sequence="execute" After="AppSearch" />
 
     <!-- Is the service already registered (by an earlier install or by the app)? Decides whether the rollback may remove it. -->
     <Property Id="SERVICE_EXISTS" Secure="yes"><RegistrySearch Id="ExistingService" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\DeskShareService" Name="ImagePath" Type="raw" Bitness="always64" /></Property>
@@ -97,9 +97,9 @@
     <!-- Custom actions: all deferred + Impersonate=no = run elevated as SYSTEM. They reuse the app / service executables
          instead of duplicating their logic here (policy.json writer: PolicyCommand.cs; service install: Installer.cs). -->
     <CustomAction Id="WritePolicy" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="no" Return="check"
-        ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --write-policy &quot;txn=[TXN]&quot; &quot;enable=[ENABLE_UNATTENDED]&quot; &quot;signaling=[SIGNALING_URL]&quot; &quot;remote=[ALLOW_REMOTE_CONTROL]&quot; &quot;clipboard=[ALLOW_CLIPBOARD]&quot; &quot;files=[ALLOW_FILES]&quot; &quot;privacy=[ALLOW_PRIVACY_SCREEN]&quot; &quot;noupdate=[DISABLE_AUTOUPDATE]&quot;" />
+        ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --write-policy txn=[TXN] en=[ENABLE_UNATTENDED] &quot;sig=[SIGNALING_URL]&quot; rc=[ALLOW_REMOTE_CONTROL] cb=[ALLOW_CLIPBOARD] fl=[ALLOW_FILES] pv=[ALLOW_PRIVACY_SCREEN] nu=[DISABLE_AUTOUPDATE]" />
     <CustomAction Id="RemovePolicy" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="no" Return="ignore"
-        ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --remove-policy &quot;txn=[TXN]&quot;" />
+        ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --remove-policy txn=[TXN]" />
     <CustomAction Id="InstallService" Directory="SERVICEPAYLOAD" Execute="deferred" Impersonate="no" Return="check"
         ExeCommand="&quot;[SERVICEPAYLOAD]DeskShare.Service.exe&quot; install" />
     <CustomAction Id="UninstallService" Directory="SERVICEPAYLOAD" Execute="deferred" Impersonate="no" Return="check"
@@ -108,9 +108,9 @@
     <!-- Rollback / commit: the policy verbs move the old folder to DeskShare.Policy.bak first. Rollback puts it back (or
          removes the new folder when there was none), commit deletes the backup. -->
     <CustomAction Id="RollbackWritePolicy" Directory="INSTALLFOLDER" Execute="rollback" Impersonate="no" Return="ignore"
-        ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --restore-policy &quot;txn=[TXN]&quot;" />
+        ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --restore-policy txn=[TXN]" />
     <CustomAction Id="RollbackRemovePolicy" Directory="INSTALLFOLDER" Execute="rollback" Impersonate="no" Return="ignore"
-        ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --restore-policy &quot;txn=[TXN]&quot;" />
+        ExeCommand="&quot;[INSTALLFOLDER]DeskShare.exe&quot; --restore-policy txn=[TXN]" />
     <!-- cmd.exe instead of DeskShare.exe: on uninstall the app is already gone when commit scripts run. -->
     <CustomAction Id="CommitPolicy" Directory="TARGETDIR" Execute="commit" Impersonate="no" Return="ignore"
         ExeCommand="&quot;[System64Folder]cmd.exe&quot; /c rd /s /q &quot;[CommonAppDataFolder]DeskShare.Policy.bak&quot;" />
