@@ -103,9 +103,15 @@ class WebRtcSenderSession extends SenderSession {
     notifyListeners();
   }
 
+  // Bumped by every start and every shutdown: an await that resumes after the session was stopped (e.g. the
+  // user ended the capture from the system UI during startup) sees a different value and must not continue.
+  int _startGen = 0;
+
   @override
   Future<void> start() async {
     if (_state == SenderState.starting || _state == SenderState.sharing) return;
+    final gen = ++_startGen;
+    bool stale() => gen != _startGen;
     _stopping = false;
     _rotationFailures = 0;
     _retryAfter = null;
@@ -120,22 +126,35 @@ class WebRtcSenderSession extends SenderSession {
         return _set(SenderState.failed, 'Screen capture permission was denied');
       }
       await device.startCaptureService();
-      _stream = await navigator.mediaDevices.getDisplayMedia({'video': true, 'audio': false});
+      final stream = await navigator.mediaDevices.getDisplayMedia({'video': true, 'audio': false});
+      if (stale()) {
+        for (final t in stream.getTracks()) {
+          await t.stop();
+        }
+        await stream.dispose();
+        return;
+      }
+      _stream = stream;
 
       final size = await device.displaySize();
+      if (stale()) return;
       _mapper = GestureMapper(width: size.width, height: size.height);
       _listenToDevice();
 
       _api = SignalingApi(settings.signalingUrl);
       _serverId = settings.serverId;
       await _newPasskeyAndRegister(firstRegistration: true);
+      if (stale()) return;
       await _connectSocket();
+      if (stale()) return;
       _scheduleRotation();
       _set(SenderState.sharing, 'Waiting for a viewer...');
     } on SignalingException catch (e) {
+      if (stale()) return;
       await _shutdown();
       _set(SenderState.failed, e.message);
     } catch (e) {
+      if (stale()) return;
       await _shutdown();
       _set(SenderState.failed, 'Could not start sharing: $e');
     }
@@ -187,6 +206,10 @@ class WebRtcSenderSession extends SenderSession {
       if (_stopping) return;
       try {
         await _newPasskeyAndRegister();
+        // A previous failure replaced the status with "Cannot reach..."; registration works again.
+        if (_rotationFailures > 0 && _state == SenderState.sharing) {
+          _set(_state, _viewer ? 'Viewer connected' : 'Waiting for a viewer...');
+        }
         _rotationFailures = 0;
         _retryAfter = null;
       } on SignalingException catch (e) {
@@ -211,7 +234,12 @@ class WebRtcSenderSession extends SenderSession {
   }
 
   Future<void> _connectSocket() async {
+    final gen = _startGen;
     final socket = await SignalingSocket.connect(_api!.signalUrl(_wsToken!));
+    if (gen != _startGen || _stopping) {
+      await socket.close(); // the session was stopped while the handshake was running
+      return;
+    }
     _socket = socket;
     _msgSub = socket.messages.listen(_onSignal);
     unawaited(socket.closed.then((_) => _onSocketClosed(socket)));
@@ -426,6 +454,7 @@ class WebRtcSenderSession extends SenderSession {
   }
 
   Future<void> _shutdown() async {
+    _startGen++;
     _stopping = true;
     _rotationTimer?.cancel();
     await _projectionSub?.cancel();
