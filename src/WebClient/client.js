@@ -633,7 +633,10 @@ let clipboardSequence = 0;
 function setClipboardAllowed(allowed) {
     sendClipboardBtn.hidden = !allowed;
     copyHostClipboardBtn.hidden = !allowed;
-    if (!allowed) hostClipboardText = null;
+    if (!allowed) {
+        hostClipboardText = null;
+        hideFallbackField();
+    }
     copyHostClipboardBtn.disabled = hostClipboardText === null;
 }
 
@@ -644,9 +647,15 @@ async function sendClipboard() {
     try {
         text = await navigator.clipboard.readText();
     } catch {
-        updateStatus('Cannot read your clipboard (permission denied)', 'error');
+        // No clipboard-read permission (or API missing): let the user paste into a small field instead.
+        showFallbackField('input');
         return;
     }
+    sendClipboardText(text);
+}
+
+function sendClipboardText(text) {
+    if (!dataChannel || dataChannel.readyState !== 'open') return;
     if (!text) {
         updateStatus('Your clipboard has no text', 'info');
         return;
@@ -689,8 +698,56 @@ async function copyHostClipboard() {
         copyHostClipboardBtn.disabled = true;
         updateStatus('Host clipboard copied to your clipboard', 'success');
     } catch {
-        updateStatus('Cannot write to your clipboard (permission denied)', 'error');
+        // writeText refused: show the text selected so the user can press Ctrl+C.
+        showFallbackField('output');
     }
+}
+
+// Manual fallbacks when the Clipboard API is refused. The fields handle their own events (no document
+// listener) and stop key events from bubbling, so remote-control key capture never sees the typing.
+let fallbackField = null;
+
+function hideFallbackField() {
+    if (!fallbackField) return;
+    const field = fallbackField;
+    fallbackField = null; // before remove(): removing a focused element fires blur
+    field.remove();
+}
+
+function showFallbackField(kind) {
+    hideFallbackField();
+    const field = document.createElement(kind === 'input' ? 'input' : 'textarea');
+    if (kind === 'input') {
+        field.type = 'text';
+        field.placeholder = 'Paste here (Ctrl+V) to send';
+        field.addEventListener('paste', (event) => {
+            event.preventDefault();
+            const text = event.clipboardData ? event.clipboardData.getData('text/plain') : '';
+            hideFallbackField();
+            sendClipboardText(text);
+        });
+    } else {
+        field.readOnly = true;
+        field.rows = 2;
+        field.title = 'Press Ctrl+C to copy';
+        field.value = hostClipboardText;
+        field.addEventListener('copy', () => {
+            hostClipboardText = null;
+            copyHostClipboardBtn.disabled = true;
+            hideFallbackField();
+            updateStatus('Host clipboard copied to your clipboard', 'success');
+        });
+        updateStatus('Press Ctrl+C to copy the host clipboard', 'info');
+    }
+    field.addEventListener('keydown', (event) => {
+        event.stopPropagation();
+        if (event.key === 'Escape') hideFallbackField();
+    });
+    field.addEventListener('keyup', (event) => event.stopPropagation());
+    field.addEventListener('blur', hideFallbackField);
+    (kind === 'input' ? sendClipboardBtn : copyHostClipboardBtn).after(field);
+    field.focus();
+    if (kind !== 'input') field.select();
 }
 
 // Handle page unload
