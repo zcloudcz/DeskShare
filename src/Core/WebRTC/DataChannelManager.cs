@@ -73,19 +73,31 @@ public sealed class DataChannelManager : IDisposable
     /// Checks the viewer's <c>e2e_bind</c> mac and returns the sender's own mac for the reply, or null when the
     /// viewer's mac is wrong. Setting it switches the "unverified until bound" rule on (see <see cref="GrantedCapabilities"/>).
     /// </summary>
-    public Func<string, string?>? VerifyViewerBind { get; set; }
+    public Func<PeerContext, string, string?>? VerifyViewerBind { get; set; }
 
     /// <summary>True when peers must pass the e2e binding before they get any capability.</summary>
     public bool RequireE2EBinding => VerifyViewerBind != null;
 
-    /// <summary>True once the viewer on the current channel passed the e2e binding. Reset when the channel changes.</summary>
-    public bool PeerVerified { get; private set; }
+    // Verification state of the CURRENT peer connection. It is a separate object per connection (see PeerContext), so a
+    // check that finishes late for a replaced connection can only touch that connection's own, retired object.
+    private volatile PeerContext _peer = new();
 
-    /// <summary>Raised when the viewer's e2e binding verified.</summary>
-    public event EventHandler? ViewerVerified;
+    /// <summary>True once the viewer of the current peer connection passed the e2e binding.</summary>
+    public bool PeerVerified => _peer.IsVerified;
 
-    /// <summary>Raised when the viewer sent a binding that does not verify (wrong key, or a man in the middle).</summary>
-    public event EventHandler? ViewerBindFailed;
+    /// <summary>A new peer connection took over: the previous context is retired and its channel dropped.</summary>
+    public void BeginPeer(PeerContext peer)
+    {
+        ArgumentNullException.ThrowIfNull(peer);
+        Interlocked.Exchange(ref _peer, peer).Retire();
+        DetachDataChannel();
+    }
+
+    /// <summary>Raised with the verified peer's context when the viewer's e2e binding verified.</summary>
+    public event EventHandler<PeerContext>? ViewerVerified;
+
+    /// <summary>Raised with the peer's context when it sent a binding that does not verify (wrong key, or a man in the middle).</summary>
+    public event EventHandler<PeerContext>? ViewerBindFailed;
 
     /// <summary>
     /// True when the viewer on the current channel asked for the host's clipboard ("clipboard_subscribe").
@@ -165,7 +177,7 @@ public sealed class DataChannelManager : IDisposable
         _dataChannel = dataChannel;
         _channelOpenedAt = DateTime.UtcNow;
         ClipboardSubscribed = false; // a new channel is a new viewer session: it must subscribe again
-        PeerVerified = false; // ...and must prove the e2e binding again
+        _peer.Revoke(); // ...and must prove the e2e binding again
         FileReceiver?.Abort();
 
         // Subscribe to data channel events
@@ -310,7 +322,7 @@ public sealed class DataChannelManager : IDisposable
         _logger.Information("DataChannel closed: Label={Label}, ID={Id}",
             _dataChannel?.label, _dataChannel?.id);
         ClipboardSubscribed = false;
-        PeerVerified = false;
+        _peer.Revoke();
         FileReceiver?.Abort();
 
         ChannelClosed?.Invoke(this, EventArgs.Empty);
@@ -505,7 +517,9 @@ public sealed class DataChannelManager : IDisposable
     /// </summary>
     private void HandleViewerBind(JsonElement message)
     {
-        if (VerifyViewerBind == null || PeerVerified)
+        // Captured once: everything below concerns this peer connection, even if another one replaces it meanwhile.
+        var peer = _peer;
+        if (VerifyViewerBind == null || peer.IsVerified)
         {
             return; // binding not in use, or already done: a repeated message changes nothing
         }
@@ -513,20 +527,25 @@ public sealed class DataChannelManager : IDisposable
         string? senderMac = null;
         if (E2EBinding.TryReadBind(message, out var role, out var mac) && role == E2EBinding.ViewerRole)
         {
-            senderMac = VerifyViewerBind(mac);
+            senderMac = VerifyViewerBind(peer, mac);
         }
 
         if (senderMac == null)
         {
             LogRejection("e2e_bind", "binding does not verify");
-            ViewerBindFailed?.Invoke(this, EventArgs.Empty);
+            ViewerBindFailed?.Invoke(this, peer);
             return;
         }
 
-        PeerVerified = true;
+        // Commits to the captured peer only, and only if it was not retired meanwhile.
+        if (!peer.TryVerify())
+        {
+            return;
+        }
+
         SendJson(new { type = "e2e_bind", v = E2EBinding.Version, role = E2EBinding.SenderRole, mac = senderMac });
         _logger.Information("Viewer passed the end-to-end binding check");
-        ViewerVerified?.Invoke(this, EventArgs.Empty);
+        ViewerVerified?.Invoke(this, peer);
     }
 
     /// <summary>
@@ -560,7 +579,7 @@ public sealed class DataChannelManager : IDisposable
     /// </summary>
     internal void DetachDataChannel()
     {
-        PeerVerified = false; // also when no channel is attached: verification never outlives its peer
+        _peer.Revoke(); // also when no channel is attached: verification never outlives its peer
 
         if (_dataChannel == null)
         {
@@ -574,7 +593,7 @@ public sealed class DataChannelManager : IDisposable
 
         _dataChannel = null;
         ClipboardSubscribed = false;
-        PeerVerified = false;
+        _peer.Revoke();
         FileReceiver?.Abort();
     }
 

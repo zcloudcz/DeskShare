@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using DeskShare.Core.Auth;
 using DeskShare.Core.Interfaces;
 using DeskShare.Core.Models;
 using DeskShare.Core.WebRTC;
@@ -52,25 +53,43 @@ public sealed class SIPSorceryVideoSource : IVideoSource
     public IReadOnlyList<RTCIceServer> IceServers { get; set; } = IceServerMapper.DefaultIceServers();
 
     /// <summary>
-    /// When true, no frame is encoded or sent to a peer until <see cref="MarkPeerVerified"/> is called for it
-    /// (end-to-end binding, see E2EBinding). Verification is per peer connection: every
-    /// <see cref="ResetPeerConnection"/> starts unverified again.
+    /// When true, no frame is encoded or sent unless the CURRENT peer's <see cref="PeerContext"/> is verified
+    /// (end-to-end binding, see E2EBinding). Every peer connection gets its own context, which starts unverified.
     /// </summary>
     public bool RequirePeerVerification { get; set; }
 
-    private volatile bool _peerVerified;
+    private volatile PeerContext _peer = new();
+
+    /// <summary>The verification state of the current peer connection (replaced on every new peer connection).</summary>
+    public PeerContext CurrentPeer => _peer;
 
     /// <summary>
-    /// Raised at the start of <see cref="ResetPeerConnection"/>, before the new peer connection exists. The data channel
-    /// of the old peer must be dropped then, or a late message on it could be verified against the new peer.
+    /// Raised with the new peer's context whenever a new peer connection was created. The old context is already
+    /// retired then, so a late verification of the old peer cannot succeed.
     /// </summary>
-    public event Action? PeerConnectionReset;
+    public event Action<PeerContext>? PeerContextChanged;
 
-    /// <summary>Releases video to the current peer connection and makes its first frame a keyframe.</summary>
-    public void MarkPeerVerified()
+    // Retires the old peer's context and publishes a fresh one that belongs to the (already created) new connection.
+    private void StartNewPeerContext()
     {
-        _framesSinceKeyframe = KeyframeInterval; // frames dropped while unverified left the viewer without a keyframe
-        _peerVerified = true;
+        _peer.Retire();
+        _peer = new PeerContext(_peerConnection);
+        PeerContextChanged?.Invoke(_peer);
+    }
+
+    /// <summary>Makes the next frame a keyframe; frames dropped while the peer was unverified left it without one.</summary>
+    public void RequestKeyframe(PeerContext peer)
+    {
+        if (ReferenceEquals(peer, _peer))
+            _framesSinceKeyframe = KeyframeInterval;
+    }
+
+    // Every encoded sample passes the gate of the CURRENT peer, so nothing encoded for an old or unverified peer
+    // can reach a new connection.
+    private void ForwardEncodedSample(uint durationRtpUnits, byte[] sample)
+    {
+        if (RequirePeerVerification && !_peer.IsVerified) return;
+        _peerConnection?.SendVideo(durationRtpUnits, sample);
     }
 
     /// <summary>
@@ -105,14 +124,13 @@ public sealed class SIPSorceryVideoSource : IVideoSource
         // Reset keyframe counter to force immediate keyframe for new client
         _framesSinceKeyframe = KeyframeInterval; // Will trigger keyframe on next PushFrame
 
-        // The new peer has not proven anything yet (matters only with RequirePeerVerification).
-        _peerVerified = false;
-        PeerConnectionReset?.Invoke();
+        // From here on a late verification of the old peer cannot succeed (matters only with RequirePeerVerification).
+        _peer.Retire();
 
         // Disconnect encoder from old peer connection
         if (_videoEncoder != null && _peerConnection != null)
         {
-            _videoEncoder.OnVideoSourceEncodedSample -= _peerConnection.SendVideo;
+            _videoEncoder.OnVideoSourceEncodedSample -= ForwardEncodedSample;
         }
 
         // Close and dispose old peer connection
@@ -141,7 +159,8 @@ public sealed class SIPSorceryVideoSource : IVideoSource
 
         // Connect encoder output to peer connection
         // When encoder produces VP8 frames, they'll be sent via WebRTC
-        _videoEncoder!.OnVideoSourceEncodedSample += _peerConnection.SendVideo;
+        _videoEncoder!.OnVideoSourceEncodedSample += ForwardEncodedSample;
+        StartNewPeerContext(); // after the connection exists: the context points at it
 
         // Handle codec negotiation - when client chooses a codec, configure encoder
         _peerConnection.OnVideoFormatsNegotiated += (formats) =>
@@ -188,7 +207,8 @@ public sealed class SIPSorceryVideoSource : IVideoSource
         _peerConnection.addTrack(videoTrack);
 
         // Wire up the encoder to peer connection
-        _videoEncoder.OnVideoSourceEncodedSample += _peerConnection.SendVideo;
+        _videoEncoder.OnVideoSourceEncodedSample += ForwardEncodedSample;
+        StartNewPeerContext();
 
         // Handle format negotiation
         _peerConnection.OnVideoFormatsNegotiated += (formats) =>
@@ -216,7 +236,7 @@ public sealed class SIPSorceryVideoSource : IVideoSource
             throw new ArgumentNullException(nameof(frame));
 
         // Unverified peer (possibly a man in the middle): it gets no pixels of the screen.
-        if (RequirePeerVerification && !_peerVerified)
+        if (RequirePeerVerification && !_peer.IsVerified)
         {
             lock (_statsLock)
             {
@@ -445,7 +465,7 @@ public sealed class SIPSorceryVideoSource : IVideoSource
 
         if (_videoEncoder != null)
         {
-            _videoEncoder.OnVideoSourceEncodedSample -= _peerConnection!.SendVideo;
+            _videoEncoder.OnVideoSourceEncodedSample -= ForwardEncodedSample;
             (_videoEncoder as IDisposable)?.Dispose();
             _videoEncoder = null;
         }

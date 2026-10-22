@@ -1,3 +1,4 @@
+using DeskShare.Core.Auth;
 using DeskShare.Core.Interfaces;
 using DeskShare.Core.Models;
 using DeskShare.Core.WebRTC;
@@ -24,7 +25,7 @@ public sealed class E2EBindGatingTests
         controller.ApplyInput(Arg.Any<InputMessage>()).Returns(true);
         var manager = new DataChannelManager(Substitute.For<ILogger>(), controller)
         {
-            VerifyViewerBind = verify,
+            VerifyViewerBind = (_, mac) => verify(mac),
             HostGrantedCapabilities = SessionCapabilities.Clipboard | SessionCapabilities.FileTransfer
         };
         return (manager, controller);
@@ -128,6 +129,47 @@ public sealed class E2EBindGatingTests
         Assert.Equal(SessionCapabilities.None, manager.GrantedCapabilities);
         manager.ProcessInputMessage(InputJson);
         controller.DidNotReceive().ApplyInput(Arg.Any<InputMessage>());
+    }
+
+    [Fact]
+    public void LateVerificationOfAReplacedPeer_NeverVerifiesTheNewPeer()
+    {
+        // Deterministic race: connection B replaces A while A's MAC check is "in flight" (inside the verifier),
+        // and A's check then finishes with a valid result.
+        var (manager, controller) = Create(_ => "sender-mac");
+        var peerA = new PeerContext();
+        var peerB = new PeerContext();
+        manager.BeginPeer(peerA);
+        var verified = new List<PeerContext>();
+        manager.ViewerVerified += (_, p) => verified.Add(p);
+        manager.VerifyViewerBind = (_, _) =>
+        {
+            manager.BeginPeer(peerB); // paused after the MAC check, B takes over
+            return "sender-mac";      // resumed: A's result is valid
+        };
+
+        manager.ProcessInputMessage(BindJson);
+        manager.ProcessInputMessage(InputJson);
+        manager.ProcessInputMessage(ClipboardJson);
+        manager.ProcessInputMessage(FileOfferJson);
+
+        Assert.True(peerA.IsRetired);
+        Assert.False(peerA.IsVerified);
+        Assert.False(peerB.IsVerified);       // the video source gates frames on this same object: none go to B
+        Assert.False(manager.PeerVerified);
+        Assert.Equal(SessionCapabilities.None, manager.GrantedCapabilities);
+        Assert.Empty(verified);
+        controller.DidNotReceive().ApplyInput(Arg.Any<InputMessage>());
+    }
+
+    [Fact]
+    public void RetiredPeer_CanNeverBecomeVerified()
+    {
+        var peer = new PeerContext();
+        peer.Retire();
+
+        Assert.False(peer.TryVerify());
+        Assert.False(peer.IsVerified);
     }
 
     [Fact]

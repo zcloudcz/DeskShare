@@ -46,7 +46,9 @@ public class ClientManager : IDisposable
     // End-to-end binding (see E2EBinding). The key comes from the passkey the user typed and stays in memory for
     // the whole session, so a re-negotiated peer connection (reconnect, resume) can prove itself again.
     private byte[]? _e2eKey;
-    private volatile bool _peerVerified;
+    // Verification state of the CURRENT peer connection: a new object per connection (see PeerContext), so events and
+    // results of a replaced connection can only touch that connection's own, retired object.
+    private volatile PeerContext _peer = new();
     private volatile bool _bindSent;
     private string? _disconnectReason;
 
@@ -188,7 +190,7 @@ public class ClientManager : IDisposable
 
     private bool SendDataChannelJson(string json)
     {
-        if (!_isConnected || _dataChannel?.readyState != RTCDataChannelState.open)
+        if (!_isConnected || !_peer.IsVerified || _dataChannel?.readyState != RTCDataChannelState.open)
         {
             return false;
         }
@@ -306,7 +308,12 @@ public class ClientManager : IDisposable
         };
 
         _peerConnection = new RTCPeerConnection(config);
-        _peerVerified = false; // every new peer connection must pass the end-to-end check again
+        _peer.Retire();
+        _peer = new PeerContext(_peerConnection); // every new peer connection must pass the end-to-end check again
+        var peer = _peer;
+        // What the previous connection's host allowed does not carry over to the new one.
+        SetHostAllowsClipboard(false);
+        SetHostAllowsFiles(false);
         _bindSent = false;
 
         // Handle ICE candidates
@@ -339,14 +346,16 @@ public class ClientManager : IDisposable
         };
 
         // Handle connection state changes
-        var thisPeerConnection = _peerConnection; // events of a replaced peer connection must not fail or verify the new one
         _peerConnection.onconnectionstatechange += async (state) =>
         {
             _logger.LogInformation("WebRTC connection state: {State}", state);
 
+            // A replaced peer connection must not fail, reconnect or disconnect the new one.
+            if (peer.IsRetired) return;
+
             // The sender drops a viewer whose binding does not verify. Losing the connection after we sent our
             // binding but before the sender's arrived is treated as a failed check, not as a network glitch to retry.
-            if (ReferenceEquals(thisPeerConnection, _peerConnection) && _bindSent && !_peerVerified && state is RTCPeerConnectionState.failed or RTCPeerConnectionState.closed or RTCPeerConnectionState.disconnected)
+            if (!peer.IsRetired && _bindSent && !peer.IsVerified && state is RTCPeerConnectionState.failed or RTCPeerConnectionState.closed or RTCPeerConnectionState.disconnected)
             {
                 await FailBindingAsync();
                 return;
@@ -356,7 +365,7 @@ public class ClientManager : IDisposable
             {
                 _logger.LogInformation("WebRTC peer connection established");
                 _reconnectAttempts = 0;
-                StartBindDeadline(_peerConnection);
+                StartBindDeadline(peer);
             }
             else if (state == RTCPeerConnectionState.disconnected)
             {
@@ -383,7 +392,7 @@ public class ClientManager : IDisposable
         _videoSink.FrameReceived += (sender, args) =>
         {
             // Nothing is shown until the sender proved (e2e binding) that nobody sits in the middle.
-            if (!_peerVerified) return;
+            if (!peer.IsVerified) return;
 
             _logger.LogDebug("[ClientManager] VideoSink.FrameReceived event fired - frame size: {Size} bytes", args.FrameData.Length);
             FrameReceived?.Invoke(this, args);
@@ -409,26 +418,29 @@ public class ClientManager : IDisposable
 
         // Setup data channel for remote control input and clipboard
         _dataChannel = await _peerConnection.createDataChannel("input", new RTCDataChannelInit());
-        var thisDataChannel = _dataChannel;
-        _dataChannel.onopen += () =>
+        var channel = _dataChannel;
+        channel.onopen += () =>
         {
-            if (!ReferenceEquals(thisDataChannel, _dataChannel)) return; // channel of a replaced connection
+            if (peer.IsRetired) return; // channel of a replaced connection
             _logger.LogInformation("Data channel opened");
             _clipboardManager?.StartMonitoring();
 
+            // Every send of this uploader goes to ITS channel and only while its own peer is current and verified:
+            // a transfer started on a replaced connection can never leak into the new one.
             _fileUploader = new FileUploader(
-                json => { if (_dataChannel?.readyState != RTCDataChannelState.open) return false; _dataChannel.send(json); return true; },
-                () => _dataChannel?.bufferedAmount ?? 0);
+                json => { if (channel.readyState != RTCDataChannelState.open || !peer.IsVerified) return false; channel.send(json); return true; },
+                () => channel.bufferedAmount);
 
             // First message on the channel is our e2e binding; the authorization_request follows once the
             // sender's binding verified (see OnDataChannelMessage). Nothing else is sent before that.
-            if (!TrySendBind())
+            if (!TrySendBind(peer))
             {
                 _ = FailBindingAsync();
             }
         };
-        _dataChannel.onclose += () =>
+        channel.onclose += () =>
         {
+            if (peer.IsRetired) return; // an old channel closing must not reset the new connection's state
             _logger.LogInformation("Data channel closed");
             _clipboardManager?.StopMonitoring();
             SetHostAllowsClipboard(false);
@@ -453,6 +465,7 @@ public class ClientManager : IDisposable
         // The sender's binding is verified against the CURRENT peer connection's fingerprints, so a message from a
         // channel of a replaced connection must never reach that check.
         if (!ReferenceEquals(channel, _dataChannel)) return;
+        var peer = _peer; // one read: the whole message is judged against this peer connection
 
         try
         {
@@ -466,7 +479,7 @@ public class ClientManager : IDisposable
 
                 if (messageType == "e2e_bind")
                 {
-                    if (!_peerVerified && !VerifySenderBind(doc.RootElement))
+                    if (!peer.IsVerified && !VerifySenderBind(peer, channel, doc.RootElement))
                     {
                         _ = FailBindingAsync();
                     }
@@ -474,7 +487,7 @@ public class ClientManager : IDisposable
                 }
 
                 // Until the sender's binding verified, whatever else arrives is ignored (it could come from a man in the middle).
-                if (!_peerVerified)
+                if (!peer.IsVerified)
                 {
                     return;
                 }
@@ -508,14 +521,14 @@ public class ClientManager : IDisposable
     // ---- End-to-end binding (see E2EBinding) ----
 
     /// <summary>Fingerprints as this side sees them: (sender = remote description, viewer = local description).</summary>
-    private (string? SenderFp, string? ViewerFp) GetFingerprints() =>
-        (E2EBinding.GetFingerprint(_peerConnection?.remoteDescription?.sdp?.ToString()),
-         E2EBinding.GetFingerprint(_peerConnection?.localDescription?.sdp?.ToString()));
+    private static (string? SenderFp, string? ViewerFp) GetFingerprints(PeerContext peer) =>
+        (E2EBinding.GetFingerprint(peer.Connection?.remoteDescription?.sdp?.ToString()),
+         E2EBinding.GetFingerprint(peer.Connection?.localDescription?.sdp?.ToString()));
 
-    private bool TrySendBind()
+    private bool TrySendBind(PeerContext peer)
     {
-        var (senderFp, viewerFp) = GetFingerprints();
-        if (_e2eKey == null || senderFp == null || viewerFp == null || _dataChannel?.readyState != RTCDataChannelState.open)
+        var (senderFp, viewerFp) = GetFingerprints(peer);
+        if (_e2eKey == null || senderFp == null || viewerFp == null || peer.IsRetired || _dataChannel?.readyState != RTCDataChannelState.open)
         {
             return false;
         }
@@ -527,9 +540,9 @@ public class ClientManager : IDisposable
     }
 
     /// <summary>Checks the sender's binding; on success releases video and asks the host what it allows.</summary>
-    private bool VerifySenderBind(JsonElement message)
+    private bool VerifySenderBind(PeerContext peer, RTCDataChannel channel, JsonElement message)
     {
-        var (senderFp, viewerFp) = GetFingerprints();
+        var (senderFp, viewerFp) = GetFingerprints(peer);
         if (_e2eKey == null || senderFp == null || viewerFp == null
             || !E2EBinding.TryReadBind(message, out var role, out var mac) || role != E2EBinding.SenderRole
             || !E2EBinding.VerifyMac(_e2eKey, E2EBinding.SenderRole, senderFp, viewerFp, mac))
@@ -537,23 +550,28 @@ public class ClientManager : IDisposable
             return false;
         }
 
-        _peerVerified = true;
+        // Commits to this peer only, and only if it was not replaced meanwhile.
+        if (!peer.TryVerify())
+        {
+            return true; // a stale message of a replaced connection: neither a failure nor a verification of anything
+        }
+
         _logger.LogInformation("Sender passed the end-to-end binding check");
 
         // The host answers with authorization_response, which also says whether it shares the clipboard.
-        _dataChannel?.send("{\"type\":\"authorization_request\"}");
+        channel.send("{\"type\":\"authorization_request\"}");
         return true;
     }
 
     /// <summary>Drops the connection if the sender has not verified within <see cref="E2EBinding.Timeout"/>.</summary>
-    private void StartBindDeadline(RTCPeerConnection? peerConnection)
+    private void StartBindDeadline(PeerContext peer)
     {
-        if (_peerVerified) return;
+        if (peer.IsVerified) return;
 
         _ = Task.Delay(E2EBinding.Timeout).ContinueWith(_ =>
         {
             // Only the peer connection that was waiting counts, not a newer one created by a reconnect.
-            if (!_peerVerified && ReferenceEquals(peerConnection, _peerConnection))
+            if (!peer.IsVerified && !peer.IsRetired)
             {
                 return FailBindingAsync();
             }
@@ -1039,7 +1057,7 @@ public class ClientManager : IDisposable
             throw new InvalidOperationException("Not connected or data channel not available");
         }
 
-        if (!_peerVerified)
+        if (!_peer.IsVerified)
         {
             return; // no input to a peer that has not passed the end-to-end check
         }
