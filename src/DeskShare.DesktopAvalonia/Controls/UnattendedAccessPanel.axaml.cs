@@ -84,7 +84,7 @@ public partial class UnattendedAccessPanel : UserControl
             if (p != null)
             {
                 await p.WaitForExitAsync();
-                if (p.ExitCode != 0) note = "failed, see %ProgramData%\\DeskShare\\logs\\service.log";
+                if (p.ExitCode != 0) note = $"failed (exit code {p.ExitCode}), see %ProgramData%\\DeskShare\\logs\\service.log if present";
             }
         }
         catch (Win32Exception) { note = "cancelled"; } // user declined the UAC prompt

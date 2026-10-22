@@ -18,10 +18,14 @@ internal static class Installer
 {
     public static int Install(string sourceDir)
     {
+        FileLog.FileEnabled = false; // console only until %ProgramData%\DeskShare is proven ours (see PrepareDataDir)
         if (!IsAdmin()) return Fail("Administrator rights are required.");
-        // First, so that everything we log (FileLog creates the folder) lands in the protected folder, not a user-made one.
-        try { PrepareDataDir(); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException) { return Fail(ex.Message); }
+        string? aside;
+        try { aside = PrepareDataDir(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException) { return Fail(ex.Message, 3); }
+        FileLog.FileEnabled = true;
+        if (aside != null) FileLog.Write($"Existing {UnattendedPaths.DataDir} was not protected as expected, moved to {aside}; configuration reset to defaults.");
+
         sourceDir = Path.GetFullPath(sourceDir);
         var live = UnattendedPaths.InstallDir;
         var staging = live + ".new";
@@ -29,8 +33,8 @@ internal static class Installer
         foreach (var own in new[] { live, staging, old })
             if (UnattendedPaths.IsInside(own, sourceDir) || Same(own, sourceDir))
                 return Fail("Source must not be inside the install folder.");
-        if (!File.Exists(Path.Combine(sourceDir, UnattendedPaths.ServiceExeName)) || !File.Exists(UnattendedPaths.ResolveAgentPath(sourceDir)))
-            return Fail("Service or agent binaries missing in " + sourceDir);
+        var missingSrc = StagingCheck.Missing(sourceDir);
+        if (missingSrc.Count > 0) return Fail("Missing in " + sourceDir + ": " + string.Join(", ", missingSrc));
 
         // A previous install that died between the two renames leaves only ".old": put it back first.
         if (!Directory.Exists(live) && Directory.Exists(old)) Directory.Move(old, live);
@@ -40,8 +44,11 @@ internal static class Installer
         try
         {
             CopyDir(sourceDir, staging);
+            // Re-check AFTER the copy: the source is user-writable and may have changed since the first look.
+            var missing = StagingCheck.Missing(staging);
+            if (missing.Count > 0) throw new InvalidOperationException("Missing after copy: " + string.Join(", ", missing));
             var problem = VerifyStaging(staging);
-            if (problem != null) { DeleteDir(staging); return Fail(problem); }
+            if (problem != null) throw new InvalidOperationException(problem);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
@@ -49,31 +56,70 @@ internal static class Installer
             return Fail(ex.Message);
         }
 
-        StopService();
-
-        var hadOld = Directory.Exists(live);
-        if (hadOld) MoveWithRetry(live, old);
-        Directory.Move(staging, live);
-
-        if (!RegisterAndStart(live))
+        var result = SwapRunner.Run(new Ops(live, staging, old), FileLog.Write);
+        switch (result)
         {
-            FileLog.Write("New version failed to start, rolling back.");
-            StopService();
-            DeleteDir(live);
-            if (hadOld)
-            {
-                Directory.Move(old, live);
-                RegisterAndStart(live);
-            }
-            return Fail("Service did not start" + (hadOld ? "; previous version restored." : "."));
+            case SwapResult.Success:
+                FileLog.Write("Installed and started.");
+                return 0;
+            case SwapResult.FailedRolledBack:
+                return Fail("New version did not start correctly; the previous version was restored and started.");
+            case SwapResult.FailedRollbackFailed:
+                return Fail("New version failed AND the previous version could not be restored/started. Re-run Enable, or reinstall.", 4);
+            default:
+                return Fail("New version did not start correctly; there was no previous version.");
         }
-        DeleteDir(old);
-        FileLog.Write("Installed and started.");
-        return 0;
+    }
+
+    /// <summary>The real file-system / SCM side of <see cref="SwapRunner"/>.</summary>
+    private sealed class Ops(string live, string staging, string old) : ISwapOps
+    {
+        private static readonly TimeSpan ConfirmTimeout = TimeSpan.FromSeconds(20);
+        public bool HadLive { get; } = Directory.Exists(live);
+        public void StopService() => Installer.StopService();
+        public void MoveLiveToOld() => MoveWithRetry(live, old);
+        public void MoveStagingToLive() => Directory.Move(staging, live);
+        public void DeleteLive() => DeleteDir(live);
+        public void RestoreOldToLive() => Directory.Move(old, live);
+        public void DeleteOld() => DeleteDir(old);
+        public bool StartRestored() => RegisterAndStart(live);
+
+        public bool StartNewAndConfirm()
+        {
+            var statusPath = Path.Combine(UnattendedPaths.DataDir, "status.json");
+            File.Delete(statusPath); // a leftover from the previous run must not confirm the new one
+            if (!RegisterAndStart(live)) return false;
+            var expected = FileVersionInfo.GetVersionInfo(Path.Combine(live, UnattendedPaths.ServiceExeName)).ProductVersion ?? "";
+            var deadline = DateTime.UtcNow + ConfirmTimeout;
+            while (DateTime.UtcNow < deadline)
+            {
+                var status = File.Exists(statusPath) ? ServiceStatus.TryParse(ReadSafe(statusPath)) : null;
+                if (ServiceStatus.IsConfirmed(status, expected, IsRunning(), ProcessExists)) return true;
+                Thread.Sleep(500);
+            }
+            return false;
+        }
+
+        private static string? ReadSafe(string path)
+        {
+            try { return File.ReadAllText(path); } catch (IOException) { return null; } // being rewritten
+        }
+
+        private static bool IsRunning()
+        {
+            try { using var sc = new ServiceController(UnattendedPaths.ServiceName); return sc.Status == ServiceControllerStatus.Running; }
+            catch (InvalidOperationException) { return false; }
+        }
+
+        private static bool ProcessExists(int pid)
+        {
+            try { using var p = Process.GetProcessById(pid); return !p.HasExited; } catch (ArgumentException) { return false; }
+        }
     }
 
     public static int Uninstall()
     {
+        FileLog.FileEnabled = false; // ProgramData is not verified here, so never write through it as admin
         if (!IsAdmin()) return Fail("Administrator rights are required.");
         StopService();
         Sc("delete", UnattendedPaths.ServiceName);
@@ -91,6 +137,8 @@ internal static class Installer
     /// Checks the staged (already admin-protected) copy. ponytail: integrity is only enforced when this helper is itself
     /// Authenticode-signed; an unsigned build cannot tell a swapped DLL from a real one. Upgrade path: sign every release
     /// binary (then the check below becomes mandatory automatically).
+    /// The helper is one single-file exe (all managed code inside the signed image), so no DLL next to it is loaded with
+    /// admin rights; unsigned, that exe is still only as trustworthy as the folder it was started from.
     /// </summary>
     private static string? VerifyStaging(string staging)
     {
@@ -126,17 +174,19 @@ internal static class Installer
     /// it (ProgramData allows that), so an existing folder is trusted only if it ALREADY has exactly our protected DACL and an
     /// admin owner; otherwise it is renamed aside (we never reuse its config / ids / secret) and recreated with the
     /// descriptor applied at creation time. Junctions / symlinks anywhere inside make us refuse.
+    /// Must not log to a file: nothing in that folder is trustworthy until this method has returned.
+    /// Returns the quarantine path when an untrusted folder was moved aside, otherwise null.
     /// </summary>
-    private static void PrepareDataDir()
+    private static string? PrepareDataDir()
     {
         var dir = UnattendedPaths.DataDir;
+        string? aside = null;
         if (Directory.Exists(dir))
         {
             if (HasReparsePoint(dir)) throw new InvalidOperationException(dir + " contains a junction or symbolic link; remove it and retry.");
             if (!IsTrusted(dir))
             {
-                var aside = dir + ".untrusted-" + DateTime.Now.ToString("yyyyMMddHHmmss");
-                FileLog.Write($"Existing {dir} is not protected as expected, moving it to {aside}.");
+                aside = dir + ".untrusted-" + DateTime.Now.ToString("yyyyMMddHHmmss");
                 try { Directory.Move(dir, aside); }
                 catch (IOException ex) { throw new InvalidOperationException("Cannot move an untrusted " + dir + " aside (" + ex.Message + "); delete it manually and retry."); }
             }
@@ -158,6 +208,7 @@ internal static class Installer
                   "Security": { "EnableRemoteControl": false, "TrustClientPermanent": false }
                 }
                 """);
+        return aside;
     }
 
     private static bool HasReparsePoint(string dir)
@@ -252,9 +303,10 @@ internal static class Installer
 
     private static bool IsAdmin() => new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
 
-    private static int Fail(string message)
+    private static int Fail(string message, int code = 1)
     {
-        FileLog.Write("ERROR: " + message);
-        return 1;
+        FileLog.Write("ERROR: " + message); // console only while FileEnabled is off
+        Console.Error.WriteLine(message);
+        return code;
     }
 }

@@ -8,6 +8,11 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <LangVersion>latest</LangVersion>
     <AssemblyName>DeskShare.Service</AssemblyName>
+    <!-- One exe holds ALL managed code (incl. DeskShare.Unattended + ServiceController), so the elevated installer cannot be
+         hijacked through a swapped DLL next to it and an Authenticode signature on the exe covers everything it runs.
+         Framework-dependent: the runtime itself comes from Program Files. -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>false</SelfContained>
   </PropertyGroup>
 
   <ItemGroup>

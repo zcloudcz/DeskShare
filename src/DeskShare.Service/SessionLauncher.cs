@@ -3,6 +3,9 @@ using DeskShare.Unattended;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 
+// Every P/Invoke in this assembly resolves from System32 only, never from the (user-writable) application folder.
+[assembly: DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+
 namespace DeskShare.Service;
 
 /// <summary>

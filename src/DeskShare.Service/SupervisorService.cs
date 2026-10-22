@@ -24,7 +24,7 @@ internal sealed class SupervisorService : ServiceBase
         var agent = UnattendedPaths.ResolveAgentPath(AppContext.BaseDirectory);
         var agentArgs = $"--config \"{UnattendedPaths.ConfigPath}\" \"--Serilog:WriteTo:1:Args:path={Path.Combine(UnattendedPaths.LogDir, "agent-.log")}\"";
 
-        _supervisor = new Supervisor(SessionLauncher.ActiveConsoleSessionId, session => SessionLauncher.Start(session, agent, agentArgs), FileLog.Write);
+        _supervisor = new Supervisor(SessionLauncher.ActiveConsoleSessionId, session => SessionLauncher.Start(session, agent, agentArgs), FileLog.Write, onStatus: WriteStatus);
         _cts = new CancellationTokenSource();
         _run = Task.Run(() => _supervisor.RunAsync(_cts.Token));
         // If the supervisor ever dies, SCM would keep showing "Running" with nothing supervised. Exit non-zero instead so
@@ -35,6 +35,18 @@ internal sealed class SupervisorService : ServiceBase
             Environment.Exit(1);
         }, TaskContinuationOptions.OnlyOnFaulted);
         FileLog.Write("Service started");
+    }
+
+    /// <summary>Own version as the installer sees it (FileVersionInfo of the exe), so it can tell the NEW service from the old one.</summary>
+    internal static string OwnVersion() => System.Diagnostics.FileVersionInfo.GetVersionInfo(Environment.ProcessPath!).ProductVersion ?? "";
+
+    /// <summary>status.json is how the installer confirms that this version really started its agent (see ServiceStatus).</summary>
+    private static void WriteStatus(string state, int? agentPid)
+    {
+        var path = Path.Combine(UnattendedPaths.DataDir, "status.json");
+        var tmp = path + ".tmp";
+        File.WriteAllText(tmp, new ServiceStatus(OwnVersion(), state, agentPid, DateTime.UtcNow).ToJson());
+        File.Move(tmp, path, overwrite: true);
     }
 
     protected override void OnSessionChange(SessionChangeDescription change)

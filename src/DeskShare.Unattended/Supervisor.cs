@@ -21,6 +21,8 @@ public sealed class Supervisor
     private readonly Action<string> _log;
     private readonly Func<DateTime> _clock;
     private readonly RestartBackoff _backoff;
+    private readonly Action<string, int?>? _onStatus;
+    private (string State, int? Pid)? _lastStatus;
     private readonly SemaphoreSlim _wake = new(0, 1);
 
     private IAgentProcess? _agent;
@@ -29,8 +31,9 @@ public sealed class Supervisor
     private DateTime _noStartBefore = DateTime.MinValue;
 
     public Supervisor(Func<uint> activeSession, Func<uint, IAgentProcess?> start, Action<string> log,
-        RestartBackoff? backoff = null, Func<DateTime>? clock = null)
+        RestartBackoff? backoff = null, Func<DateTime>? clock = null, Action<string, int?>? onStatus = null)
     {
+        _onStatus = onStatus;
         _activeSession = activeSession;
         _start = start;
         _log = log;
@@ -70,6 +73,7 @@ public sealed class Supervisor
             var ranFor = _clock() - _agentStarted;
             var delay = _backoff.NextDelay(ranFor);
             _log($"Agent exited (code {_agent.ExitCode}, ran {ranFor.TotalSeconds:F0}s), restart in {delay.TotalSeconds:F0}s");
+            Report(ServiceStatus.AgentFailed, null);
             _agent.Dispose();
             _agent = null;
             _noStartBefore = _clock() + delay;
@@ -77,6 +81,8 @@ public sealed class Supervisor
 
         var active = _activeSession();
         var action = SessionPolicy.Decide(_agent is null ? null : _agentSession, active);
+        if (_agent is null && !SessionPolicy.IsUsable(active))
+            Report(ServiceStatus.NoSession, null);
         switch (action)
         {
             case SupervisorAction.Stop:
@@ -104,7 +110,10 @@ public sealed class Supervisor
             _agentSession = session;
             _agentStarted = _clock();
             if (_agent != null)
+            {
                 _log($"Agent started in session {session} (pid {_agent.Id})");
+                Report(ServiceStatus.AgentRunning, _agent.Id);
+            }
             else
                 ScheduleRetry("start returned nothing");
         }
@@ -119,6 +128,15 @@ public sealed class Supervisor
         var delay = _backoff.NextDelay(TimeSpan.Zero);
         _noStartBefore = _clock() + delay;
         _log($"Agent start failed ({reason}), retry in {delay.TotalSeconds:F0}s");
+        Report(ServiceStatus.AgentFailed, null);
+    }
+
+    /// <summary>Notifies only on change, so the status file is not rewritten every poll.</summary>
+    private void Report(string state, int? pid)
+    {
+        if (_lastStatus == (state, pid)) return;
+        _lastStatus = (state, pid);
+        try { _onStatus?.Invoke(state, pid); } catch (Exception ex) { _log("Status report failed: " + ex.Message); }
     }
 
     private void StopAgent()

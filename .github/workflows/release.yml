@@ -76,7 +76,7 @@ jobs:
       - name: Publish unattended service and agent
         shell: pwsh
         run: |
-          dotnet publish src/DeskShare.Service/DeskShare.Service.csproj -c Release -r win-x64 --self-contained false -o publish/service -p:Version=${{ steps.version.outputs.version }}
+          dotnet publish src/DeskShare.Service/DeskShare.Service.csproj -c Release -r win-x64 --self-contained false -o publish/service -p:PublishSingleFile=true -p:Version=${{ steps.version.outputs.version }}
           dotnet publish src/ScreenSenderApp/DeskShare.ScreenSenderApp.csproj -c Release -r win-x64 --self-contained false -o publish/service/agent -p:Version=${{ steps.version.outputs.version }}
           Copy-Item publish/ffmpeg publish/service/agent/ffmpeg -Recurse
 

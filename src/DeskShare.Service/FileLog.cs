@@ -7,10 +7,17 @@ internal static class FileLog
 {
     private static readonly object Gate = new();
 
+    /// <summary>
+    /// The installer turns this off until %ProgramData%\DeskShare is proven to be ours: a pre-created junction there would
+    /// otherwise make an elevated log append land anywhere. While off, messages go to the console only.
+    /// </summary>
+    public static volatile bool FileEnabled = true;
+
     public static void Write(string message)
     {
         var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {message}";
         try { Console.WriteLine(line); } catch (IOException) { /* no console (service) */ }
+        if (!FileEnabled) return;
         try
         {
             lock (Gate)
