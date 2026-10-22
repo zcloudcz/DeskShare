@@ -102,6 +102,33 @@ public class SasPolicyTests
         Assert.Equal(SasMarker.None, s.Marker);
     }
 
+    // Done marker write fails AND the value cannot be deleted during revert: the claim must survive as Pending.
+    private sealed class StuckValueStore : ISasPolicyStore
+    {
+        private int _writes;
+        public SasMarker Marker { get; set; }
+        public int? Value;
+        SasMarker ISasPolicyStore.Marker
+        {
+            get => Marker;
+            set { if (value == SasMarker.Done && ++_writes == 1) throw new IOException(); Marker = value; }
+        }
+        public int? ReadSoftwareSasGeneration() => Value;
+        public void WriteSoftwareSasGeneration(int value) => Value = value;
+        public void DeleteSoftwareSasGeneration() => throw new IOException();
+    }
+
+    [Fact]
+    public void Install_RevertCannotRemoveTheValue_KeepsThePendingClaim()
+    {
+        var s = new StuckValueStore();
+
+        Assert.Throws<IOException>(() => SasPolicy.EnableForServices(s));
+
+        Assert.Equal(1, s.Value);
+        Assert.Equal(SasMarker.Pending, s.Marker); // uninstall/next install still know the value is ours
+    }
+
     [Fact]
     public void Install_DoneMarkerWriteFails_RemovesThePolicyAgain()
     {

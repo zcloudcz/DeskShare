@@ -72,8 +72,19 @@ public static class SasPolicy
 
     private static void Revert(ISasPolicyStore store)
     {
-        // Best effort, in this order: never leave the value without a claim.
-        try { if (store.ReadSoftwareSasGeneration() == ServicesAllowed) store.DeleteSoftwareSasGeneration(); } catch { }
+        // Never leave the value without a claim: drop the marker only once the value is confirmed gone. If reading or deleting
+        // fails, the marker is left as Pending so the next install resolves it and uninstall still removes the value.
+        try
+        {
+            if (store.ReadSoftwareSasGeneration() == ServicesAllowed) store.DeleteSoftwareSasGeneration();
+            if (store.ReadSoftwareSasGeneration() == ServicesAllowed) { TryMarkPending(store); return; }
+        }
+        catch { TryMarkPending(store); return; }
         try { store.Marker = SasMarker.None; } catch { }
+    }
+
+    private static void TryMarkPending(ISasPolicyStore store)
+    {
+        try { store.Marker = SasMarker.Pending; } catch { }
     }
 }
