@@ -175,9 +175,10 @@ public partial class MainWindow : Window
             string? password = null;
 
             bool enableRemoteControl = EnableRemoteControlCheckBox.IsChecked == true;
+            bool enableClipboard = EnableClipboardCheckBox.IsChecked == true;
             bool trustClientPermanent = TrustClientPermanentCheckBox.IsChecked == true;
 
-            await _serverManager.StartAsync(serverId, password, enableRemoteControl, trustClientPermanent);
+            await _serverManager.StartAsync(serverId, password, enableRemoteControl, trustClientPermanent, enableClipboard);
 
             _logger.LogInformation("Server started with remote control {Status}",
                 enableRemoteControl ? "ENABLED" : "DISABLED");
@@ -215,6 +216,7 @@ public partial class MainWindow : Window
             StopServerButton.IsEnabled = true;
 
             EnableRemoteControlCheckBox.IsEnabled = false;
+            EnableClipboardCheckBox.IsEnabled = false;
             TrustClientPermanentCheckBox.IsEnabled = false;
 
             UpdateTabAvailability();
@@ -240,6 +242,7 @@ public partial class MainWindow : Window
             StartServerButton.IsEnabled = true;
             StartServerButton.Content = "Start Server";
             EnableRemoteControlCheckBox.IsEnabled = true;
+            EnableClipboardCheckBox.IsEnabled = true;
             TrustClientPermanentCheckBox.IsEnabled = true;
         }
     }
@@ -274,6 +277,7 @@ public partial class MainWindow : Window
             StopServerButton.Content = "Stop Server";
 
             EnableRemoteControlCheckBox.IsEnabled = true;
+            EnableClipboardCheckBox.IsEnabled = true;
             TrustClientPermanentCheckBox.IsEnabled = true;
 
             UpdateTabAvailability();

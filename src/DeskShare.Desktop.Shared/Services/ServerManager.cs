@@ -47,7 +47,7 @@ public class ServerManager : IDisposable
     /// <summary>
     /// Starts the server with signaling + screen sender services.
     /// </summary>
-    public async Task StartAsync(string serverId, string? password = null, bool enableRemoteControl = false, bool trustClientPermanent = false)
+    public async Task StartAsync(string serverId, string? password = null, bool enableRemoteControl = false, bool trustClientPermanent = false, bool enableClipboard = false)
     {
         if (_isRunning)
         {
@@ -87,6 +87,7 @@ public class ServerManager : IDisposable
                 AdapterIndex = adapterIndex,
                 OutputIndex = outputIndex,
                 EnableRemoteControl = enableRemoteControl,
+                EnableClipboard = enableClipboard,
                 TrustClientPermanent = trustClientPermanent
             };
 

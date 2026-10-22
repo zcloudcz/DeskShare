@@ -120,6 +120,8 @@ public partial class ProjectionWindow : Window
             _clientManager.StatsUpdated += OnStatsUpdated;
             _clientManager.Connected += OnConnected;
             _clientManager.Disconnected += OnDisconnected;
+            _clientManager.HostAllowsClipboardChanged += OnHostAllowsClipboardChanged;
+            _clientManager.ClipboardRejected += OnClipboardRejected;
 
             await _clientManager.ConnectAsync(_serverId, _password, null, _webSocketToken, _clientId, _iceServers, _resumeToken);
 
@@ -154,6 +156,30 @@ public partial class ProjectionWindow : Window
             VideoImage.Focus();
 
             _logger.LogInformation("Connection established, video rendering and input forwarding enabled");
+        });
+    }
+
+    private void ShareClipboard_Changed(object? sender, RoutedEventArgs e)
+    {
+        _clientManager.ShareClipboard = ShareClipboardCheckBox.IsChecked == true;
+    }
+
+    // The checkbox is only usable when the host allowed clipboard sharing; the tooltip says why otherwise.
+    private void OnHostAllowsClipboardChanged(object? sender, bool allowed)
+    {
+        Dispatcher.UIThread.Invoke(() =>
+        {
+            ShareClipboardCheckBox.IsEnabled = allowed;
+            ToolTip.SetTip(ShareClipboardCheckBox, allowed ? null : "The host did not allow clipboard sharing");
+        });
+    }
+
+    private void OnClipboardRejected(object? sender, string reason)
+    {
+        Dispatcher.UIThread.Invoke(async () =>
+        {
+            var msgBox = MessageBoxManager.GetMessageBoxStandard("Clipboard", reason, ButtonEnum.Ok, MsBoxIcon.Warning);
+            await msgBox.ShowWindowDialogAsync(this);
         });
     }
 
@@ -519,6 +545,8 @@ public partial class ProjectionWindow : Window
         _clientManager.StatsUpdated -= OnStatsUpdated;
         _clientManager.Connected -= OnConnected;
         _clientManager.Disconnected -= OnDisconnected;
+        _clientManager.HostAllowsClipboardChanged -= OnHostAllowsClipboardChanged;
+        _clientManager.ClipboardRejected -= OnClipboardRejected;
 
         _clientManager.DisconnectAsync().GetAwaiter().GetResult();
 

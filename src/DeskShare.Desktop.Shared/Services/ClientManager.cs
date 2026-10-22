@@ -30,6 +30,8 @@ public class ClientManager : IDisposable
     private VideoSink? _videoSink;
     private RTCDataChannel? _dataChannel;
     private IClipboardManager? _clipboardManager;
+    private ClipboardSync? _clipboardSync;
+    private bool _shareClipboard;
     private bool _isConnected;
     private string? _serverId;
     private string? _clientId;
@@ -75,6 +77,55 @@ public class ClientManager : IDisposable
     public event EventHandler<ClipboardMessage>? ClipboardReceived;
 
     /// <summary>
+    /// Whether the host allows clipboard sharing (told by the host in its authorization_response).
+    /// </summary>
+    public bool HostAllowsClipboard { get; private set; }
+
+    /// <summary>
+    /// Fired when <see cref="HostAllowsClipboard"/> changes.
+    /// </summary>
+    public event EventHandler<bool>? HostAllowsClipboardChanged;
+
+    /// <summary>
+    /// Fired with a user-visible reason when clipboard text was refused (for example too large).
+    /// </summary>
+    public event EventHandler<string>? ClipboardRejected;
+
+    /// <summary>
+    /// The viewer's own opt-in ("Share my clipboard with the host"). Default off. The clipboard is only
+    /// exchanged when this is on AND the host allowed it.
+    /// </summary>
+    public bool ShareClipboard
+    {
+        get => _shareClipboard;
+        set
+        {
+            _shareClipboard = value;
+            UpdateClipboardEnabled();
+            SendClipboardSubscription();
+        }
+    }
+
+    // Tells the host whether this viewer wants its clipboard; the host sends nothing until we subscribed.
+    private void SendClipboardSubscription()
+    {
+        if (!HostAllowsClipboard || _dataChannel?.readyState != RTCDataChannelState.open)
+        {
+            return;
+        }
+
+        _dataChannel.send($"{{\"type\":\"clipboard_subscribe\",\"enabled\":{(_shareClipboard ? "true" : "false")}}}");
+    }
+
+    private void UpdateClipboardEnabled()
+    {
+        if (_clipboardSync != null)
+        {
+            _clipboardSync.Enabled = _shareClipboard && HostAllowsClipboard;
+        }
+    }
+
+    /// <summary>
     /// Creates a new ClientManager with injected dependencies.
     /// The IClipboardManager is injected via DI so each platform can provide
     /// its own implementation (AvaloniaClipboardManager or WindowsClipboardManager).
@@ -91,64 +142,23 @@ public class ClientManager : IDisposable
 
         // IClipboardManager is now injected instead of hardcoding a platform-specific type
         _clipboardManager = clipboardManager;
-        _clipboardManager.ClipboardChanged += OnLocalClipboardChanged;
+
+        // Sends/applies nothing until the host allowed it and the viewer opted in (see UpdateClipboardEnabled).
+        _clipboardSync = new ClipboardSync(_clipboardManager, SendDataChannelJson);
+        _clipboardSync.Rejected += (_, reason) => ClipboardRejected?.Invoke(this, reason);
+        _clipboardSync.Applied += (_, message) => ClipboardReceived?.Invoke(this, message);
     }
 
-    /// <summary>
-    /// Handler for local clipboard changes - sends to remote server via data channel.
-    /// </summary>
-    private void OnLocalClipboardChanged(object? sender, ClipboardChangedEventArgs e)
+    private bool SendDataChannelJson(string json)
     {
-        try
+        if (!_isConnected || _dataChannel?.readyState != RTCDataChannelState.open)
         {
-            if (e.Text != null)
-            {
-                _logger.LogInformation("Local clipboard changed, sending to server: Text length={Length}",
-                    e.Text.Length);
-                SendClipboardTextAsync(e.Text).GetAwaiter().GetResult();
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error sending clipboard to server");
-        }
-    }
-
-    /// <summary>
-    /// Sends clipboard text to remote server via WebRTC data channel.
-    /// </summary>
-    public async Task SendClipboardTextAsync(string text)
-    {
-        if (!_isConnected || _dataChannel == null)
-        {
-            _logger.LogWarning("Cannot send clipboard: not connected or data channel unavailable");
-            return;
+            return false;
         }
 
-        if (_dataChannel.readyState != RTCDataChannelState.open)
-        {
-            _logger.LogWarning("Data channel is not open, cannot send clipboard");
-            return;
-        }
-
-        try
-        {
-            var json = JsonSerializer.Serialize(new
-            {
-                type = "clipboard",
-                text = text,
-                timestamp = DateTime.UtcNow
-            });
-            var bytes = Encoding.UTF8.GetBytes(json);
-            _dataChannel.send(bytes);
-            _logger.LogDebug("Sent clipboard text: Size={Size} bytes", bytes.Length);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to send clipboard via data channel");
-        }
-
-        await Task.CompletedTask;
+        _dataChannel.send(json);
+        _logger.LogDebug("Sent clipboard message: Size={Size} bytes", Encoding.UTF8.GetByteCount(json));
+        return true;
     }
 
     /// <summary>
@@ -346,11 +356,15 @@ public class ClientManager : IDisposable
         {
             _logger.LogInformation("Data channel opened");
             _clipboardManager?.StartMonitoring();
+
+            // The host answers with authorization_response, which also says whether it shares the clipboard.
+            _dataChannel!.send("{\"type\":\"authorization_request\"}");
         };
         _dataChannel.onclose += () =>
         {
             _logger.LogInformation("Data channel closed");
             _clipboardManager?.StopMonitoring();
+            SetHostAllowsClipboard(false);
         };
         _dataChannel.onerror += (error) =>
         {
@@ -378,26 +392,17 @@ public class ClientManager : IDisposable
             {
                 var messageType = typeElement.GetString();
 
-                if (messageType == "clipboard")
+                if (messageType == "authorization_response")
                 {
-                    if (doc.RootElement.TryGetProperty("text", out var textElement))
+                    SetHostAllowsClipboard(doc.RootElement.TryGetProperty("clipboard", out var clip) && clip.ValueKind == JsonValueKind.True);
+                }
+                else if (messageType == "clipboard" && doc.RootElement.TryGetProperty("data", out var dataElement))
+                {
+                    var message = JsonSerializer.Deserialize<ClipboardMessage>(dataElement.GetRawText());
+                    if (message != null)
                     {
-                        var text = textElement.GetString();
-                        if (!string.IsNullOrEmpty(text))
-                        {
-                            _logger.LogInformation("Received clipboard text from server: Size={Size} chars", text.Length);
-
-                            _clipboardManager?.SetTextAsync(text).GetAwaiter().GetResult();
-
-                            var legacyMessage = new ClipboardMessage
-                            {
-                                ContentType = ClipboardContentType.Text,
-                                TextContent = text,
-                                SizeBytes = Encoding.UTF8.GetByteCount(text),
-                                Timestamp = DateTime.UtcNow
-                            };
-                            ClipboardReceived?.Invoke(this, legacyMessage);
-                        }
+                        _logger.LogInformation("Received clipboard message from host: Size={Size} bytes", message.SizeBytes);
+                        _ = ApplyHostClipboardAsync(message);
                     }
                 }
             }
@@ -405,6 +410,34 @@ public class ClientManager : IDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error processing data channel message");
+        }
+    }
+
+    private void SetHostAllowsClipboard(bool allowed)
+    {
+        if (HostAllowsClipboard == allowed)
+        {
+            return;
+        }
+
+        HostAllowsClipboard = allowed;
+        UpdateClipboardEnabled();
+        if (allowed)
+        {
+            SendClipboardSubscription(); // (re)connect: state the current opt-in
+        }
+        HostAllowsClipboardChanged?.Invoke(this, allowed);
+    }
+
+    private async Task ApplyHostClipboardAsync(ClipboardMessage message)
+    {
+        try
+        {
+            await _clipboardSync!.ApplyAsync(message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error applying clipboard from host");
         }
     }
 
@@ -899,7 +932,8 @@ public class ClientManager : IDisposable
         if (_clipboardManager != null)
         {
             _clipboardManager.StopMonitoring();
-            _clipboardManager.ClipboardChanged -= OnLocalClipboardChanged;
+            _clipboardSync?.Dispose();
+            _clipboardSync = null;
             _clipboardManager.Dispose();
             _clipboardManager = null;
         }

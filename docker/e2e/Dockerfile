@@ -6,10 +6,11 @@ FROM mcr.microsoft.com/dotnet/sdk:8.0
 # xdotool           - lets the test read the real pointer position
 # x11-utils         - xdpyinfo (readiness probe) and xmessage (full-screen window in a known colour:
 #                     Xvfb grabs the root window as black, so xsetroot cannot be used)
+# xclip             - lets the clipboard tests set and read the sender display's real X clipboard
 # libxtst6, libx11-6, libxcb*, libasound2 - native libs the sender P/Invokes (libX11, libXtst)
 #                     and that FFmpeg's x11grab device links against
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        xvfb xdotool x11-utils libxtst6 libx11-6 \
+        xvfb xdotool xclip x11-utils libxtst6 libx11-6 \
         libxcb1 libxcb-shm0 libxcb-xfixes0 libxcb-shape0 libasound2 \
         curl xz-utils ca-certificates \
     && rm -rf /var/lib/apt/lists/*

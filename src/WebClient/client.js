@@ -38,6 +38,8 @@ const placeholder = document.getElementById('placeholder');
 const statusDiv = document.getElementById('status');
 const statusText = document.getElementById('statusText');
 const controlBtn = document.getElementById('controlBtn');
+const sendClipboardBtn = document.getElementById('sendClipboardBtn');
+const copyHostClipboardBtn = document.getElementById('copyHostClipboardBtn');
 
 function updateStatus(message, type = 'info') {
     statusDiv.style.display = 'block';
@@ -539,6 +541,7 @@ function cleanup() {
         dataChannel = null;
     }
     updateControlButton();
+    setClipboardAllowed(false);
 
     if (pc) {
         pc.close();
@@ -567,23 +570,39 @@ function setupDataChannel(channel) {
     dataChannel = channel;
     dataChannel.onopen = () => {
         remoteControl = new RemoteControl(remoteVideo, dataChannel);
+        // The host's authorization_response also tells us whether it shares the clipboard.
+        dataChannel.send(JSON.stringify({ type: 'authorization_request', timestamp: new Date().toISOString() }));
         updateControlButton();
-        updateStatus('Remote control is available. Click "Enable control".', 'success');
+        // The channel also exists for clipboard-only sessions, so "control available" is only said once the
+        // host's authorization_response confirms it.
     };
     dataChannel.onclose = () => {
         if (remoteControl) remoteControl.disable();
         remoteControl = null;
         dataChannel = null;
+        hostAllowsControl = false;
         updateControlButton();
+        setClipboardAllowed(false);
     };
     dataChannel.onmessage = (event) => {
         let message;
         try { message = JSON.parse(event.data); } catch { return; }
-        if (message.type === 'authorization_response' && remoteControl) {
-            remoteControl.handleAuthorizationResponse(message);
-            updateStatus(message.authorized ? 'Remote control active' : 'The host did not allow remote control',
-                message.authorized ? 'success' : 'error');
-            updateControlButton();
+        if (message.type === 'authorization_response') {
+            setClipboardAllowed(message.clipboard === true);
+            // Before the user clicked "Enable control" the answer only tells what the host allows
+            // (control and clipboard); afterwards it is the answer to the control request.
+            if (!(remoteControl && remoteControl.enabled)) {
+                hostAllowsControl = message.authorized === true;
+                if (hostAllowsControl) updateStatus('Remote control is available. Click "Enable control".', 'success');
+                updateControlButton();
+            } else {
+                remoteControl.handleAuthorizationResponse(message);
+                updateStatus(message.authorized ? 'Remote control active' : 'The host did not allow remote control',
+                    message.authorized ? 'success' : 'error');
+                updateControlButton();
+            }
+        } else if (message.type === 'clipboard') {
+            receiveHostClipboard(message);
         } else if (message.type === 'authorization_revoked' && remoteControl) {
             remoteControl.disable();
             updateStatus('The host revoked remote control', 'error');
@@ -604,10 +623,152 @@ function toggleControl() {
     updateControlButton();
 }
 
+// Whether the host allows remote control at all (from its authorization_response).
+let hostAllowsControl = false;
+
 function updateControlButton() {
     if (!controlBtn) return;
-    controlBtn.disabled = !remoteControl;
+    controlBtn.disabled = !remoteControl || (!hostAllowsControl && !remoteControl.enabled);
     controlBtn.textContent = remoteControl && remoteControl.enabled ? 'Disable control' : 'Enable control';
+}
+
+// ---- Clipboard sharing (text only, only when the host allowed it) ----
+
+const CLIPBOARD_MAX_BYTES = 60000; // keep in sync with ClipboardSync.MaxTextBytes
+const MAX_MESSAGE_BYTES = 64 * 1024; // the host drops larger data channel messages
+let hostClipboardText = null;
+let clipboardSequence = 0;
+
+let clipboardAllowed = false;
+
+function setClipboardAllowed(allowed) {
+    // Telling the host we want its clipboard text is harmless: it only reaches the OS clipboard on a click.
+    if (allowed && !clipboardAllowed && dataChannel && dataChannel.readyState === 'open') {
+        dataChannel.send(JSON.stringify({ type: 'clipboard_subscribe', enabled: true }));
+    }
+    clipboardAllowed = allowed;
+    sendClipboardBtn.hidden = !allowed;
+    copyHostClipboardBtn.hidden = !allowed;
+    if (!allowed) {
+        hostClipboardText = null;
+        hideFallbackField();
+    }
+    copyHostClipboardBtn.disabled = hostClipboardText === null;
+}
+
+// Needs a user gesture (the button click), otherwise the browser refuses to read the clipboard.
+async function sendClipboard() {
+    if (!dataChannel || dataChannel.readyState !== 'open') return;
+    let text;
+    try {
+        text = await navigator.clipboard.readText();
+    } catch {
+        // No clipboard-read permission (or API missing): let the user paste into a small field instead.
+        showFallbackField('input');
+        return;
+    }
+    sendClipboardText(text);
+}
+
+function sendClipboardText(text) {
+    if (!dataChannel || dataChannel.readyState !== 'open') return;
+    if (!text) {
+        updateStatus('Your clipboard has no text', 'info');
+        return;
+    }
+    const bytes = new TextEncoder().encode(text).length;
+    if (bytes > CLIPBOARD_MAX_BYTES) {
+        updateStatus(`Clipboard text is too large (${bytes} bytes, max ${CLIPBOARD_MAX_BYTES}); not sent`, 'error');
+        return;
+    }
+    // Same shape as the .NET ClipboardMessage (ContentType 0 = Text).
+    const json = JSON.stringify({
+        type: 'clipboard',
+        data: { ContentType: 0, TextContent: text, SizeBytes: bytes, Timestamp: new Date().toISOString(), SequenceNumber: ++clipboardSequence }
+    });
+    if (new TextEncoder().encode(json).length > MAX_MESSAGE_BYTES) {
+        updateStatus('Clipboard text is too large once encoded; not sent', 'error');
+        return;
+    }
+    dataChannel.send(json);
+    updateStatus(`Clipboard sent to the host (${bytes} bytes)`, 'success');
+}
+
+function receiveHostClipboard(message) {
+    const data = message.data;
+    if (copyHostClipboardBtn.hidden || !data || data.ContentType !== 0 || typeof data.TextContent !== 'string' || !data.TextContent) return;
+    if (new TextEncoder().encode(data.TextContent).length > CLIPBOARD_MAX_BYTES) {
+        updateStatus('The host sent clipboard text that is too large; ignored', 'error');
+        return;
+    }
+    hostClipboardText = data.TextContent;
+    copyHostClipboardBtn.disabled = false;
+    updateStatus('The host sent clipboard text. Click "Copy host clipboard".', 'info');
+}
+
+async function copyHostClipboard() {
+    if (hostClipboardText === null) return;
+    try {
+        await navigator.clipboard.writeText(hostClipboardText);
+        hostClipboardText = null;
+        copyHostClipboardBtn.disabled = true;
+        updateStatus('Host clipboard copied to your clipboard', 'success');
+    } catch {
+        // writeText refused: show the text selected so the user can press Ctrl+C.
+        showFallbackField('output');
+    }
+}
+
+// Manual fallbacks when the Clipboard API is refused. The fields handle their own events (no document
+// listener) and stop key events from bubbling, so remote-control key capture never sees the typing.
+let fallbackField = null;
+
+function hideFallbackField() {
+    if (!fallbackField) return;
+    const field = fallbackField;
+    fallbackField = null; // before remove(): removing a focused element fires blur
+    field.remove();
+}
+
+function showFallbackField(kind) {
+    hideFallbackField();
+    const field = document.createElement(kind === 'input' ? 'input' : 'textarea');
+    if (kind === 'input') {
+        field.type = 'text';
+        field.placeholder = 'Paste here (Ctrl+V) to send';
+        field.addEventListener('paste', (event) => {
+            event.preventDefault();
+            const text = event.clipboardData ? event.clipboardData.getData('text/plain') : '';
+            hideFallbackField();
+            sendClipboardText(text);
+        });
+    } else {
+        field.readOnly = true;
+        field.rows = 2;
+        field.title = 'Press Ctrl+C to copy';
+        field.value = hostClipboardText;
+        field.addEventListener('copy', (event) => {
+            // Put the text on the clipboard ourselves: hiding the field below would otherwise remove the
+            // selection before the browser's default copy runs.
+            event.clipboardData.setData('text/plain', field.value);
+            event.preventDefault();
+            hostClipboardText = null;
+            copyHostClipboardBtn.disabled = true;
+            hideFallbackField();
+            updateStatus('Host clipboard copied to your clipboard', 'success');
+        });
+        updateStatus('Press Ctrl+C to copy the host clipboard', 'info');
+    }
+    field.addEventListener('keydown', (event) => {
+        event.stopPropagation();
+        if (event.key === 'Escape') hideFallbackField();
+    });
+    field.addEventListener('keyup', (event) => event.stopPropagation());
+    field.addEventListener('blur', hideFallbackField);
+    fallbackField = field;
+    (kind === 'input' ? sendClipboardBtn : copyHostClipboardBtn).after(field);
+    field.focus();
+    if (kind !== 'input') field.select();
 }
 
 // Handle page unload
