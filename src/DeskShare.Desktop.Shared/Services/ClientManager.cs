@@ -270,7 +270,17 @@ public class ClientManager : IDisposable
                     SdpMLineIndex = candidate.sdpMLineIndex,
                     SdpMid = candidate.sdpMid
                 };
-                await SendSignalingMessageAsync(msg);
+                // SIPSorcery calls this handler as async void: an exception here (e.g. the socket closed while
+                // the viewer disconnects) would crash the whole process, so log it instead. A lost candidate
+                // only matters while connecting, and then the connection state handler reports the failure.
+                try
+                {
+                    await SendSignalingMessageAsync(msg);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not send ICE candidate");
+                }
             }
         };
 
