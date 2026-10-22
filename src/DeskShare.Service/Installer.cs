@@ -36,10 +36,19 @@ internal static class Installer
         var missingSrc = StagingCheck.Missing(sourceDir);
         if (missingSrc.Count > 0) return Fail("Missing in " + sourceDir + ": " + string.Join(", ", missingSrc));
 
-        // A previous install that died between the two renames leaves only ".old": put it back first.
-        if (!Directory.Exists(live) && Directory.Exists(old)) Directory.Move(old, live);
+        // A previous swap that never finished (Service.old and/or install.pending left behind) is repaired FIRST: Service.old is the
+        // last known-good version and is never deleted just because a live folder exists.
+        try
+        {
+            if (!RecoveryRunner.Run(new RecoveryOps(live, old)))
+                return Fail("A previous update was interrupted and the old version could not be restored/started; fix that first.", 4);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Fail("Could not repair an interrupted update: " + ex.Message, 4);
+        }
         DeleteDir(staging);
-        DeleteDir(old);
+        DeleteQuarantinedFolders(live);
 
         try
         {
@@ -71,30 +80,74 @@ internal static class Installer
         }
     }
 
+    private static string MarkerPath(string live) => Path.Combine(Directory.GetParent(live)!.FullName, "install.pending");
+
+    /// <summary>Moves a bad live folder out of the way by renaming it (atomic), instead of a recursive delete that can stop half way.</summary>
+    private static void QuarantineLiveFolder(string live)
+    {
+        if (Directory.Exists(live)) MoveWithRetry(live, live + ".failed-" + DateTime.Now.ToString("yyyyMMddHHmmssfff"));
+    }
+
+    private static void DeleteQuarantinedFolders(string live)
+    {
+        var parent = Directory.GetParent(live)!.FullName;
+        foreach (var d in Directory.GetDirectories(parent, Path.GetFileName(live) + ".failed-*"))
+        {
+            try { Directory.Delete(d, true); } catch (IOException) { /* best effort, retried by the next install */ }
+        }
+    }
+
+    private sealed class RecoveryOps(string live, string old) : IRecoveryOps
+    {
+        public bool MarkerExists => File.Exists(MarkerPath(live));
+        public bool OldExists => Directory.Exists(old);
+        public bool LiveExists => Directory.Exists(live);
+        public void StopService() => Installer.StopService();
+        public void QuarantineLive() => QuarantineLiveFolder(live);
+        public void RestoreOldToLive() => Directory.Move(old, live);
+        public bool StartRestored() => RegisterAndStart(live);
+        public void ClearMarker() => File.Delete(MarkerPath(live));
+    }
+
     /// <summary>The real file-system / SCM side of <see cref="SwapRunner"/>.</summary>
     private sealed class Ops(string live, string staging, string old) : ISwapOps
     {
-        private static readonly TimeSpan ConfirmTimeout = TimeSpan.FromSeconds(20);
+        private static readonly TimeSpan ConfirmTimeout = TimeSpan.FromSeconds(30);
+        private static readonly TimeSpan MustHoldFor = TimeSpan.FromSeconds(2);
         public bool HadLive { get; } = Directory.Exists(live);
         public void StopService() => Installer.StopService();
+        public void WriteMarker() => File.WriteAllText(MarkerPath(live), "swapping " + DateTime.UtcNow.ToString("O"));
+        public void ClearMarker() => File.Delete(MarkerPath(live));
         public void MoveLiveToOld() => MoveWithRetry(live, old);
         public void MoveStagingToLive() => Directory.Move(staging, live);
-        public void DeleteLive() => DeleteDir(live);
+        public void QuarantineLive() => QuarantineLiveFolder(live);
         public void RestoreOldToLive() => Directory.Move(old, live);
         public void DeleteOld() => DeleteDir(old);
+        public void DeleteQuarantined() => DeleteQuarantinedFolders(live);
         public bool StartRestored() => RegisterAndStart(live);
 
         public bool StartNewAndConfirm()
         {
-            var statusPath = Path.Combine(UnattendedPaths.DataDir, "status.json");
-            File.Delete(statusPath); // a leftover from the previous run must not confirm the new one
+            var data = UnattendedPaths.DataDir;
+            var statusPath = Path.Combine(data, "status.json");
+            var readyPath = Path.Combine(data, "agent-ready.json");
+            // Fresh id for THIS attempt: the service echoes it in status.json and hands it to the agent, which echoes it in
+            // agent-ready.json. Files from an earlier run (or an earlier service instance) carry another id and are ignored.
+            var installId = Guid.NewGuid().ToString("N");
+            File.Delete(statusPath);
+            File.Delete(readyPath);
+            File.WriteAllText(Path.Combine(data, "install-id"), installId);
             if (!RegisterAndStart(live)) return false;
+
             var expected = FileVersionInfo.GetVersionInfo(Path.Combine(live, UnattendedPaths.ServiceExeName)).ProductVersion ?? "";
+            var gate = new ConfirmationGate(MustHoldFor);
             var deadline = DateTime.UtcNow + ConfirmTimeout;
             while (DateTime.UtcNow < deadline)
             {
-                var status = File.Exists(statusPath) ? ServiceStatus.TryParse(ReadSafe(statusPath)) : null;
-                if (ServiceStatus.IsConfirmed(status, expected, IsRunning(), ProcessExists)) return true;
+                var status = ServiceStatus.TryParse(ReadSafe(statusPath));
+                var ready = AgentReady.TryParse(ReadSafe(readyPath));
+                if (gate.Observe(ServiceStatus.IsConfirmed(status, ready, expected, installId, IsRunning(), ProcessExists), DateTime.UtcNow))
+                    return true;
                 Thread.Sleep(500);
             }
             return false;
@@ -102,7 +155,7 @@ internal static class Installer
 
         private static string? ReadSafe(string path)
         {
-            try { return File.ReadAllText(path); } catch (IOException) { return null; } // being rewritten
+            try { return File.Exists(path) ? File.ReadAllText(path) : null; } catch (IOException) { return null; } // being rewritten
         }
 
         private static bool IsRunning()
@@ -128,6 +181,7 @@ internal static class Installer
             try { DeleteDir(d); }
             catch (IOException ex) { FileLog.Write("Could not remove " + d + ": " + ex.Message); }
         }
+        try { DeleteQuarantinedFolders(UnattendedPaths.InstallDir); File.Delete(MarkerPath(UnattendedPaths.InstallDir)); } catch (IOException) { }
         // %ProgramData%\DeskShare (server id, owner secret, config) is kept on purpose so re-enabling keeps the same identity.
         FileLog.Write("Uninstalled.");
         return 0;
@@ -137,7 +191,12 @@ internal static class Installer
     /// Checks the staged (already admin-protected) copy. ponytail: integrity is only enforced when this helper is itself
     /// Authenticode-signed; an unsigned build cannot tell a swapped DLL from a real one. Upgrade path: sign every release
     /// binary (then the check below becomes mandatory automatically).
-    /// The helper is one single-file exe (all managed code inside the signed image), so no DLL next to it is loaded with
+    /// Known ceiling, not fixed here: the framework-dependent apphost
+    /// loads hostfxr.dll from its own (user-writable, Velopack) folder BEFORE any of our code or this check runs, so a same-user
+    /// process can plant a native DLL into the elevated helper; that is also why the signature check cannot protect the helper
+    /// itself. Upgrade path once code signing exists: ship the elevated installer as a signed MSI (msiexec from System32 verifies
+    /// the package) or as a NativeAOT bootstrap calling SetDefaultDllDirectories(System32). Until then the UAC prompt cannot
+    /// show a verified publisher either. Mitigation today: the helper is one single-file exe (all managed code inside the signed image), so no DLL next to it is loaded with
     /// admin rights; unsigned, that exe is still only as trustworthy as the folder it was started from.
     /// </summary>
     private static string? VerifyStaging(string staging)

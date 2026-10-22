@@ -11,6 +11,7 @@ internal sealed class SupervisorService : ServiceBase
     private CancellationTokenSource? _cts;
     private Task? _run;
     private Supervisor? _supervisor;
+    private string? _installId;
 
     public SupervisorService()
     {
@@ -22,7 +23,9 @@ internal sealed class SupervisorService : ServiceBase
     {
         // Agent location comes from our own install folder, never from config (security: only admin-writable binaries run as SYSTEM).
         var agent = UnattendedPaths.ResolveAgentPath(AppContext.BaseDirectory);
-        var agentArgs = $"--config \"{UnattendedPaths.ConfigPath}\" \"--Serilog:WriteTo:1:Args:path={Path.Combine(UnattendedPaths.LogDir, "agent-.log")}\"";
+        // Written by the installer into the protected data folder just before it starts us; ties status.json / agent-ready.json to that attempt.
+        _installId = ReadInstallId();
+        var agentArgs = (_installId is null ? "" : $"--install-id {_installId} ") + $"--config \"{UnattendedPaths.ConfigPath}\" \"--Serilog:WriteTo:1:Args:path={Path.Combine(UnattendedPaths.LogDir, "agent-.log")}\"";
 
         _supervisor = new Supervisor(SessionLauncher.ActiveConsoleSessionId, session => SessionLauncher.Start(session, agent, agentArgs), FileLog.Write, onStatus: WriteStatus);
         _cts = new CancellationTokenSource();
@@ -41,11 +44,17 @@ internal sealed class SupervisorService : ServiceBase
     internal static string OwnVersion() => System.Diagnostics.FileVersionInfo.GetVersionInfo(Environment.ProcessPath!).ProductVersion ?? "";
 
     /// <summary>status.json is how the installer confirms that this version really started its agent (see ServiceStatus).</summary>
-    private static void WriteStatus(string state, int? agentPid)
+    private static string? ReadInstallId()
+    {
+        try { var t = File.ReadAllText(Path.Combine(UnattendedPaths.DataDir, "install-id")).Trim(); return t.Length is > 0 and <= 64 ? t : null; }
+        catch (IOException) { return null; }
+    }
+
+    private void WriteStatus(string state, int? agentPid)
     {
         var path = Path.Combine(UnattendedPaths.DataDir, "status.json");
         var tmp = path + ".tmp";
-        File.WriteAllText(tmp, new ServiceStatus(OwnVersion(), state, agentPid, DateTime.UtcNow).ToJson());
+        File.WriteAllText(tmp, new ServiceStatus(OwnVersion(), state, agentPid, DateTime.UtcNow, _installId, Environment.ProcessId).ToJson());
         File.Move(tmp, path, overwrite: true);
     }
 
