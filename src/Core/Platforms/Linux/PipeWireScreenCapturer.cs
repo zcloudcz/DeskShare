@@ -58,12 +58,10 @@ public sealed class PipeWireScreenCapturer : IScreenCapturer
             _pipeWireFd = _session.OpenPipeWireRemote();
 
             Gst.gst_init(IntPtr.Zero, IntPtr.Zero);
-            // keepalive-time re-sends the last buffer: compositors only send frames on damage, and a viewer that
-            //   joins while the screen is idle would otherwise wait for the first change.
             // BGRA (not BGRx): videoconvert then writes an opaque alpha, which is what the pipeline expects.
             // appsink keeps only the newest buffer and never syncs to the clock (live capture); the capture
             //   pipeline's own timer then sets the frame rate, as with x11grab.
-            var description = $"pipewiresrc fd={_pipeWireFd.DangerousGetHandle()} path={_session.NodeId} always-copy=true keepalive-time=1000 " +
+            var description = $"pipewiresrc fd={_pipeWireFd.DangerousGetHandle()} path={_session.NodeId} always-copy=true " +
                               "! videoconvert ! video/x-raw,format=BGRA " +
                               "! appsink name=sink max-buffers=1 drop=true sync=false";
             _pipeline = Gst.gst_parse_launch(description, out var error);
@@ -112,31 +110,47 @@ public sealed class PipeWireScreenCapturer : IScreenCapturer
     private void PullLoop()
     {
         const ulong pullTimeoutNs = 100_000_000; // 100 ms: bounds how long Dispose waits for this thread
-        while (!_stopping)
+        // Compositors only send a frame when the screen changes. A viewer that joins while the screen is idle
+        // would wait for the next change, so the newest sample is kept and delivered again once per second.
+        // (pipewiresrc's keepalive-time does not fire for these streams.) The sample is a copy
+        // (always-copy=true), so holding it does not starve the compositor of PipeWire buffers.
+        var repeatInterval = TimeSpan.FromSeconds(1);
+        var lastSample = IntPtr.Zero;
+        var lastDelivered = DateTime.UtcNow;
+        try
         {
-            var sample = Gst.gst_app_sink_try_pull_sample(_appSink, pullTimeoutNs);
-            if (sample == IntPtr.Zero)
+            while (!_stopping)
             {
-                if (Gst.gst_app_sink_is_eos(_appSink))
+                var sample = Gst.gst_app_sink_try_pull_sample(_appSink, pullTimeoutNs);
+                if (sample == IntPtr.Zero)
                 {
-                    Logger.Error("[PipeWireScreenCapturer] Stream ended: {Error}", Gst.PopBusError(_pipeline));
-                    return;
+                    if (Gst.gst_app_sink_is_eos(_appSink))
+                    {
+                        Logger.Error("[PipeWireScreenCapturer] Stream ended: {Error}", Gst.PopBusError(_pipeline));
+                        return;
+                    }
+                    if (lastSample == IntPtr.Zero || DateTime.UtcNow - lastDelivered < repeatInterval)
+                        continue;
+                    sample = Gst.gst_mini_object_ref(lastSample); // repeat the idle screen
                 }
-                continue;
-            }
 
-            try
-            {
-                OnSample(sample);
+                try
+                {
+                    OnSample(sample);
+                    lastDelivered = DateTime.UtcNow;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error(ex, "[PipeWireScreenCapturer] Failed to read a frame");
+                }
+
+                if (lastSample != IntPtr.Zero) Gst.gst_mini_object_unref(lastSample);
+                lastSample = sample; // takes over this loop's reference
             }
-            catch (Exception ex)
-            {
-                Logger.Error(ex, "[PipeWireScreenCapturer] Failed to read a frame");
-            }
-            finally
-            {
-                Gst.gst_mini_object_unref(sample);
-            }
+        }
+        finally
+        {
+            if (lastSample != IntPtr.Zero) Gst.gst_mini_object_unref(lastSample);
         }
     }
 
@@ -279,6 +293,7 @@ public sealed class PipeWireScreenCapturer : IScreenCapturer
         [DllImport(Lib)] public static extern void gst_message_parse_error(IntPtr message, out IntPtr error, out IntPtr debug);
         [DllImport(Lib)] public static extern void gst_object_unref(IntPtr obj);
         [DllImport(Lib)] public static extern void gst_mini_object_unref(IntPtr obj);
+        [DllImport(Lib)] public static extern IntPtr gst_mini_object_ref(IntPtr obj);
         [DllImport(Lib)] public static extern IntPtr gst_sample_get_buffer(IntPtr sample);
         [DllImport(Lib)] public static extern IntPtr gst_sample_get_caps(IntPtr sample);
         [DllImport(Lib)] public static extern IntPtr gst_caps_get_structure(IntPtr caps, uint index);

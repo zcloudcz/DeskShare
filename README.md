@@ -346,7 +346,15 @@ docker compose -f docker-compose.e2e.yml up --build --abort-on-container-exit --
 
 **Výkonnostní měření (FPS, latence, časy odesílatele)** při 1280x720 a 1920x1080 běží ve stejném E2E; jen ty spustíš přes `E2E_FILTER=FullyQualifiedName~LinuxE2EPerfTests`. Report skončí v `TestResults/e2e/perf.md` a `perf.json` (v CI jako artefakt `e2e-perf` a v souhrnu jobu). Prahy jsou záměrně hrubé (720p: FPS >= 10, medián latence <= 1000 ms); 1080p se jen reportuje.
 
-Testy jsou ve `tests/IntegrationTests/E2E` a bez `DESKSHARE_E2E=1` se přeskakují, takže běžné `dotnet test` je neovlivní. V CI běží job `linux-e2e` (`.github/workflows/build-test.yml`).
+**Linux Wayland E2E (Docker):** sender v čistě Wayland session (headless sway, bez `DISPLAY`) snímá přes ScreenCast portál (xdg-desktop-portal-wlr) a PipeWire. Ověřuje video, uložený restore token a to, že zapnuté ovládání bez RemoteDesktop portálu nerozbije streamování. Pohyb myši na Waylandu se v kontejneru neověřuje (wlr portál RemoteDesktop nemá, GNOME/KDE vyžadují potvrzovací dialog); mapování vstupu pokrývají unit testy `WaylandPortalTests`.
+
+```bash
+docker compose -f docker-compose.e2e-wayland.yml up --build --abort-on-container-exit --exit-code-from e2e-wayland
+```
+
+**Wayland na desktopu:** v Wayland session (`XDG_SESSION_TYPE=wayland`) sender použije xdg-desktop-portal (ScreenCast + RemoteDesktop, jeden dialog; další spuštění díky restore tokenu v `~/.config/DeskShare/wayland-restore-token` bez dialogu, pokud to backend umí). Snímky čte přes systémový GStreamer, AppImage ho nebalí: nainstaluj `gstreamer1.0-pipewire gstreamer1.0-plugins-base` (Debian/Ubuntu), `pipewire-gstreamer gstreamer1-plugins-base` (Fedora), `gst-plugin-pipewire gst-plugins-base` (Arch). X11 session běží beze změny přes x11grab/XTest.
+
+Testy jsou ve `tests/IntegrationTests/E2E` a bez `DESKSHARE_E2E=1` se přeskakují, takže běžné `dotnet test` je neovlivní. V CI běží joby `linux-e2e` a `linux-wayland-e2e` (`.github/workflows/build-test.yml`).
 
 Performance benchmarky (budoucí):
 

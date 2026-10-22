@@ -1,0 +1,18 @@
+# Wayland end-to-end test: real signaling server + sender on headless sway capturing through the ScreenCast
+# portal (xdg-desktop-portal-wlr + PipeWire) + .NET viewer.
+#   docker compose -f docker-compose.e2e-wayland.yml up --build --abort-on-container-exit --exit-code-from e2e-wayland
+services:
+  signaling:
+    extends:
+      file: docker-compose.e2e.yml
+      service: signaling
+
+  e2e-wayland:
+    build:
+      context: .
+      dockerfile: docker/e2e-wayland/Dockerfile
+    depends_on:
+      - signaling
+    environment:
+      DESKSHARE_E2E_SIGNALING: ws://signaling:5151/signal
+      E2E_FILTER: ${E2E_FILTER:-}

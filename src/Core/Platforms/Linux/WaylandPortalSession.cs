@@ -195,19 +195,10 @@ internal sealed class WaylandPortalSession : IDisposable
     /// <summary>The fd of a PipeWire connection that can only see this session's streams. Caller owns it.</summary>
     public SafeHandle OpenPipeWireRemote()
     {
-        return Task.Run(async () =>
-        {
-            MessageBuffer message;
-            {
-                using var writer = _connection.GetMessageWriter();
-                writer.WriteMethodCallHeader(PortalService, PortalPath, ScreenCastInterface, "OpenPipeWireRemote", "oa{sv}");
-                writer.WriteObjectPath(_sessionHandle);
-                writer.WriteDictionary(new Dictionary<string, VariantValue>());
-                message = writer.CreateMessage();
-            }
-            return await _connection.CallMethodAsync(message, (m, _) => m.GetBodyReader().ReadHandle<SafeFileHandle>(), null)
-                ?? throw new InvalidOperationException("OpenPipeWireRemote returned no file descriptor");
-        }).GetAwaiter().GetResult();
+        var message = CreatePortalCall(ScreenCastInterface, "OpenPipeWireRemote", _sessionHandle, parentWindow: false, new());
+        return Task.Run(() => _connection.CallMethodAsync(message, (m, _) => m.GetBodyReader().ReadHandle<SafeFileHandle>(), null))
+            .GetAwaiter().GetResult()
+            ?? throw new InvalidOperationException("OpenPipeWireRemote returned no file descriptor");
     }
 
     /// <summary>
@@ -255,17 +246,7 @@ internal sealed class WaylandPortalSession : IDisposable
             },
             ObserverFlags.None, null, null, emitOnCapturedContext: false);
 
-        MessageBuffer message;
-        {
-            using var writer = _connection.GetMessageWriter();
-            var signature = (session != null ? "o" : "") + (parentWindow ? "s" : "") + "a{sv}";
-            writer.WriteMethodCallHeader(PortalService, PortalPath, @interface, method, signature);
-            if (session != null) writer.WriteObjectPath(session);
-            if (parentWindow) writer.WriteString(""); // no parent window: the dialog is not attached to one
-            writer.WriteDictionary(options);
-            message = writer.CreateMessage();
-        }
-        await _connection.CallMethodAsync(message);
+        await _connection.CallMethodAsync(CreatePortalCall(@interface, method, session, parentWindow, options));
 
         var (code, results) = await response.Task.WaitAsync(ResponseTimeout);
         return code switch
@@ -274,6 +255,22 @@ internal sealed class WaylandPortalSession : IDisposable
             1 => throw new InvalidOperationException($"Screen sharing was declined in the portal dialog ({method})"),
             _ => throw new InvalidOperationException($"Portal {method} failed (response {code})"),
         };
+    }
+
+    /// <summary>
+    /// Builds a portal method call: [session] [parent window] options. Kept out of the async methods because
+    /// MessageWriter is a ref struct, which C# 12 does not allow there.
+    /// </summary>
+    private MessageBuffer CreatePortalCall(string @interface, string method, string? session, bool parentWindow,
+        Dictionary<string, VariantValue> options)
+    {
+        using var writer = _connection.GetMessageWriter();
+        var signature = (session != null ? "o" : "") + (parentWindow ? "s" : "") + "a{sv}";
+        writer.WriteMethodCallHeader(PortalService, PortalPath, @interface, method, signature);
+        if (session != null) writer.WriteObjectPath(session);
+        if (parentWindow) writer.WriteString(""); // no parent window: the dialog is not attached to one
+        writer.WriteDictionary(options);
+        return writer.CreateMessage();
     }
 
     /// <summary>
