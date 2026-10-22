@@ -23,6 +23,8 @@
     <PackageReference Include="SIPSorceryMedia.Encoders" Version="10.0.4" />
     <PackageReference Include="SIPSorceryMedia.FFmpeg" Version="10.0.16" />
     <PackageReference Include="System.Drawing.Common" Version="9.0.10" />
+    <!-- Wayland portal D-Bus client. Avalonia already ships this package (0.20.0); 0.21.3 is the patched release (CVE-2026-39959) and stays binary compatible with what Avalonia 11.2 calls. -->
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
     <PackageReference Include="Vortice.DXGI" Version="3.6.2" />
   </ItemGroup>

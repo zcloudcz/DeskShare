@@ -220,6 +220,9 @@ public static class XServer
 
     public static void MovePointer(int x, int y) => Run($"mousemove {x} {y}");
 
+    /// <summary>True when a window with this WM_NAME exists on the sender display.</summary>
+    public static bool HasWindow(string name) => Run($"search --name ^{name}$").Trim().Length > 0;
+
     /// <summary>What a real X client sees on the CLIPBOARD selection of the sender display (empty when nobody owns it).</summary>
     public static string GetClipboard()
     {

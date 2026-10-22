@@ -74,3 +74,20 @@ jobs:
       - name: Stop containers
         if: always()
         run: docker compose -f docker-compose.e2e.yml down
+
+  # Wayland end-to-end: sender on headless sway capturing through the ScreenCast portal + PipeWire
+  # (see docker-compose.e2e-wayland.yml). Input over the RemoteDesktop portal is not covered (see the test class).
+  linux-wayland-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Linux Wayland E2E tests
+        run: docker compose -f docker-compose.e2e-wayland.yml up --build --abort-on-container-exit --exit-code-from e2e-wayland
+
+      - name: Stop containers
+        if: always()
+        run: docker compose -f docker-compose.e2e-wayland.yml down
