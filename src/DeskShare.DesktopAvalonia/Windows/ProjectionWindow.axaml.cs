@@ -45,6 +45,7 @@ public partial class ProjectionWindow : Window
     private readonly string? _webSocketToken;
     private readonly string? _clientId;
     private readonly string? _resumeToken;
+    private readonly byte[]? _e2eKey;
     private readonly IReadOnlyList<DeskShare.Core.Auth.IceServerInfo>? _iceServers;
     private bool _isFullscreen;
     private bool _isConnected;
@@ -61,7 +62,8 @@ public partial class ProjectionWindow : Window
         string? webSocketToken = null,
         string? clientId = null,
         IReadOnlyList<DeskShare.Core.Auth.IceServerInfo>? iceServers = null,
-        string? resumeToken = null)
+        string? resumeToken = null,
+        byte[]? e2eKey = null)
     {
         InitializeComponent();
 
@@ -75,6 +77,7 @@ public partial class ProjectionWindow : Window
         _clientId = clientId;
         _iceServers = iceServers;
         _resumeToken = resumeToken;
+        _e2eKey = e2eKey;
 
         ServerIdText.Text = $"Server ID: {serverId}";
         ConnectedServerIdText.Text = serverId;
@@ -127,7 +130,7 @@ public partial class ProjectionWindow : Window
             _clientManager.PrivacyScreenStateChanged += OnPrivacyScreenStateChanged;
             _clientManager.DisplaysChanged += OnDisplaysChanged;
 
-            await _clientManager.ConnectAsync(_serverId, _password, null, _webSocketToken, _clientId, _iceServers, _resumeToken);
+            await _clientManager.ConnectAsync(_serverId, _password, null, _webSocketToken, _clientId, _iceServers, _resumeToken, _e2eKey);
 
             _logger.LogInformation("Successfully connected to server {ServerId}", _serverId);
         }
@@ -317,11 +320,13 @@ public partial class ProjectionWindow : Window
         Dispatcher.UIThread.Invoke(async () =>
         {
             _logger.LogInformation("Disconnected: {Reason}", reason);
+            // A failed end-to-end check is a security warning, not an ordinary disconnect.
+            var intercepted = reason == ClientManager.BindFailedMessage;
             var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                "Connection Lost",
-                $"Disconnected: {reason}",
+                intercepted ? "Security Warning" : "Connection Lost",
+                intercepted ? reason : $"Disconnected: {reason}",
                 ButtonEnum.Ok,
-                MsBoxIcon.Info);
+                intercepted ? MsBoxIcon.Error : MsBoxIcon.Info);
             await msgBox.ShowWindowDialogAsync(this);
             Close();
         });
@@ -695,12 +700,24 @@ public partial class ProjectionWindow : Window
     /// - Avalonia: using (var fb = bitmap.Lock()) { Marshal.Copy(data, 0, fb.Address, size) }
     ///   The Lock() returns an ILockedFramebuffer that auto-unlocks on Dispose.
     /// </summary>
-    private void OnFrameReceived(object? sender, VideoFrameReceivedEventArgs frame)
-    {
-        _logger.LogDebug("[ProjectionWindow] Frame {Width}x{Height}, {Size} bytes", frame.Width, frame.Height, frame.FrameData.Length);
+    private VideoFrameReceivedEventArgs? _pendingFrame; // newest decoded frame the UI thread has not drawn yet
 
-        Dispatcher.UIThread.Invoke(() =>
+    private void OnFrameReceived(object? sender, VideoFrameReceivedEventArgs received)
+    {
+        _logger.LogDebug("[ProjectionWindow] Frame {Width}x{Height}, {Size} bytes", received.Width, received.Height, received.FrameData.Length);
+
+        // Post, never Invoke: this runs on the decode thread, inside the native decoder. Invoke would park that thread
+        // until the UI thread is free, and the UI thread may be busy closing this window and disposing the decoder.
+        // Only the newest frame is kept, so a slow UI thread skips frames instead of queueing them without limit.
+        if (Interlocked.Exchange(ref _pendingFrame, received) != null)
         {
+            return; // a render is already posted; it will pick up this newer frame
+        }
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            var frame = Interlocked.Exchange(ref _pendingFrame, null);
+            if (frame == null) return;
             try
             {
                 // The bitmap must match the sender's screen size. A fixed 1920x1080 buffer showed a sheared,

@@ -16,6 +16,9 @@ internal static class DataChannelPolicy
     // Sent by: web viewer remote-control.js (authorization_request), .NET viewer ClientManager.cs (clipboard).
     private static readonly Dictionary<string, SessionCapabilities> ProtocolMessages = new(StringComparer.Ordinal)
     {
+        // None on purpose: the only message an unverified peer may send (see DataChannelManager.GrantedCapabilities),
+        // so it has to pass without any grant. Every other message stays behind a grant that unverified peers lack.
+        ["e2e_bind"] = SessionCapabilities.None,
         ["authorization_request"] = SessionCapabilities.View,
         ["clipboard"] = SessionCapabilities.Clipboard,
         ["clipboard_subscribe"] = SessionCapabilities.Clipboard,

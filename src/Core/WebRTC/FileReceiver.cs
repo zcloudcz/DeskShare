@@ -40,6 +40,16 @@ public sealed class FileReceiver : IDisposable
     private long _lastActivity;
     private bool _disposed;
 
+    // Bumped (under _gate) by every Abort. A message judged for a peer carries the generation of that moment; once the
+    // peer is gone (Abort), its late messages carry an old number and are dropped, so they cannot start an orphan
+    // transfer that would answer "busy" to the next viewer.
+    private long _generation;
+
+    // Replies and events produced while _gate is held. They are run AFTER the lock is released (Flush): sending goes
+    // through the peer's lock, and an event handler can do anything, so neither may run inside _gate.
+    private readonly List<Action> _outbox = new();
+    private Func<string, bool>? _callSend; // reply route of the message being handled (see Handle)
+
     /// <summary>State of the single transfer in flight.</summary>
     private sealed class Transfer
     {
@@ -48,6 +58,7 @@ public sealed class FileReceiver : IDisposable
         public required long Size;
         public required string PartPath;
         public required FileStream Stream;
+        public required Func<string, bool> Send; // replies of THIS transfer go to the peer that started it
         public readonly IncrementalHash Hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         public long NextSeq;
         public long Received;
@@ -71,6 +82,12 @@ public sealed class FileReceiver : IDisposable
     /// <summary>The folder files are saved into (full path).</summary>
     public string Folder => _folder;
 
+    /// <summary>
+    /// Current peer generation. Read it when a message is accepted for a peer and pass it to <see cref="Handle"/>.
+    /// Lock-free read on purpose: callers read it while holding the peer's lock, where taking _gate is not allowed.
+    /// </summary>
+    public long Generation => Interlocked.Read(ref _generation);
+
     /// <summary>Raised after a file was verified and saved.</summary>
     public event EventHandler<ReceivedFile>? FileReceived;
 
@@ -78,14 +95,20 @@ public sealed class FileReceiver : IDisposable
     /// Handles one parsed file_* message. The capability check already happened in the data channel policy.
     /// Never throws for bad peer input: it answers with file_reject / file_error instead.
     /// </summary>
-    public void Handle(string type, JsonElement root)
+    /// <param name="send">Where replies to this message go; defaults to the receiver's own sender. A transfer keeps
+    /// the route of the message that started it, so a late timeout reply cannot reach a different viewer.</param>
+    /// <param name="generation"><see cref="Generation"/> read when the message was accepted; null skips the check.
+    /// The message is dropped when an <see cref="Abort"/> happened since.</param>
+    public void Handle(string type, JsonElement root, Func<string, bool>? send = null, long? generation = null)
     {
         lock (_gate)
         {
-            if (_disposed)
+            if (_disposed || (generation is { } g && g != _generation))
             {
-                return;
+                return; // disposed, or the peer this message belongs to was aborted meanwhile
             }
+
+            _callSend = send ?? _send;
 
             try
             {
@@ -105,13 +128,49 @@ public sealed class FileReceiver : IDisposable
                 Fail(id, "io_error");
             }
         }
+
+        Flush();
     }
 
-    /// <summary>Drops the transfer in flight and deletes its .part file (viewer disconnected).</summary>
+    // Runs the queued replies/events outside _gate.
+    private void Flush()
+    {
+        Action[] pending;
+        lock (_gate)
+        {
+            if (_outbox.Count == 0)
+            {
+                return;
+            }
+
+            pending = _outbox.ToArray();
+            _outbox.Clear();
+        }
+
+        foreach (var action in pending)
+        {
+            try { action(); }
+            catch (Exception ex) { _logger.Warning(ex, "File transfer reply failed"); }
+        }
+    }
+
+    // Queues a reply through the route of the active transfer (or of the current message when there is none).
+    private void Reply(string json, Func<string, bool>? via = null)
+    {
+        var route = via ?? _active?.Send ?? _callSend ?? _send;
+        _outbox.Add(() => route(json));
+    }
+
+    /// <summary>
+    /// Drops the transfer in flight and deletes its .part file (viewer disconnected), and invalidates every
+    /// <see cref="Generation"/> handed out so far, in one step under the gate: no late message of the old peer can
+    /// slip in between.
+    /// </summary>
     public void Abort()
     {
         lock (_gate)
         {
+            Interlocked.Increment(ref _generation);
             if (_active != null)
             {
                 _logger.Information("File transfer aborted: {Name}", _active.SafeName);
@@ -168,10 +227,10 @@ public sealed class FileReceiver : IDisposable
         Directory.CreateDirectory(_folder);
         var (stream, partPath) = CreatePartFile(_folder, safeName);
 
-        _active = new Transfer { Id = id, SafeName = safeName, Size = size, PartPath = partPath, Stream = stream };
+        _active = new Transfer { Id = id, SafeName = safeName, Size = size, PartPath = partPath, Stream = stream, Send = _callSend ?? _send };
         TouchActivity();
         _logger.Information("Receiving file: {Name}, {Size} bytes", safeName, size);
-        _send(JsonSerializer.Serialize(new { type = "file_accept", id }));
+        Reply(JsonSerializer.Serialize(new { type = "file_accept", id }));
     }
 
     private void HandleChunk(JsonElement root)
@@ -248,8 +307,9 @@ public sealed class FileReceiver : IDisposable
         _active = null;
         _idleTimer.Change(Timeout.Infinite, Timeout.Infinite);
         _logger.Information("File received: {Name}, {Size} bytes", savedAs, size);
-        _send(JsonSerializer.Serialize(new { type = "file_done", id, savedAs }));
-        FileReceived?.Invoke(this, new ReceivedFile(savedAs, finalPath, size));
+        Reply(JsonSerializer.Serialize(new { type = "file_done", id, savedAs }));
+        var received = new ReceivedFile(savedAs, finalPath, size);
+        _outbox.Add(() => FileReceived?.Invoke(this, received));
     }
 
     private void HandleCancel(JsonElement root)
@@ -288,10 +348,12 @@ public sealed class FileReceiver : IDisposable
             _logger.Warning("File transfer timed out: {Name}", _active.SafeName);
             Fail(_active.Id, "timeout");
         }
+
+        Flush();
     }
 
     private void Reject(string id, string reason) =>
-        _send(JsonSerializer.Serialize(new { type = "file_reject", id, reason }));
+        Reply(JsonSerializer.Serialize(new { type = "file_reject", id, reason }));
 
     /// <summary>Reports the error to the viewer and removes the partial file.</summary>
     private void Fail(string? id, string reason)
@@ -301,10 +363,11 @@ public sealed class FileReceiver : IDisposable
             _logger.Warning("File transfer failed: {Name}, reason {Reason}", _active.SafeName, reason);
         }
 
+        var route = _active?.Send; // the route must be read before Discard() clears the transfer
         Discard();
         if (id != null)
         {
-            _send(JsonSerializer.Serialize(new { type = "file_error", id, reason }));
+            Reply(JsonSerializer.Serialize(new { type = "file_error", id, reason }), route);
         }
     }
 

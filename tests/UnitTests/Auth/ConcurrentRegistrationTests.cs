@@ -63,7 +63,9 @@ public sealed class ConcurrentRegistrationTests : IDisposable
 
         Assert.Equal(1, handler.MaxInFlight);                    // never two requests at once
         Assert.Equal(2, handler.Passkeys.Count);
-        Assert.Equal(service.CurrentPasskey, handler.Passkeys[^1]); // the server's last word is the current passkey
+        // The server's last word is the current passkey, as the authKey derived from it (the server never sees the passkey).
+        Assert.Equal(E2EBinding.DeriveKeys(service.CurrentPasskey!, config.ServerId).AuthKey, handler.Passkeys[^1]);
+        Assert.DoesNotContain(service.CurrentPasskey!, handler.Passkeys);
     }
 
     public void Dispose()

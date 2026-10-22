@@ -701,8 +701,12 @@ public partial class MainWindow : Window
             var nonce = Guid.NewGuid().ToString();
             var timestamp = DateTime.UtcNow;
 
+            // The server never gets the passkey: it gets authKey, derived from it. The matching e2eKey stays on this
+            // machine and is used to check, end to end, that nobody sits between us and the sender (see E2EBinding).
+            var keys = DeskShare.Core.Auth.E2EBinding.DeriveKeys(passkey, serverId);
+
             var signature = DeskShare.Core.Auth.RequestSigningService.SignRequest(
-                serverId, passkey, timestamp, nonce);
+                serverId, keys.AuthKey, timestamp, nonce);
 
             _logger.LogInformation(
                 "Signing authentication request | ServerId: {ServerId} | Nonce: {Nonce} | Timestamp: {Timestamp}",
@@ -711,7 +715,7 @@ public partial class MainWindow : Window
             var authRequest = new DeskShare.Core.Auth.ClientAuthenticationMessage
             {
                 ServerId = serverId,
-                Passkey = passkey,
+                Passkey = keys.AuthKey,
                 ClientId = clientId,
                 Timestamp = timestamp,
                 Nonce = nonce,
@@ -746,7 +750,7 @@ public partial class MainWindow : Window
                 ?? throw new InvalidOperationException("ClientManager not available");
 
             var projectionWindow = new ProjectionWindow(
-                serverId, password, clientManager, authResult.WebSocketToken, clientId, authResult.IceServers, authResult.ResumeToken);
+                serverId, password, clientManager, authResult.WebSocketToken, clientId, authResult.IceServers, authResult.ResumeToken, keys.E2EKey);
 
             _activeClientConnections++;
             UpdateTabAvailability();

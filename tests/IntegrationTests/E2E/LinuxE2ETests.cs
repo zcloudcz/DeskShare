@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using DeskShare.Core;
+using DeskShare.Core.Auth;
 using DeskShare.Core.Models;
 using DeskShare.Desktop.Shared.Services;
 
@@ -293,6 +294,26 @@ public class LinuxE2ETests
             Assert.Equal(realPasswd, File.ReadAllBytes("/etc/passwd")); // the real system file is untouched
         }
         finally { File.Delete(path); Directory.Delete(folder, recursive: true); }
+    }
+
+    [E2EFact]
+    public async Task ViewerWithWrongE2EKey_IsDisconnected_AndGetsNoFrames()
+    {
+        using var sender = await SenderProcess.StartAsync(remoteControl: true);
+        var wrongKey = E2EBinding.DeriveKeys("WRONGKEY9", sender.ServerId).E2EKey;
+
+        // The signaling server accepts this viewer (the authKey is right), like a server that relays a man in the middle.
+        var frames = 0;
+        string? reason = null;
+        using var client = await Viewer.ConnectAsync(sender, (_, _) => Interlocked.Increment(ref frames), e2eKeyOverride: wrongKey);
+        client.Disconnected += (_, r) => reason ??= r;
+
+        // The sender drops the peer whose binding does not verify; the viewer then reports the failed check.
+        var dropped = await XServer.WaitUntilAsync(() => !client.IsConnected, TimeSpan.FromSeconds(45));
+
+        Assert.True(dropped, $"Viewer was not disconnected\n{sender.Output}\n{Viewer.LogText()}");
+        Assert.Equal(0, Volatile.Read(ref frames));
+        Assert.Contains("end-to-end check failed", sender.Output);
     }
 
     [E2EFact]
