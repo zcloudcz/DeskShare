@@ -23,6 +23,9 @@ services:
       dockerfile: docker/e2e/Dockerfile
     depends_on:
       - signaling
+    volumes:
+      # Perf report (perf.md / perf.json) lands here for CI upload.
+      - ./TestResults/e2e:/results
     environment:
       DESKSHARE_E2E_SIGNALING: ws://signaling:5151/signal
       # Optional dotnet test filter for local runs, e.g. E2E_FILTER=FullyQualifiedName~RemoteControlEnabled

@@ -45,7 +45,7 @@ public sealed class SenderProcess : IDisposable
     private volatile string? _serverId;
     private volatile string? _passkey;
 
-    private SenderProcess(bool remoteControl)
+    private SenderProcess(bool remoteControl, string? display)
     {
         var psi = new ProcessStartInfo("dotnet")
         {
@@ -53,6 +53,7 @@ public sealed class SenderProcess : IDisposable
             RedirectStandardError = true,
             UseShellExecute = false
         };
+        if (display != null) psi.Environment["DISPLAY"] = display;
         psi.ArgumentList.Add(SenderDll);
         psi.ArgumentList.Add($"--Signaling:ServerUrl={SignalingWsUrl}");
         psi.ArgumentList.Add($"--Security:EnableRemoteControl={(remoteControl ? "true" : "false")}");
@@ -73,9 +74,9 @@ public sealed class SenderProcess : IDisposable
     public string Output { get { lock (_output) return string.Join('\n', _output); } }
 
     /// <summary>Starts the sender and waits until it has registered and is streaming.</summary>
-    public static async Task<SenderProcess> StartAsync(bool remoteControl)
+    public static async Task<SenderProcess> StartAsync(bool remoteControl, string? display = null)
     {
-        var sender = new SenderProcess(remoteControl);
+        var sender = new SenderProcess(remoteControl, display);
         try
         {
             // The service starts in the background (the console "Streaming." line comes too early), so wait for its own

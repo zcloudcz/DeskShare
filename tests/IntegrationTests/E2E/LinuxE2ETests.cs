@@ -10,6 +10,8 @@ namespace DeskShare.IntegrationTests.E2E;
 /// display, real ClientManager as the viewer. Run through docker-compose.e2e.yml; skipped elsewhere.
 /// Xvfb is 1280x720 and its screen is covered by an RGB(0x30,0x70,0xB0) window started in docker/e2e/run.sh.
 /// </summary>
+// One collection: the tests share the X displays, the pointer and the signaling rate limits, so they must not overlap.
+[Collection("LinuxE2E")]
 public class LinuxE2ETests
 {
     private const int ScreenWidth = 1280, ScreenHeight = 720;

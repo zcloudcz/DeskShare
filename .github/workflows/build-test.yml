@@ -59,6 +59,18 @@ jobs:
       - name: Run Linux E2E tests
         run: docker compose -f docker-compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e
 
+      - name: Publish perf report
+        if: always()
+        run: cat TestResults/e2e/perf.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload perf report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-perf
+          path: TestResults/e2e/
+          if-no-files-found: ignore
+
       - name: Stop containers
         if: always()
         run: docker compose -f docker-compose.e2e.yml down
