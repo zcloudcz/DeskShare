@@ -78,6 +78,7 @@ public class ScreenSenderService : IHostedService, IDisposable
         _httpClient = httpClient;
         _serverIdPath = serverIdPath;
         _ownerSecretStore = ownerSecretStore;
+        VideoEncoderFactory.Preference = VideoEncoderFactory.ParsePreference(configuration.Codec);
     }
 
     /// <summary>
@@ -689,6 +690,12 @@ public class ScreenSenderConfiguration
     /// scaling costs about what the encoder saves, so a cap only pays off on slow CPUs or slow links).
     /// </summary>
     public int MaxOutputWidth { get; set; } = 0;
+
+    /// <summary>
+    /// Video codec: "vp8" (default, software), "h264" (hardware H.264 when a GPU encoder initialises, VP8 as
+    /// fallback) or "auto" (same, but a missing GPU encoder is not a warning).
+    /// </summary>
+    public string Codec { get; set; } = "vp8";
 
     /// <summary>
     /// Adapter index for screen capture (0 = primary GPU).
