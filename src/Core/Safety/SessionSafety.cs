@@ -1,0 +1,141 @@
+using DeskShare.Core.Auth;
+using DeskShare.Core.Interfaces;
+using DeskShare.Core.Platforms.Windows;
+using DeskShare.Core.WebRTC;
+using Microsoft.Extensions.Logging;
+using SIPSorcery.Net;
+
+namespace DeskShare.Core.Safety;
+
+/// <summary>
+/// Glue between the sender's session and the three "anti-scam" features: the approval of control and of unattended
+/// connections (decided in <see cref="DataChannelManager"/>), the on-screen session banner and the audit log.
+/// The decisions themselves live in small testable classes (<see cref="ControlApprovalGate"/>, <see cref="AdmissionPolicy"/>,
+/// <see cref="SessionStateModel"/>, <see cref="AuditEvents"/>); this class only connects events to them.
+/// </summary>
+internal sealed class SessionSafety : IDisposable
+{
+    private readonly WebRTCSessionWithInput _session;
+    private readonly IAuditSink _audit;
+    private readonly SessionStateModel _model = new();
+    private IDisposable? _banner;
+    private PeerContext? _active; // the verified viewer we count as "the session"
+    private string _sessionId = "";
+
+    /// <param name="controlPrompt">Asks the person at the computer for control (attended app). Without one a requested control is always denied.</param>
+    /// <param name="admission">Unattended agent: asks before a viewer may connect. Null admits every verified viewer.</param>
+    public SessionSafety(
+        WebRTCSessionWithInput session,
+        ScreenSenderConfiguration config,
+        IAuditSink audit,
+        ILogger logger,
+        Func<CancellationToken, Task<bool>>? controlPrompt,
+        Func<CancellationToken, Task<bool>>? admission)
+    {
+        _session = session;
+        _audit = audit;
+        var dataChannel = session.DataChannel;
+
+        if (config.EnableRemoteControl && config.RequireControlApproval)
+        {
+            // No prompt means nobody can say yes, so control stays off (fail closed).
+            var gate = new ControlApprovalGate(controlPrompt ?? (_ => Task.FromResult(false)));
+            gate.Resolved += outcome =>
+            {
+                if (outcome == ApprovalOutcome.Denied) _audit.Write(AuditEvents.ControlDenied("the person at the computer clicked Deny"));
+                else if (outcome == ApprovalOutcome.TimedOut) _audit.Write(AuditEvents.ControlDenied("nobody answered in time"));
+            };
+            dataChannel.ControlApproval = gate;
+        }
+        dataChannel.AdmitViewer = admission;
+
+        dataChannel.ViewerVerified += (_, peer) => OnViewerStarted(peer);
+        dataChannel.ViewerEnded += (_, peer) => OnViewerEnded(peer);
+        dataChannel.ClipboardMessageReceived += (_, message) => _audit.Write(AuditEvents.ClipboardTransfer(toHost: true, message.SizeBytes));
+        dataChannel.ClipboardSent += size => _audit.Write(AuditEvents.ClipboardTransfer(toHost: false, size));
+        if (dataChannel.PrivacyScreen is { } privacy)
+            privacy.StateChanged += (on, reason) => _audit.Write(AuditEvents.PrivacyScreen(on, reason));
+        session.FileReceived += (_, file) => _audit.Write(AuditEvents.FileReceived(file.SavedAs, file.SizeBytes));
+
+        if (session.InputController is { } input)
+        {
+            input.AuthorizationStateChanged += (_, state) => OnControlStateChanged(state);
+            _model.ControlChanged(input.AuthorizationState == InputAuthorizationState.Authorized);
+        }
+
+        if (!config.ShowSessionBanner)
+        {
+            // The host opted out (for example a headless server nobody sits at).
+        }
+        else if (OperatingSystem.IsWindows())
+        {
+            var banner = new SessionBanner(StopControl, EndSession);
+            _banner = banner;
+            _model.Changed += banner.Update;
+        }
+        else
+        {
+            logger.LogInformation("The session banner is only available on Windows; no banner is shown.");
+        }
+    }
+
+    /// <summary>For the display switch callback of the service (the switch happens outside the data channel manager).</summary>
+    public void DisplaySwitched(string displayName) => _audit.Write(AuditEvents.DisplaySwitched(displayName));
+
+    private void OnViewerStarted(PeerContext peer)
+    {
+        // A new id per viewer connection, short enough to read in the Event Viewer.
+        var id = Guid.NewGuid().ToString("N")[..8];
+        _sessionId = id;
+        _active = peer;
+        _audit.Write(AuditEvents.SessionStarted(id, RemoteAddressOf(peer), endToEndVerified: true));
+        _model.ViewerStarted();
+
+        // The data channel usually reports the end, but a connection that dies without closing its channel only changes state.
+        if (peer.Connection is { } connection)
+        {
+            connection.onconnectionstatechange += state =>
+            {
+                if (state is RTCPeerConnectionState.closed or RTCPeerConnectionState.failed)
+                    OnViewerEnded(peer);
+            };
+        }
+    }
+
+    private void OnViewerEnded(PeerContext peer)
+    {
+        // Both the channel and the connection can report the end of the same session: count it once.
+        if (Interlocked.CompareExchange(ref _active, null, peer) != peer)
+            return;
+        _audit.Write(AuditEvents.SessionEnded(_sessionId));
+        _model.ViewerEnded();
+    }
+
+    private void OnControlStateChanged(InputAuthorizationState state)
+    {
+        _model.ControlChanged(state == InputAuthorizationState.Authorized);
+        switch (state)
+        {
+            case InputAuthorizationState.Authorized: _audit.Write(AuditEvents.ControlGranted()); break;
+            case InputAuthorizationState.Revoked: _audit.Write(AuditEvents.ControlRevoked()); break;
+        }
+    }
+
+    // Banner button: the viewer keeps watching, but its mouse and keyboard stop working (and it is told).
+    private void StopControl() => _session.RevokeInputAuthorization();
+
+    // Banner button: hang up on the viewer. Its next connection attempt starts the whole check (and approval) again.
+    private void EndSession()
+    {
+        try { _active?.Connection?.close(); }
+        catch (Exception) { /* already closed */ }
+    }
+
+    private static string? RemoteAddressOf(PeerContext peer)
+    {
+        try { return peer.Connection?.VideoDestinationEndPoint?.Address.ToString(); }
+        catch (Exception) { return null; }
+    }
+
+    public void Dispose() => _banner?.Dispose();
+}

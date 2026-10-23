@@ -811,7 +811,7 @@ function setupDataChannel(session, channel) {
                 clearTimeout(bindTimer);
                 showVideo(session);
                 // The host's authorization_response also tells us whether it shares the clipboard.
-                sessions.send(session, { type: 'authorization_request', timestamp: new Date().toISOString() });
+                sessions.send(session, { type: 'authorization_request', interactive: false, timestamp: new Date().toISOString() });
             }, failBinding), () => { if (sessions.isCurrent(session)) failBinding(); });
             return;
         }
@@ -824,15 +824,25 @@ function setupDataChannel(session, channel) {
             // Before the user clicked "Enable control" the answer only tells what the host allows
             // (control and clipboard); afterwards it is the answer to the control request.
             if (!(remoteControl && remoteControl.enabled)) {
-                hostAllowsControl = message.authorized === true;
+                // "requestable": the host asks its user to approve control when we click "Enable control".
+                hostAllowsControl = message.authorized === true || message.requestable === true;
                 if (hostAllowsControl) updateStatus('Remote control is available. Click "Enable control".', 'success');
                 updateControlButton();
             } else {
                 remoteControl.handleAuthorizationResponse(message);
-                updateStatus(message.authorized ? 'Remote control active' : 'The host did not allow remote control',
+                updateStatus(message.authorized ? 'Remote control active'
+                    : message.reason === 'timeout' ? 'Nobody at the computer answered the control request'
+                    : 'The host did not allow remote control',
                     message.authorized ? 'success' : 'error');
                 updateControlButton();
             }
+        } else if (message.type === 'approval_pending') {
+            // The host's user is being asked (to allow the connection, or the control we requested).
+            updateStatus(message.what === 'connection'
+                ? 'Waiting for the person at the computer to allow the connection...'
+                : 'Waiting for the person at the computer to allow control...', 'info');
+        } else if (message.type === 'approval_denied') {
+            updateStatus('The person at the computer did not allow the connection', 'error');
         } else if (message.type === 'displays') {
             onDisplays(message);
         } else if (message.type === 'privacy_screen_state') {

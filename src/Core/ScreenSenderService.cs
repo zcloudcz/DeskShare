@@ -9,6 +9,7 @@ using DeskShare.Core.Interfaces;
 using DeskShare.Core.Auth;
 using DeskShare.Core.Platform;
 using DeskShare.Core.Signaling;
+using DeskShare.Core.Safety;
 using Serilog;
 using System.Net.Http.Json;
 using SIPSorcery.Net;
@@ -34,6 +35,17 @@ public class ScreenSenderService : IHostedService, IDisposable
     private WebRTCSessionWithInput? _webrtcSessionWithInput;
     private CapturePipeline? _pipeline;
     private bool _disposed;
+    private SessionSafety? _safety;
+
+    /// <summary>
+    /// Asks the person at the computer whether a viewer may take control (attended app, see
+    /// <see cref="ScreenSenderConfiguration.RequireControlApproval"/>). The token is cancelled when the question is moot or
+    /// times out; the prompt must then close. Set before <see cref="StartAsync"/>.
+    /// </summary>
+    public Func<CancellationToken, Task<bool>>? ControlApprovalPrompt { get; set; }
+
+    /// <summary>Unattended agent: asks whether a verified viewer may connect at all. Null admits everyone. Set before <see cref="StartAsync"/>.</summary>
+    public Func<CancellationToken, Task<bool>>? ViewerAdmission { get; set; }
 
     // One-time WebSocket upgrade token received from /register (see ServerRegistrationResponse)
     private string? _webSocketToken;
@@ -288,6 +300,7 @@ public class ScreenSenderService : IHostedService, IDisposable
                 }
                 ApplyIceServers(_webrtcSessionWithInput.VideoSource);
                 _webrtcSessionWithInput.EnableE2EBinding(_e2eKeys);
+                _safety = new SessionSafety(_webrtcSessionWithInput, _configuration, AuditLog.Default, _logger, ControlApprovalPrompt, ViewerAdmission);
 
                 inputController.SetCapturedDisplay(InputRectFor(displays[currentDisplay]));
                 _webrtcSessionWithInput.DataChannel.DisplaySwitcher = new DisplaySwitchService(displays, currentDisplay, async (display, stillAllowed) =>
@@ -301,6 +314,7 @@ public class ScreenSenderService : IHostedService, IDisposable
                     {
                         inputController.SetCapturedDisplay(InputRectFor(display));
                         _logger.LogInformation("Now sharing {Display}", display.Name);
+                        _safety?.DisplaySwitched(display.Name);
                     });
                     return switched;
                 });
@@ -335,9 +349,13 @@ public class ScreenSenderService : IHostedService, IDisposable
                 // asks AuthorizationRequested for consent; the checkbox is that consent, so answer yes.
                 if (_configuration.EnableRemoteControl)
                 {
-                    _logger.LogInformation("Auto-authorizing remote control (user enabled via checkbox)");
                     inputController.AuthorizationRequested = _ => true;
-                    await inputController.RequestAuthorizationAsync("auto-authorized", stoppingToken);
+                    // With RequireControlApproval the checkbox only means "viewers may ask": control is authorized later, per session.
+                    if (!_configuration.RequireControlApproval)
+                    {
+                        _logger.LogInformation("Auto-authorizing remote control (user enabled via checkbox)");
+                        await inputController.RequestAuthorizationAsync("auto-authorized", stoppingToken);
+                    }
                 }
 
                 videoSource = _webrtcSessionWithInput.VideoSource;
@@ -393,6 +411,8 @@ public class ScreenSenderService : IHostedService, IDisposable
             _pipeline?.Dispose();
             _pipeline = null;
 
+            _safety?.Dispose();
+            _safety = null;
             _webrtcSessionWithInput?.Dispose();
             _webrtcSessionWithInput = null;
 
@@ -800,6 +820,16 @@ public class ScreenSenderConfiguration
     /// We default to false (view-only) to prevent unauthorized control.
     /// </remarks>
     public bool EnableRemoteControl { get; set; } = false;
+
+    /// <summary>
+    /// With <see cref="EnableRemoteControl"/>: the person at the computer must approve control for every session
+    /// (a "viewer wants to control your computer" question, auto-deny after 30 s). Then <see cref="EnableRemoteControl"/>
+    /// only means "viewers may ask". The attended desktop app turns this on; the headless default is off.
+    /// </summary>
+    public bool RequireControlApproval { get; set; } = false;
+
+    /// <summary>Show the "remote session" bar while a viewer is connected (Windows only; other systems skip it).</summary>
+    public bool ShowSessionBanner { get; set; } = true;
 
     /// <summary>
     /// Whether the connected viewer may exchange text clipboard content with this machine (both directions).

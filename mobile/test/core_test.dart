@@ -77,10 +77,12 @@ void main() {
       expect(passkeyExpiration(DateTime.utc(2026, 1, 1, 0, 0, 45)), DateTime.utc(2026, 1, 1, 0, 1, 30));
     });
 
-    test('credential wire value is the raw passkey today (T3 adapter point)', () {
+    test('credential wire value is the HKDF auth key, never the raw passkey', () {
       final c = PasskeyCredential('abc-def-ghj');
       expect(c.isComplete, isTrue);
-      expect(c.wireValue('server-123456789'), 'ABCDEFGHJ');
+      // Independent value from Node's crypto.hkdfSync.
+      expect(c.wireValue('server-123456789'), '8DafN8Ubr2W_rLEAy-YwIWFK_Ccy2mIQY9U4FC1bvuc');
+      expect(c.wireValue('server-123456789'), isNot(contains('ABCDEFGHJ')));
       expect(PasskeyCredential('ABC').isComplete, isFalse);
     });
   });
@@ -203,7 +205,7 @@ void main() {
 
       final grant = await api.authenticate(
         serverId: 'server-123456789',
-        credential: PasskeyCredential('abc-def-ghj'),
+        authKey: PasskeyCredential('abc-def-ghj').wireValue('server-123456789'),
         clientId: 'client-x',
         now: DateTime.utc(2026, 1, 2, 3, 4, 5, 123),
         nonce: '11111111-2222-3333-4444-555555555555',
@@ -213,11 +215,11 @@ void main() {
       final body = jsonDecode(seen.body) as Map<String, dynamic>;
       expect(body, {
         'ServerId': 'server-123456789',
-        'Passkey': 'ABCDEFGHJ',
+        'Passkey': '8DafN8Ubr2W_rLEAy-YwIWFK_Ccy2mIQY9U4FC1bvuc',
         'ClientId': 'client-x',
         'Timestamp': '2026-01-02T03:04:05.123Z',
         'Nonce': '11111111-2222-3333-4444-555555555555',
-        'Signature': 'rkC13GYZpPHAnZ9rOeTV4as/12QacJIj7ETqRwwxFS4=',
+        'Signature': 'jWWHYEH/plKy7MVlDlRsMxI/L++oXjX1uY34KxiH830=',
       });
       expect(grant.webSocketToken, 'tok');
       expect(grant.iceServers.single.toRtc(), {'urls': ['stun:a'], 'username': 'u', 'credential': 'c'});
@@ -245,8 +247,16 @@ void main() {
     test('401 becomes a readable error', () async {
       final api = SignalingApi('wss://example.test/signal', client: MockClient((_) async => http.Response('', 401)));
       expect(
-        api.authenticate(serverId: 'server-123456789', credential: PasskeyCredential('ABCDEFGHJ'), clientId: 'c'),
+        api.authenticate(serverId: 'server-123456789', authKey: 'k', clientId: 'c'),
         throwsA(isA<SignalingException>().having((e) => e.message, 'message', 'Invalid passkey or server ID')),
+      );
+    });
+
+    test('authenticate 429 says too many attempts', () async {
+      final api = SignalingApi('wss://example.test/signal', client: MockClient((_) async => http.Response('', 429)));
+      await expectLater(
+        api.authenticate(serverId: 'server-123456789', authKey: 'k', clientId: 'c'),
+        throwsA(isA<SignalingException>().having((e) => e.message, 'message', 'Too many attempts, try again later')),
       );
     });
 
@@ -281,7 +291,7 @@ void main() {
         ownerSecret: 'secret',
       );
       expect(body['ServerId'], 'server-123456789');
-      expect(body['Passkey'], 'ABCDEFGHJ');
+      expect(body['Passkey'], '8DafN8Ubr2W_rLEAy-YwIWFK_Ccy2mIQY9U4FC1bvuc');
       expect(body['RemoteControlEnabled'], true);
       expect(body['TrustClientPermanent'], false);
       expect(body['OwnerSecret'], 'secret');
