@@ -152,17 +152,28 @@ public sealed class EncoderResolutionChangeTests
         });
         encoder.ExternalVideoSourceRawSample(33, 640, 480, new byte[640 * 480 * 3 / 2], VideoPixelFormatsEnum.I420);
 
-        var push = Task.Run(() => encoder.ExternalVideoSourceRawSample(33, 1280, 720, new byte[1280 * 720 * 3 / 2], VideoPixelFormatsEnum.I420));
-        Assert.True(inFactory.Wait(TimeSpan.FromSeconds(5)));
-        var dispose = Task.Run(encoder.Dispose); // e.g. the client is removed on a connection state change
-        Assert.False(dispose.Wait(100)); // it has to wait for the recreate instead of racing it
+        // Dedicated threads instead of Task.Run: on a busy CI agent the thread pool may not start a work item for
+        // seconds while other tests block pool threads, which made this test time out.
+        var push = StartThread(() => encoder.ExternalVideoSourceRawSample(33, 1280, 720, new byte[1280 * 720 * 3 / 2], VideoPixelFormatsEnum.I420));
+        Assert.True(inFactory.Wait(TimeSpan.FromSeconds(30)));
+        var disposeStarted = new ManualResetEventSlim();
+        var dispose = StartThread(() => { disposeStarted.Set(); encoder.Dispose(); }); // e.g. the client is removed on a connection state change
+        Assert.True(disposeStarted.Wait(TimeSpan.FromSeconds(30)));
+        Assert.False(dispose.Join(200)); // it has to wait for the recreate instead of racing it
         release.Set();
 
-        Assert.True(Task.WhenAll(push, dispose).Wait(TimeSpan.FromSeconds(5)));
+        Assert.True(push.Join(TimeSpan.FromSeconds(30)) && dispose.Join(TimeSpan.FromSeconds(30)));
         Assert.Equal(2, created.Count);
         Assert.All(created, f => Assert.True(f.Disposed));
 
         encoder.ExternalVideoSourceRawSample(33, 320, 240, new byte[320 * 240 * 3 / 2], VideoPixelFormatsEnum.I420); // after Dispose: ignored
         Assert.Equal(2, created.Count);
+    }
+
+    private static Thread StartThread(Action action)
+    {
+        var t = new Thread(() => action()) { IsBackground = true };
+        t.Start();
+        return t;
     }
 }
