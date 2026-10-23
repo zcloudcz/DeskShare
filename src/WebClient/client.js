@@ -780,7 +780,7 @@ function setupDataChannel(session, channel) {
                 clearTimeout(bindTimer);
                 showVideo(session);
                 // The host's authorization_response also tells us whether it shares the clipboard.
-                sessions.send(session, { type: 'authorization_request', timestamp: new Date().toISOString() });
+                sessions.send(session, { type: 'authorization_request', interactive: false, timestamp: new Date().toISOString() });
             }, failBinding), () => { if (sessions.isCurrent(session)) failBinding(); });
             return;
         }

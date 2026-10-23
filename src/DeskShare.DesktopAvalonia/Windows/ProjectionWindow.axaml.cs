@@ -129,6 +129,7 @@ public partial class ProjectionWindow : Window
             _clientManager.HostAllowsPrivacyScreenChanged += OnHostAllowsPrivacyScreenChanged;
             _clientManager.PrivacyScreenStateChanged += OnPrivacyScreenStateChanged;
             _clientManager.DisplaysChanged += OnDisplaysChanged;
+            _clientManager.ControlRequestStateChanged += OnControlRequestStateChanged;
 
             await _clientManager.ConnectAsync(_serverId, _password, null, _webSocketToken, _clientId, _iceServers, _resumeToken, _e2eKey);
 
@@ -183,6 +184,26 @@ public partial class ProjectionWindow : Window
     {
         Dispatcher.UIThread.Invoke(() => SendFileButton.IsVisible = allowed);
     }
+
+    // "Request control": visible while the host's user can approve it and control is not granted yet. The text says where we are.
+    private void OnControlRequestStateChanged(object? sender, ControlRequestState state)
+    {
+        Dispatcher.UIThread.Invoke(() =>
+        {
+            RequestControlButton.IsVisible = state != ControlRequestState.Unavailable && state != ControlRequestState.Granted;
+            RequestControlButton.IsEnabled = state is ControlRequestState.Requestable or ControlRequestState.Denied or ControlRequestState.TimedOut;
+            RequestControlButton.Content = state switch
+            {
+                ControlRequestState.Pending => "Waiting for the person at the computer...",
+                ControlRequestState.Denied => "Control was denied. Request again",
+                ControlRequestState.TimedOut => "Nobody answered. Request again",
+                ControlRequestState.UpdateRequired => "Update DeskShare to request control",
+                _ => "Request control",
+            };
+        });
+    }
+
+    private void RequestControl_Click(object? sender, RoutedEventArgs e) => _clientManager.RequestControl();
 
     // The button exists only while the host offers its privacy screen and authorized control.
     private void OnHostAllowsPrivacyScreenChanged(object? sender, bool allowed)
@@ -685,6 +706,7 @@ public partial class ProjectionWindow : Window
         _clientManager.HostAllowsPrivacyScreenChanged -= OnHostAllowsPrivacyScreenChanged;
         _clientManager.PrivacyScreenStateChanged -= OnPrivacyScreenStateChanged;
         _clientManager.DisplaysChanged -= OnDisplaysChanged;
+        _clientManager.ControlRequestStateChanged -= OnControlRequestStateChanged;
         _fileSendCts?.Cancel();
 
         _clientManager.DisconnectAsync().GetAwaiter().GetResult();

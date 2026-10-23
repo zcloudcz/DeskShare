@@ -57,7 +57,32 @@ public sealed class PeerContext
         {
             if (_dead) return false;
             _verified = true;
+            _sessionActive = true;
             return true;
+        }
+    }
+
+    private bool _sessionActive;
+    private int _epoch;
+
+    /// <summary>
+    /// Counts how many viewer sessions of this connection ended (<see cref="EndSession"/>). A control grant that is still being
+    /// made remembers the value it started with and is rolled back if it changed: the viewer it was for is gone.
+    /// </summary>
+    public int Epoch => Volatile.Read(ref _epoch);
+
+    /// <summary>
+    /// Ends the viewer session of this connection, whatever its verification state is now (a retired connection is already
+    /// unverified, so "was it verified?" cannot tell). Returns true only the first time after a session started.
+    /// </summary>
+    public bool EndSession()
+    {
+        lock (_lock)
+        {
+            Interlocked.Increment(ref _epoch);
+            var was = _sessionActive;
+            _sessionActive = false;
+            return was;
         }
     }
 

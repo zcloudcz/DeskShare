@@ -74,7 +74,18 @@ public sealed class DataChannelManager : IDisposable
             ? SessionCapabilities.None
             : SessionCapabilities.View
               | HostGrantedCapabilities
-              | (_inputController?.IsEnabled == true ? SessionCapabilities.Control : SessionCapabilities.None);
+              | (_inputController?.IsEnabled == true && OwnsControl(peer) ? SessionCapabilities.Control : SessionCapabilities.None);
+
+    // With ControlApproval the input controller's authorization is global, but it was approved for ONE viewer. Everyone else
+    // is denied Control even while the controller is authorized (a stale or late grant can never serve another viewer).
+    private PeerContext? _controlPeer;
+    private readonly object _controlLock = new();
+
+    private bool OwnsControl(PeerContext peer)
+    {
+        if (ControlApproval == null) return true; // headless: the host's checkbox decided at start
+        lock (_controlLock) return ReferenceEquals(_controlPeer, peer);
+    }
 
     /// <summary>
     /// Checks the viewer's <c>e2e_bind</c> mac and returns the sender's own mac for the reply, or null when the
@@ -97,13 +108,12 @@ public sealed class DataChannelManager : IDisposable
     {
         ArgumentNullException.ThrowIfNull(peer);
         var previous = _peer;
-        var wasVerified = previous.IsVerified;
+        // In production the video source retires the old context BEFORE it calls us, so "was it verified" is already false
+        // here. The session end is therefore tracked on the context itself (PeerContext.EndSession), not derived from IsVerified.
         previous.Retire(); // first: waits for a message handler of the old peer that is still running
         _peer = peer;
         DetachDataChannel();
-        CancelPendingQuestions();
-        if (wasVerified)
-            EndViewerSession(previous);
+        EndViewerSession(previous);
     }
 
     /// <summary>
@@ -142,11 +152,23 @@ public sealed class DataChannelManager : IDisposable
 
     private void EndViewerSession(PeerContext peer)
     {
+        var wasActive = peer.EndSession(); // also invalidates a control grant that is still in flight for this peer
         CancelPendingQuestions();
-        // Control approved for this viewer ends with its session: the next one has to be approved again.
-        if (ControlApproval != null && _inputController?.IsEnabled == true)
-            _inputController.RevokeAuthorization();
-        ViewerEnded?.Invoke(this, peer);
+        if (ControlApproval != null)
+        {
+            // Control approved for this viewer ends with its session: the next one has to be approved again. Only when nobody
+            // else owns it now (a late end of an old peer must not take control away from the newer, approved viewer).
+            bool revoke;
+            lock (_controlLock)
+            {
+                if (ReferenceEquals(_controlPeer, peer)) _controlPeer = null;
+                revoke = _controlPeer == null;
+            }
+            if (revoke && _inputController?.IsEnabled == true)
+                _inputController.RevokeAuthorization();
+        }
+        if (wasActive)
+            ViewerEnded?.Invoke(this, peer);
     }
 
     /// <summary>Raised with the verified peer's context when the viewer's e2e binding verified.</summary>
@@ -283,6 +305,7 @@ public sealed class DataChannelManager : IDisposable
         _channelOpenedAt = DateTime.UtcNow;
         peer.Channel = dataChannel;
         peer.Revoke(); // a new channel is a new viewer session: it must subscribe again and prove the e2e binding again
+        EndViewerSession(peer); // ...and the control approved for the previous channel's viewer does not carry over
         FileReceiver?.Abort();
         _privacyScreen?.Disable("channel_replaced");
 
@@ -432,12 +455,10 @@ public sealed class DataChannelManager : IDisposable
         _logger.Information("DataChannel closed: Label={Label}, ID={Id}",
             _dataChannel?.label, _dataChannel?.id);
         var peer = _peer;
-        var wasVerified = peer.IsVerified;
         peer.Revoke();
         FileReceiver?.Abort();
         _privacyScreen?.Disable("channel_closed");
-        if (wasVerified)
-            EndViewerSession(peer);
+        EndViewerSession(peer);
 
         ChannelClosed?.Invoke(this, EventArgs.Empty);
     }
@@ -607,7 +628,10 @@ public sealed class DataChannelManager : IDisposable
                 // authorized = true.
                 // With a ControlApproval, "interactive" requests (the viewer's user clicked "Enable control") ask the person at
                 // the computer; the first, automatic request only learns what is possible ("requestable").
-                var interactive = root.TryGetProperty("interactive", out var interactiveElement) && interactiveElement.ValueKind == JsonValueKind.True;
+                // Clients that know the protocol always send the field ("interactive": false for the automatic probe); one that omits it
+                // is an older viewer that can never ask, so it is told to update instead of silently staying view-only.
+                var hasInteractive = root.TryGetProperty("interactive", out var interactiveElement);
+                var interactive = hasInteractive && interactiveElement.ValueKind == JsonValueKind.True;
                 bool authorized = _inputController?.IsEnabled ?? false;
                 var approval = ControlApproval;
                 _logger.Information("Remote control requested by viewer, authorized: {Authorized}, interactive: {Interactive}", authorized, interactive);
@@ -619,8 +643,9 @@ public sealed class DataChannelManager : IDisposable
                         _ = RunControlApprovalAsync(peer, approval);
                     };
                 }
-                var requestable = approval != null && !authorized;
-                return () => SendAuthorizationResponse(peer, authorized, granted, requestable);
+                var legacyViewer = approval != null && !hasInteractive && !authorized;
+                var requestable = approval != null && !authorized && !legacyViewer;
+                return () => SendAuthorizationResponse(peer, authorized, granted, requestable, legacyViewer ? "client_update_required" : null);
             }
 
             if (messageType == "switch_display")
@@ -728,13 +753,22 @@ public sealed class DataChannelManager : IDisposable
             var authorized = false;
             if (outcome == ApprovalOutcome.Allowed && _inputController != null)
             {
+                // The controller may take a while to grant (the Windows one waits about a second). The viewer can leave meanwhile,
+                // so remember which session this grant is for and check again, under the same lock the session end takes.
+                var epoch = peer.Epoch;
                 authorized = await _inputController.RequestAuthorizationAsync("approved-by-host").ConfigureAwait(false);
-                if (peer.IsRetired)
+                var gone = false;
+                var rollBack = false;
+                lock (_controlLock)
                 {
-                    // The viewer left in the instant between the click and the authorization: take it back.
-                    if (authorized) _inputController.RevokeAuthorization();
-                    return;
+                    gone = peer.IsRetired || peer.Epoch != epoch;
+                    if (authorized && !gone)
+                        _controlPeer = peer; // from here on only this viewer has Control
+                    else
+                        rollBack = authorized && _controlPeer == null; // nobody else owns the authorization: take it back
                 }
+                if (rollBack) _inputController.RevokeAuthorization();
+                if (gone) return; // the viewer left: nobody to tell
             }
 
             SendAuthorizationResponse(peer, authorized, GrantedFor(peer),

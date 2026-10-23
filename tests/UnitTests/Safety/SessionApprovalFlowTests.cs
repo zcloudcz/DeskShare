@@ -17,7 +17,7 @@ public sealed class SessionApprovalFlowTests
 {
     private const string BindJson = """{"type":"e2e_bind","v":1,"role":"viewer","mac":"abcd"}""";
     private const string AskInteractive = """{"type":"authorization_request","interactive":true}""";
-    private const string AskAutomatic = """{"type":"authorization_request"}""";
+    private const string AskAutomatic = """{"type":"authorization_request","interactive":false}""";
     private static readonly TimeSpan Guard = TimeSpan.FromSeconds(10);
 
     private static IInputController Controller()
@@ -105,6 +105,20 @@ public sealed class SessionApprovalFlowTests
     }
 
     [Fact]
+    public async Task OldViewerWithoutTheInteractiveField_CanNeverAsk()
+    {
+        // Answered with reason "client_update_required"; it must not open a prompt or get control.
+        var asked = 0;
+        var (manager, controller) = VerifiedManager(_ => { Interlocked.Increment(ref asked); return Task.FromResult(true); });
+
+        manager.ProcessInputMessage("""{"type":"authorization_request","timestamp":"x"}""");
+        await Task.Delay(200);
+
+        Assert.Equal(0, asked);
+        Assert.False(controller.IsEnabled);
+    }
+
+    [Fact]
     public async Task ViewerGoneWhilePending_AllowIsIgnored_AndTheQuestionIsClosed()
     {
         var asking = new TaskCompletionSource<CancellationToken>();
@@ -134,6 +148,94 @@ public sealed class SessionApprovalFlowTests
 
         Assert.False(controller.IsEnabled);
         Assert.Equal(1, ended);
+    }
+
+    [Fact]
+    public async Task ProductionOrder_RetireBeforeBeginPeer_StillRevokesControl_AndNextViewerDoesNotInheritIt()
+    {
+        // SIPSorceryVideoSource retires the old context BEFORE PeerContextChanged -> BeginPeer.
+        var controller = Controller();
+        var manager = new DataChannelManager(Substitute.For<ILogger>(), controller) { VerifyViewerBind = (_, _) => "sender-mac" };
+        manager.ControlApproval = new ControlApprovalGate(_ => Task.FromResult(true));
+        var peerA = new PeerContext();
+        manager.BeginPeer(peerA);
+        var ended = 0;
+        manager.ViewerEnded += (_, _) => ended++;
+        manager.ProcessInputMessage(BindJson);
+        manager.ProcessInputMessage(AskInteractive);
+        await WaitUntil(() => manager.GrantedCapabilities.HasFlag(DeskShare.Core.Models.SessionCapabilities.Control));
+
+        peerA.Retire();
+        manager.BeginPeer(new PeerContext());
+
+        Assert.False(controller.IsEnabled);
+        Assert.Equal(1, ended);
+        // the next viewer verifies, and still has no Control without its own approval
+        manager.ProcessInputMessage(BindJson);
+        Assert.True(manager.PeerVerified);
+        Assert.False(manager.GrantedCapabilities.HasFlag(DeskShare.Core.Models.SessionCapabilities.Control));
+    }
+
+    [Fact]
+    public async Task SlowAuthorization_ChannelClosesMeanwhile_GrantIsRolledBack()
+    {
+        // Like WindowsInputController: the grant completes about a second after Allow.
+        var enabled = false;
+        var controller = Substitute.For<IInputController>();
+        controller.IsEnabled.Returns(_ => enabled);
+        controller.RequestAuthorizationAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(async _ =>
+        {
+            await Task.Delay(400);
+            enabled = true;
+            return true;
+        });
+        controller.When(c => c.RevokeAuthorization()).Do(_ => enabled = false);
+        var manager = new DataChannelManager(Substitute.For<ILogger>(), controller) { VerifyViewerBind = (_, _) => "sender-mac" };
+        manager.ControlApproval = new ControlApprovalGate(_ => Task.FromResult(true));
+        var peerA = new PeerContext();
+        manager.BeginPeer(peerA);
+        manager.ProcessInputMessage(BindJson);
+
+        manager.ProcessInputMessage(AskInteractive);
+        await Task.Delay(100);               // the controller is still "Pending"
+        peerA.Retire();
+        manager.BeginPeer(new PeerContext()); // viewer replaced / closed during the delay
+        await Task.Delay(700);               // the grant completes now
+
+        Assert.False(enabled);
+        Assert.False(manager.GrantedCapabilities.HasFlag(DeskShare.Core.Models.SessionCapabilities.Control));
+    }
+
+    [Fact]
+    public async Task SlowAuthorization_StaleGrantDoesNotTakeControlAwayFromTheNewlyApprovedViewer()
+    {
+        var enabled = false;
+        var controller = Substitute.For<IInputController>();
+        controller.IsEnabled.Returns(_ => enabled);
+        controller.RequestAuthorizationAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(async _ =>
+        {
+            await Task.Delay(300);
+            enabled = true;
+            return true;
+        });
+        controller.When(c => c.RevokeAuthorization()).Do(_ => enabled = false);
+        var manager = new DataChannelManager(Substitute.For<ILogger>(), controller) { VerifyViewerBind = (_, _) => "sender-mac" };
+        manager.ControlApproval = new ControlApprovalGate(_ => Task.FromResult(true));
+        var peerA = new PeerContext();
+        manager.BeginPeer(peerA);
+        manager.ProcessInputMessage(BindJson);
+        manager.ProcessInputMessage(AskInteractive);
+        await Task.Delay(100);
+        peerA.Retire();
+        manager.BeginPeer(new PeerContext()); // B arrives while A's grant is in flight
+        manager.ProcessInputMessage(BindJson);
+        manager.ProcessInputMessage(AskInteractive);
+
+        await WaitUntil(() => manager.GrantedCapabilities.HasFlag(DeskShare.Core.Models.SessionCapabilities.Control));
+        await Task.Delay(500); // A's stale completion has happened by now
+
+        Assert.True(enabled);
+        Assert.True(manager.GrantedCapabilities.HasFlag(DeskShare.Core.Models.SessionCapabilities.Control));
     }
 
     [Fact]
