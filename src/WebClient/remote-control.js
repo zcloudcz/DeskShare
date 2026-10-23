@@ -115,6 +115,7 @@ class RemoteControl {
     requestAuthorization() {
         const message = {
             type: 'authorization_request',
+            interactive: true, // the user clicked "Enable control": the host may ask its user to approve
             timestamp: new Date().toISOString()
         };
 
