@@ -997,6 +997,10 @@ public class ClientManager : IDisposable
                 await DisconnectAsync();
                 break;
 
+            case SignalingMessageType.Identify:
+                // The server's "you are connected" answer; WebSocketSignaler already consumed it while connecting.
+                break;
+
             default:
                 _logger.LogWarning("Unknown signaling message type: {Type}", message.Type);
                 break;
