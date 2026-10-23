@@ -777,4 +777,25 @@ public sealed class MediaFoundationFallbackTests
             sink.Dispose();
         }
     }
+
+    [Fact]
+    public void Vp8FfmpegFallbackThatFailsToStart_IsRetried_AndCatchesUpFromTheKeyframe()
+    {
+        var ffmpeg = Substitute.For<IVideoSink>();
+        var attempts = 0;
+        var sink = new MediaFoundationVideoSink(NullLogger.Instance, _ => new FakeDecoder(_ => true),
+            () => ++attempts == 1 ? throw new InvalidOperationException("FFmpeg not ready") : ffmpeg, H264Path.MediaFoundationGpu)
+        { CreateVp8 = () => throw new InvalidOperationException("no libvpx") };
+        try
+        {
+            Feed(sink, Ep, 0, Vp8Key(1), Vp8);     // libvpx missing -> FFmpeg, whose creation fails (logged, not thrown)
+            Feed(sink, Ep, 1, Vp8Delta(2), Vp8);   // retried: works now, gets the keyframe first, then this frame
+
+            Assert.Equal(2, attempts);
+            var tags = ffmpeg.ReceivedCalls().Where(c => c.GetMethodInfo().Name == nameof(IVideoSink.GotVideoFrame))
+                .Select(c => ((byte[])c.GetArguments()[2]!)[5]).ToList();
+            Assert.Equal(new byte[] { 1, 2 }, tags);
+        }
+        finally { sink.Dispose(); }
+    }
 }

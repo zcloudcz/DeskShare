@@ -674,8 +674,15 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
                 return;
             }
         }
-        EnsureFfmpeg();
-        _ffmpeg!.GotVideoFrame(ep, ts, frame, format);
+        if (_ffmpeg == null)
+        {
+            // FFmpeg's creation failed when VP8 switched to it: retry, then catch up from the last keyframe (this frame
+            // is in the GOP already). Throws again if it still fails; the caller logs it and the next frame retries.
+            EnsureFfmpeg();
+            Replay(FeedReplay);
+            return;
+        }
+        _ffmpeg.GotVideoFrame(ep, ts, frame, format);
     }
 
     private void EnsureFfmpeg()
