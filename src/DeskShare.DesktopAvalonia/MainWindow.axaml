@@ -110,9 +110,16 @@
         </Style>
     </Window.Styles>
 
-    <Grid>
+    <Grid RowDefinitions="Auto,*">
+        <!-- ZCLOUD account bar: only shown when the signaling server offers accounts (see MainWindow.Accounts.cs) -->
+        <StackPanel x:Name="AccountBar" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10"
+                    Margin="20,8,20,0" IsVisible="False">
+            <TextBlock x:Name="AccountNameText" VerticalAlignment="Center" FontSize="12" Foreground="#495057"/>
+            <Button x:Name="SignInButton" Content="Sign in" Classes="secondaryButton" Padding="12,6" Click="SignIn_Click"/>
+        </StackPanel>
+
         <!-- Main Tab Control -->
-        <TabControl x:Name="MainTabControl" Padding="10">
+        <TabControl x:Name="MainTabControl" Grid.Row="1" Padding="10">
 
             <!-- SERVER MODE TAB -->
             <TabItem x:Name="ServerTab" Header="Server Mode">
@@ -298,6 +305,19 @@
                             </StackPanel>
                         </Border>
 
+                        <!-- My devices: shown when signed in (see MainWindow.Accounts.cs) -->
+                        <Border x:Name="AddDeviceCard" Classes="card" Margin="10,20,10,10" IsVisible="False">
+                            <StackPanel>
+                                <TextBlock Text="My devices" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                                <TextBlock Text="Lists this computer under your ZCLOUD account, so you can find it from your other devices. Connecting still needs the passkey or password."
+                                           FontSize="11" Foreground="#495057" TextWrapping="Wrap" Margin="0,0,0,10"/>
+                                <Button x:Name="AddDeviceButton" Content="Add this computer to my devices" Classes="modernButton"
+                                        IsEnabled="False" Click="AddThisComputer_Click"/>
+                                <TextBlock x:Name="AddDeviceStatusText" Text="Start the server first." FontSize="11"
+                                           Foreground="#868E96" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                            </StackPanel>
+                        </Border>
+
                         <!-- Settings Card -->
                         <Border x:Name="ServerSettingsCard" Classes="card" Margin="10,20,10,10">
                             <StackPanel>
@@ -398,6 +418,36 @@
                         <TextBlock Text="Connect to a remote screen sharing server"
                                  FontSize="14"
                                  Foreground="#666666"/>
+
+                        <!-- My devices: shown when signed in; a click fills the Server ID below (see MainWindow.Accounts.cs) -->
+                        <Border x:Name="MyDevicesCard" Classes="card" Margin="0,20,0,0" IsVisible="False">
+                            <StackPanel>
+                                <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,10">
+                                    <TextBlock Text="My devices" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                    <Button Grid.Column="1" Content="Refresh" Classes="secondaryButton" Padding="12,6"
+                                            Margin="0,0,10,0" Click="RefreshMyDevices_Click"/>
+                                    <Button Grid.Column="2" x:Name="RemoveDeviceButton" Content="Remove" Classes="secondaryButton"
+                                            Padding="12,6" IsEnabled="False" Click="RemoveMyDevice_Click"/>
+                                </Grid>
+                                <ListBox x:Name="MyDevicesListBox" BorderThickness="0" Background="Transparent"
+                                         SelectionMode="Single" MaxHeight="200" SelectionChanged="MyDevices_SelectionChanged">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid ColumnDefinitions="*,Auto">
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding Name}" FontSize="14" FontWeight="SemiBold"/>
+                                                    <TextBlock Text="{Binding Detail}" FontSize="11" Foreground="#666666" FontFamily="Consolas"/>
+                                                </StackPanel>
+                                                <TextBlock Grid.Column="1" Text="{Binding Status}" FontSize="12"
+                                                           Foreground="{Binding StatusBrush}" VerticalAlignment="Center"/>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                                <TextBlock x:Name="MyDevicesStatusText" FontSize="11" Foreground="#868E96" TextWrapping="Wrap"
+                                           Margin="0,8,0,0" Text="Click a device to fill in its Server ID. The passkey or password is still needed."/>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
 
                     <!-- Saved Connections List -->

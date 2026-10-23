@@ -142,6 +142,8 @@ public partial class App : Application
             services.AddTransient<ClientManager>();
             services.AddSingleton<ConnectionManager>();
             services.AddSingleton<OnlineStatusMonitor>();
+            // Optional ZCLOUD Login ("My devices"); stays invisible when the server has accounts off.
+            services.AddSingleton<AccountSession>();
 
             // Build DI container
             ServiceProvider = services.BuildServiceProvider();

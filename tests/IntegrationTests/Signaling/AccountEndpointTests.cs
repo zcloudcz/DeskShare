@@ -238,6 +238,33 @@ public class AccountEndpointTests : IClassFixture<AccountsServerFactory>
     }
 
     [Fact]
+    public async Task DesktopAccountApi_ClaimsListsAndRemoves_AgainstTheRealServer()
+    {
+        var api = new DeskShare.Desktop.Shared.Services.AccountApi(_accounts.CreateClient());
+        Assert.Equal("desktop-client-id", (await api.GetConfigAsync())!.ClientIdDesktop);
+        Assert.Null(await new DeskShare.Desktop.Shared.Services.AccountApi(_accountsOff.CreateClient()).GetConfigAsync());
+
+        var oid = NewOid();
+        var token = _accounts.Token(oid);
+        var serverId = NewServerId();
+        await RegisterAsync(serverId, "owner-secret-1");
+        var key = DeviceClaimProof.ClaimKey("owner-secret-1");
+
+        Assert.Equal(serverId, await api.ClaimAsync(token, "Laptop", unattended: true,
+            (accountKey, ts, nonce) => Task.FromResult((serverId, DeviceClaimProof.Compute(key, serverId, accountKey, ts, nonce)))));
+        var device = Assert.Single((await api.GetDevicesAsync(token)).Devices);
+        Assert.Equal(("Laptop", true, true), (device.Name, device.Online, device.Unattended));
+
+        // A server error surfaces as its message, e.g. a wrong proof.
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => api.ClaimAsync(token, "x", false,
+            (_, _, _) => Task.FromResult((serverId, Convert.ToBase64String(new byte[32])))));
+        Assert.Equal("Invalid proof", ex.Message);
+
+        await api.RemoveAsync(token, serverId);
+        Assert.Empty((await api.GetDevicesAsync(token)).Devices);
+    }
+
+    [Fact]
     public async Task AnonymousFlow_IsUnchanged_WithAccountsOn()
     {
         var serverId = NewServerId();

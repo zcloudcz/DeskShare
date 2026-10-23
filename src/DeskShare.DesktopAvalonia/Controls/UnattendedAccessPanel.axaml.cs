@@ -7,8 +7,11 @@ using Avalonia.Controls;
 using Avalonia.Interactivity;
 using DeskShare.Core;
 using DeskShare.Core.Auth;
+using Avalonia.Threading;
 using DeskShare.DesktopAvalonia.Dialogs;
+using DeskShare.DesktopAvalonia.Services;
 using DeskShare.Unattended;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace DeskShare.DesktopAvalonia.Controls;
 
@@ -24,12 +27,18 @@ public partial class UnattendedAccessPanel : UserControl
     private static string SourceDir => Path.Combine(AppContext.BaseDirectory, "service");
     private static string SourceExe => Path.Combine(SourceDir, UnattendedPaths.ServiceExeName);
 
+    // Optional ZCLOUD account: "Add to my devices" is shown only while signed in.
+    private readonly AccountSession? _account = App.ServiceProvider?.GetService<AccountSession>();
+
     public UnattendedAccessPanel()
     {
         InitializeComponent();
         IsVisible = OperatingSystem.IsWindows();
         if (IsVisible)
+        {
+            if (_account != null) _account.Changed += (_, _) => Dispatcher.UIThread.Post(() => Refresh());
             Refresh();
+        }
     }
 
     private void Refresh(string? note = null)
@@ -49,6 +58,7 @@ public partial class UnattendedAccessPanel : UserControl
         UpdateButton.IsEnabled = packaged;
         DisableButton.IsVisible = installed != null;
         PasswordPanel.IsVisible = installed != null;
+        AddToMyDevicesButton.IsVisible = installed != null && _account?.IsSignedIn == true;
         if (!packaged && installed == null)
             StatusText.Text += " (service files are not part of this build)";
     }
@@ -96,36 +106,71 @@ public partial class UnattendedAccessPanel : UserControl
         string note;
         try
         {
-            // Random name, one instance, only this user can open it. The helper checks that this process serves it
-            // (--owner-pid), and we accept only the helper process we started (see PasswordSetup for the why).
-            var pipeName = "DeskShare-set-password-" + Guid.NewGuid().ToString("N");
-            await using var pipe = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
-                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-            using var p = Process.Start(Elevated(InstalledExe, $"{PasswordSetup.SetVerb} --pipe {pipeName} --owner-pid {Environment.ProcessId}"))
-                ?? throw new InvalidOperationException("the service helper did not start");
-
-            // The helper may fail before it connects (then it just exits), so wait for whichever comes first.
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-            var accept = PasswordSetup.AcceptHelperAsync(pipe, p.Id, PipePeer.ClientProcessId, cts.Token);
-            if (await Task.WhenAny(accept, p.WaitForExitAsync(cts.Token)) != accept)
-                throw new InvalidOperationException("the service helper ended early, see %ProgramData%\\DeskShare\\logs\\service.log");
-            await accept; // rethrows a cancellation (timeout)
-
-            using var reader = new StreamReader(pipe, leaveOpen: true);
-            using var writer = new StreamWriter(pipe, leaveOpen: true);
             // PBKDF2 takes about a second: off the UI thread.
-            var serverId = await PasswordSetup.RunAppAsync(reader, writer, id => Task.Run(() =>
-            {
-                var keys = E2EBinding.FromPermanentPassword(password, id);
-                return (keys.AuthKey, keys.E2EKey);
-            }), cts.Token);
-            await p.WaitForExitAsync(cts.Token);
+            var serverId = await ExchangeWithHelperAsync(PasswordSetup.SetVerb, (reader, writer, ct) =>
+                PasswordSetup.RunAppAsync(reader, writer, id => Task.Run(() =>
+                {
+                    var keys = E2EBinding.FromPermanentPassword(password, id);
+                    return (keys.AuthKey, keys.E2EKey);
+                }), ct));
             note = $"password set, connect with Server ID {ServerIdGenerator.FormatServerIdForDisplay(serverId)} and the password";
         }
         catch (Win32Exception) { note = "cancelled"; } // user declined the UAC prompt
         catch (OperationCanceledException) { note = "password not set (timed out)"; }
         catch (Exception ex) when (ex is InvalidOperationException or IOException) { note = "password not set: " + ex.Message; }
         SetPasswordButton.IsEnabled = ClearPasswordButton.IsEnabled = true;
+        Refresh(note);
+    }
+
+    /// <summary>
+    /// Starts the INSTALLED helper elevated with <paramref name="verb"/> and runs <paramref name="exchange"/> with it over
+    /// a private pipe. Used by "Set password..." and "Add to my devices".
+    /// </summary>
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static async Task<T> ExchangeWithHelperAsync<T>(string verb, Func<StreamReader, StreamWriter, CancellationToken, Task<T>> exchange)
+    {
+        // Random name, one instance, only this user can open it. The helper checks that this process serves it
+        // (--owner-pid), and we accept only the helper process we started (see PasswordSetup for the why).
+        var pipeName = $"DeskShare-{verb}-" + Guid.NewGuid().ToString("N");
+        await using var pipe = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+        using var p = Process.Start(Elevated(InstalledExe, $"{verb} --pipe {pipeName} --owner-pid {Environment.ProcessId}"))
+            ?? throw new InvalidOperationException("the service helper did not start");
+
+        // The helper may fail before it connects (then it just exits), so wait for whichever comes first.
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var accept = PasswordSetup.AcceptHelperAsync(pipe, p.Id, PipePeer.ClientProcessId, cts.Token);
+        if (await Task.WhenAny(accept, p.WaitForExitAsync(cts.Token)) != accept)
+            throw new InvalidOperationException("the service helper ended early, see %ProgramData%\\DeskShare\\logs\\service.log");
+        await accept; // rethrows a cancellation (timeout)
+
+        using var reader = new StreamReader(pipe, leaveOpen: true);
+        using var writer = new StreamWriter(pipe, leaveOpen: true);
+        var result = await exchange(reader, writer, cts.Token);
+        await p.WaitForExitAsync(cts.Token);
+        return result;
+    }
+
+    // Binds the unattended agent's Server ID (not this app's) to the signed-in account. Only the elevated helper can
+    // read the agent's owner secret, so it makes the proof (see ClaimProofSetup); the secret never comes here.
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")] // the panel is only shown on Windows
+    private async void OnAddToMyDevices(object? sender, RoutedEventArgs e)
+    {
+        if (_account is not { IsSignedIn: true }) return;
+        AddToMyDevicesButton.IsEnabled = false;
+        string note;
+        try
+        {
+            var token = await _account.GetTokenAsync();
+            var serverId = await _account.Api.ClaimAsync(token, Environment.MachineName + " (unattended)", unattended: true,
+                (accountKey, timestamp, nonce) => ExchangeWithHelperAsync(ClaimProofSetup.Verb, (reader, writer, ct) =>
+                    ClaimProofSetup.RunAppAsync(reader, writer, accountKey, timestamp, nonce, ct)));
+            note = $"added {ServerIdGenerator.FormatServerIdForDisplay(serverId)} to your devices";
+        }
+        catch (Win32Exception) { note = "cancelled"; } // user declined the UAC prompt
+        catch (OperationCanceledException) { note = "not added (timed out)"; }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or HttpRequestException) { note = "not added: " + ex.Message; }
+        AddToMyDevicesButton.IsEnabled = true;
         Refresh(note);
     }
 
