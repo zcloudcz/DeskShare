@@ -189,12 +189,14 @@ public sealed class MediaFoundationDecoderTests(ITestOutputHelper output)
         if (encoder == null) return;
         var stream = Encode(encoder, 640, 480, 6, _ => ColourBlocks(640, 480));
 
-        using var sink = new VideoSink(NullLogger<VideoSink>.Instance, MfSink());
+        var mf = MfSink();
+        using var sink = new VideoSink(NullLogger<VideoSink>.Instance, mf);
         VideoFrameReceivedEventArgs? received = null;
         sink.FrameReceived += (_, e) => received = e;
         var format = new VideoFormat(VideoCodecsEnum.H264, 102);
         foreach (var au in stream)
             sink.GotVideoFrame(new IPEndPoint(IPAddress.Loopback, 1), 0, au, format);
+        Assert.True(mf.WaitIdle(TimeSpan.FromSeconds(10))); // decoding is asynchronous
 
         Assert.NotNull(received);
         Assert.Equal((640, 480), (received!.Width, received.Height));
@@ -210,10 +212,12 @@ public sealed class MediaFoundationDecoderTests(ITestOutputHelper output)
         using (var vpx = new SIPSorceryMedia.Encoders.VpxVideoEncoder())
             vp8 = vpx.EncodeVideo(w, h, ColourBlocks(w, h), VideoPixelFormatsEnum.I420, VideoCodecsEnum.VP8);
 
-        using var sink = new VideoSink(NullLogger<VideoSink>.Instance, MfSink());
+        var mf = MfSink();
+        using var sink = new VideoSink(NullLogger<VideoSink>.Instance, mf);
         VideoFrameReceivedEventArgs? received = null;
         sink.FrameReceived += (_, e) => received = e;
         sink.GotVideoFrame(new IPEndPoint(IPAddress.Loopback, 1), 0, vp8, new VideoFormat(VideoCodecsEnum.VP8, 96));
+        Assert.True(mf.WaitIdle(TimeSpan.FromSeconds(10))); // decoding is asynchronous
 
         Assert.NotNull(received);
         Assert.Equal((w, h), (received!.Width, received.Height));
@@ -378,8 +382,12 @@ public sealed class MediaFoundationDecoderTests(ITestOutputHelper output)
         else
         {
             VideoSink sink;
+            MediaFoundationVideoSink? mfSink = null; // decodes on its own thread: the benchmark must wait for each frame
             if (name.StartsWith("MF"))
-                sink = new VideoSink(NullLogger<VideoSink>.Instance, MfSink(name.StartsWith("MF GPU") ? null : "MediaFoundationSoftware"));
+                {
+                mfSink = MfSink(name.StartsWith("MF GPU") ? null : "MediaFoundationSoftware");
+                sink = new VideoSink(NullLogger<VideoSink>.Instance, mfSink);
+            }
             else
             {
                 FFmpegInit.Initialise(FfmpegLogLevelEnum.AV_LOG_WARNING, FindFfmpegFolder());
@@ -390,7 +398,7 @@ public sealed class MediaFoundationDecoderTests(ITestOutputHelper output)
             }
             sink.FrameReceived += (_, _) => outFrames++;
             owner = sink;
-            decode = au => sink.GotVideoFrame(ep, 0, au, format);
+            decode = au => { sink.GotVideoFrame(ep, 0, au, format); mfSink?.WaitIdle(TimeSpan.FromSeconds(10)); };
         }
 
         using (owner)

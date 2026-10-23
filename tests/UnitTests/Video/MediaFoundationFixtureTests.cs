@@ -169,11 +169,13 @@ public sealed class MediaFoundationFixtureTests(ITestOutputHelper output)
     [MfFixtureFact]
     public void Vp8Fixture_DecodesWithTheSameColoursAsFfmpeg()
     {
-        using var sink = new VideoSink(NullLogger<VideoSink>.Instance, AutoSink());
+        var mf = AutoSink();
+        using var sink = new VideoSink(NullLogger<VideoSink>.Instance, mf);
         VideoFrameReceivedEventArgs? received = null;
         sink.FrameReceived += (_, e) => received = e;
         foreach (var frame in MfFixtures.Read(MfFixtures.Vp8))
             sink.GotVideoFrame(Ep, 0, frame, new VideoFormat(VideoCodecsEnum.VP8, 96));
+        Assert.True(mf.WaitIdle(TimeSpan.FromSeconds(10))); // decoding is asynchronous
 
         Assert.NotNull(received);
         Assert.Equal((320, 192), (received!.Width, received.Height));
@@ -194,6 +196,7 @@ public sealed class MediaFoundationFixtureTests(ITestOutputHelper output)
         CollectPictures(sink, pictures);
         foreach (var au in MfFixtures.Read(MfFixtures.H264Hd))
             sink.GotVideoFrame(Ep, 0, au, H264);
+        Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10))); // decoding is asynchronous
 
         output.WriteLine($"{pictures.Count} pictures out, path after decoding: {sink.CurrentPath}");
         Assert.NotEqual(H264Path.FFmpeg, sink.CurrentPath); // the attribute guarantees MF exists, so Auto must not fall to FFmpeg
@@ -252,6 +255,7 @@ public sealed class MediaFoundationFixtureTests(ITestOutputHelper output)
                 created[0].Decoder.Inner.SimulateDeviceLoss();
             }
             sink.GotVideoFrame(Ep, 0, stream[i], H264); // must not throw: the sink swallows and logs decoder errors
+            Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
         }
 
         output.WriteLine($"path after the loss: {sink.CurrentPath}, decoders created: {string.Join(", ", created.Select(c => c.Path))}, pictures: {pictures.Count}");
@@ -266,7 +270,8 @@ public sealed class MediaFoundationFixtureTests(ITestOutputHelper output)
         Assert.Equal((1920, 1080), (pictures[^1].W, pictures[^1].H));
         MediaFoundationDecoderTests.AssertColours(pictures[^1].Data, 1920, 1080);
 
-        sink.Dispose();
+        sink.Dispose(); // the decoder thread frees its decoders itself, so give it a moment
+        SpinWait.SpinUntil(() => created[1].Decoder.Disposed, TimeSpan.FromSeconds(5));
         Assert.True(created[1].Decoder.Disposed);
     }
 
@@ -294,12 +299,14 @@ public sealed class MediaFoundationFixtureTests(ITestOutputHelper output)
         const int lossAt = 10;
         for (var i = 0; i < lossAt; i++)
             sink.GotVideoFrame(Ep, 0, stream[i], H264);
+        Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10))); // decoding is asynchronous
         var before = pictures.Count;
         created[0].Decoder.Inner.SimulateDeviceLoss(failLoudly: false);
 
         // The fixture is short, so its inter frames are fed again until the watchdog limit is passed (the picture is static).
         for (var i = 0; i < MediaFoundationVideoSink.SilentUnitsBeforeStall + 15; i++)
             sink.GotVideoFrame(Ep, 0, stream[lossAt + i % (stream.Count - lossAt)], H264);
+        Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
 
         output.WriteLine($"path: {sink.CurrentPath}, pictures: {before} before the swap, {pictures.Count} in total");
         Assert.Equal(H264Path.MediaFoundationSoftware, sink.CurrentPath);

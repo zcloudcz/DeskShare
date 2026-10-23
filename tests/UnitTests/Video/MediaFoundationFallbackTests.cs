@@ -15,6 +15,13 @@ public sealed class MediaFoundationFallbackTests
     private static readonly IPEndPoint Ep = new(IPAddress.Loopback, 1);
     private static readonly VideoFormat H264 = new(VideoCodecsEnum.H264, 102);
 
+    // The sink decodes on its own thread; wait for it so the assertions see the result of each frame.
+    private static void Feed(MediaFoundationVideoSink sink, IPEndPoint ep, uint ts, byte[] data, VideoFormat format)
+    {
+        sink.GotVideoFrame(ep, ts, data, format);
+        Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)), "the decoder thread did not finish");
+    }
+
     // Annex B bytes with an IDR (key) or non-IDR slice NAL; content is irrelevant to the fakes.
     private static byte[] Key(byte tag) => new byte[] { 0, 0, 0, 1, 0x65, tag };
     private static byte[] Delta(byte tag) => new byte[] { 0, 0, 0, 1, 0x41, tag };
@@ -58,15 +65,15 @@ public sealed class MediaFoundationFallbackTests
         var software = new FakeDecoder(_ => true);
         var (sink, pictures) = Make(p => p == H264Path.MediaFoundationGpu ? gpu : software);
 
-        sink.GotVideoFrame(Ep, 0, Key(1), H264);     // failure 1: dropped
-        sink.GotVideoFrame(Ep, 1, Delta(2), H264);   // failure 2: dropped
+        Feed(sink, Ep, 0, Key(1), H264);     // failure 1: dropped
+        Feed(sink, Ep, 1, Delta(2), H264);   // failure 2: dropped
         Assert.Empty(pictures);
-        sink.GotVideoFrame(Ep, 2, Delta(3), H264);   // failure 3: step down, replay key + 2 deltas
+        Feed(sink, Ep, 2, Delta(3), H264);   // failure 3: step down, replay key + 2 deltas
 
         Assert.True(gpu.Disposed);
         Assert.Equal(new byte[] { 1, 2, 3 }, software.Seen);  // no new keyframe was needed
         Assert.Single(pictures);                               // only the newest picture is shown, not the burst
-        sink.GotVideoFrame(Ep, 3, Delta(4), H264);
+        Feed(sink, Ep, 3, Delta(4), H264);
         Assert.Equal(2, pictures.Count);
     }
 
@@ -78,7 +85,7 @@ public sealed class MediaFoundationFallbackTests
         var (sink, pictures) = Make(_ => gpu);
 
         for (byte i = 1; i <= 5; i++)
-            sink.GotVideoFrame(Ep, i, i == 1 ? Key(i) : Delta(i), H264);
+            Feed(sink, Ep, i, i == 1 ? Key(i) : Delta(i), H264);
 
         Assert.False(gpu.Disposed);
         Assert.Equal(4, pictures.Count);
@@ -90,7 +97,7 @@ public sealed class MediaFoundationFallbackTests
         var software = new FakeDecoder(_ => true);
         var (sink, pictures) = Make(p => p == H264Path.MediaFoundationGpu ? throw new InvalidOperationException("no D3D11") : software);
 
-        sink.GotVideoFrame(Ep, 0, Key(1), H264);
+        Feed(sink, Ep, 0, Key(1), H264);
 
         Assert.Single(pictures);
         Assert.Equal(new byte[] { 1 }, software.Seen);
@@ -104,8 +111,8 @@ public sealed class MediaFoundationFallbackTests
 
         // 3 failures on the GPU decoder and 3 on the software one (the replay of the first fails at once, then the live frames).
         for (byte i = 1; i <= 6; i++)
-            sink.GotVideoFrame(Ep, i, i == 1 ? Key(i) : Delta(i), H264);
-        sink.GotVideoFrame(Ep, 7, Delta(7), H264);
+            Feed(sink, Ep, i, i == 1 ? Key(i) : Delta(i), H264);
+        Feed(sink, Ep, 7, Delta(7), H264);
 
         ffmpeg.Received().GotVideoFrame(Ep, 7, Arg.Is<byte[]>(b => b[5] == 7), H264);
         ffmpeg.Received(1).GotVideoFrame(Ep, 1, Arg.Is<byte[]>(b => b[5] == 1), H264); // replayed from the keyframe
@@ -118,11 +125,11 @@ public sealed class MediaFoundationFallbackTests
         var software = new FakeDecoder(_ => true);
         var (sink, _) = Make(p => p == H264Path.MediaFoundationGpu ? gpu : software);
 
-        sink.GotVideoFrame(Ep, 0, Key(1), H264);
-        sink.GotVideoFrame(Ep, 1, Delta(2), H264);
-        sink.GotVideoFrame(Ep, 2, Key(3), H264);     // new GOP starts here
+        Feed(sink, Ep, 0, Key(1), H264);
+        Feed(sink, Ep, 1, Delta(2), H264);
+        Feed(sink, Ep, 2, Key(3), H264);     // new GOP starts here
         for (byte i = 4; i <= 6; i++)
-            sink.GotVideoFrame(Ep, i, Delta(i), H264);
+            Feed(sink, Ep, i, Delta(i), H264);
 
         Assert.Equal(new byte[] { 3, 4, 5, 6 }, software.Seen);
     }
@@ -135,8 +142,8 @@ public sealed class MediaFoundationFallbackTests
         var sink = new MediaFoundationVideoSink(NullLogger.Instance, _ => throw new InvalidOperationException("no MF"),
             () => ++attempts == 1 ? throw new InvalidOperationException("FFmpeg not ready") : ffmpeg, H264Path.MediaFoundationSoftware);
 
-        sink.GotVideoFrame(Ep, 0, Key(1), H264);   // MF cannot be created -> FFmpeg, whose creation fails (logged, not thrown)
-        sink.GotVideoFrame(Ep, 1, Delta(2), H264); // retried: works now, gets the keyframe and this frame
+        Feed(sink, Ep, 0, Key(1), H264);   // MF cannot be created -> FFmpeg, whose creation fails (logged, not thrown)
+        Feed(sink, Ep, 1, Delta(2), H264); // retried: works now, gets the keyframe and this frame
 
         Assert.Equal(2, attempts);
         ffmpeg.Received(1).GotVideoFrame(Ep, 0, Arg.Is<byte[]>(b => b[5] == 1), H264);
@@ -151,13 +158,13 @@ public sealed class MediaFoundationFallbackTests
         var (sink, pictures) = Make(p => p == H264Path.MediaFoundationGpu ? gpu : software);
         var limit = MediaFoundationVideoSink.SilentUnitsBeforeStall;
 
-        sink.GotVideoFrame(Ep, 0, Key(1), H264);
+        Feed(sink, Ep, 0, Key(1), H264);
         for (var i = 1; i < limit - 1; i++)
-            sink.GotVideoFrame(Ep, (uint)i, Delta(2), H264);
+            Feed(sink, Ep, (uint)i, Delta(2), H264);
         Assert.False(gpu.Disposed);                   // one unit short of the limit: still waiting
         Assert.Empty(software.Seen);
 
-        sink.GotVideoFrame(Ep, (uint)limit, Delta(3), H264);   // the limit is reached: step down without any exception
+        Feed(sink, Ep, (uint)limit, Delta(3), H264);   // the limit is reached: step down without any exception
 
         Assert.True(gpu.Disposed);
         Assert.Equal(limit, software.Seen.Count);     // key frame + everything since, no new keyframe needed
@@ -173,7 +180,7 @@ public sealed class MediaFoundationFallbackTests
 
         // A stream that joins mid-GOP: no picture is possible until the first IDR, however long that takes.
         for (var i = 0; i < MediaFoundationVideoSink.SilentUnitsBeforeStall * 2; i++)
-            sink.GotVideoFrame(Ep, (uint)i, Delta(2), H264);
+            Feed(sink, Ep, (uint)i, Delta(2), H264);
 
         Assert.False(gpu.Disposed);
         Assert.Equal(H264Path.MediaFoundationGpu, sink.CurrentPath);
@@ -185,10 +192,156 @@ public sealed class MediaFoundationFallbackTests
         var gpu = new FakeDecoder(_ => true);
         var (sink, _) = Make(_ => gpu);
 
-        sink.GotVideoFrame(Ep, 0, Key(1), H264);
+        Feed(sink, Ep, 0, Key(1), H264);
         for (var i = 1; i < MediaFoundationVideoSink.SilentUnitsBeforeStall * 3; i++)
-            sink.GotVideoFrame(Ep, (uint)i, Delta(2), H264);
+            Feed(sink, Ep, (uint)i, Delta(2), H264);
 
         Assert.False(gpu.Disposed);
+    }
+
+    // A decoder stuck in a native call: Decode blocks until released (the test releases it at the end so the thread can exit).
+    private sealed class HangingDecoder : IH264FrameDecoder
+    {
+        public readonly ManualResetEventSlim Release = new();
+        public readonly ManualResetEventSlim Entered = new();
+        public int Calls;
+        public bool Disposed;
+        public int Decode(byte[] annexB, Action<byte[], int, int> onFrame)
+        {
+            Interlocked.Increment(ref Calls);
+            Entered.Set();
+            Release.Wait();
+            onFrame(new byte[16], 2, 2); // a late picture of the abandoned decoder must never be shown
+            return 1;
+        }
+        public void Dispose() => Disposed = true;
+    }
+
+    private static MediaFoundationVideoSink MakeWithHangLimit(Func<H264Path, IH264FrameDecoder> create, TimeSpan limit, List<int> pictures, IH264FrameDecoder? first = null)
+    {
+        var sink = new MediaFoundationVideoSink(NullLogger.Instance, create, () => Substitute.For<IVideoSink>(), H264Path.MediaFoundationGpu, first) { HangLimit = limit };
+        sink.OnVideoSinkDecodedSampleFaster += image => { lock (pictures) pictures.Add(image.Width); };
+        return sink;
+    }
+
+    [Fact]
+    public void HungDecoder_IsAbandoned_SinkStepsDown_AndTheReceiveThreadNeverBlocks()
+    {
+        var hung = new HangingDecoder();
+        var software = new FakeDecoder(_ => true);
+        var pictures = new List<int>();
+        using var sink = MakeWithHangLimit(p => p == H264Path.MediaFoundationGpu ? hung : software, TimeSpan.FromMilliseconds(200), pictures);
+        try
+        {
+            var slowest = TimeSpan.Zero;
+            void Send(uint i, byte[] data)
+            {
+                var start = System.Diagnostics.Stopwatch.GetTimestamp();
+                sink.GotVideoFrame(Ep, i, data, H264);
+                var took = System.Diagnostics.Stopwatch.GetElapsedTime(start);
+                if (took > slowest) slowest = took;
+            }
+
+            Send(0, Key(1));
+            Assert.True(hung.Entered.Wait(5000));    // the decoder thread is now stuck inside Decode
+            Send(1, Delta(2));
+            Send(2, Delta(3));
+            Thread.Sleep(400);                        // longer than the hang limit
+            Send(3, Delta(4));                        // this frame notices the hang
+
+            Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
+            Assert.Equal(H264Path.MediaFoundationSoftware, sink.CurrentPath);
+            Assert.Equal(new byte[] { 1, 2, 3, 4 }, software.Seen);   // replayed from the keyframe, queued frames not lost or doubled
+            Assert.False(hung.Disposed);                              // abandoned, never disposed from another thread
+            Assert.Equal(3, pictures.Count);                          // frames 2, 3, 4 (queued behind the hang) show; the replayed keyframe is silent
+            Send(4, Delta(5));
+            Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
+            Assert.Equal(4, pictures.Count);                          // pictures continue
+            Assert.True(slowest < TimeSpan.FromMilliseconds(100), $"GotVideoFrame blocked for {slowest.TotalMilliseconds:F0} ms");
+        }
+        finally { hung.Release.Set(); }
+
+        Thread.Sleep(200);                                            // the woken abandoned thread must stay silent
+        lock (pictures) Assert.Equal(4, pictures.Count);
+    }
+
+    [Fact]
+    public void SecondHang_GoesStraightToFfmpeg()
+    {
+        var first = new HangingDecoder();
+        var second = new HangingDecoder();
+        var ffmpeg = Substitute.For<IVideoSink>();
+        var pictures = new List<int>();
+        var sink = new MediaFoundationVideoSink(NullLogger.Instance, p => p == H264Path.MediaFoundationGpu ? first : second, () => ffmpeg, H264Path.MediaFoundationGpu)
+        { HangLimit = TimeSpan.FromMilliseconds(150) };
+        using (sink)
+        try
+        {
+            sink.GotVideoFrame(Ep, 0, Key(1), H264);
+            Assert.True(first.Entered.Wait(5000));
+            Thread.Sleep(300);
+            sink.GotVideoFrame(Ep, 1, Delta(2), H264);   // first hang found -> software (also hangs)
+            Assert.True(second.Entered.Wait(5000));
+            Thread.Sleep(300);
+            sink.GotVideoFrame(Ep, 2, Delta(3), H264);   // second hang -> FFmpeg, no more Media Foundation attempts
+            Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
+
+            Assert.Equal(H264Path.FFmpeg, sink.CurrentPath);
+            ffmpeg.Received().GotVideoFrame(Ep, 2, Arg.Is<byte[]>(b => b[5] == 3), H264);
+            ffmpeg.Received(1).GotVideoFrame(Ep, 0, Arg.Is<byte[]>(b => b[5] == 1), H264);   // caught up from the keyframe
+        }
+        finally { first.Release.Set(); second.Release.Set(); }
+    }
+
+    [Fact]
+    public void FullQueue_DropsDeltaFrames_ButAKeyframeEmptiesItAndIsKept()
+    {
+        var hung = new HangingDecoder();
+        var pictures = new List<int>();
+        using var sink = MakeWithHangLimit(_ => hung, TimeSpan.FromHours(1), pictures); // never abandoned: only the queue is tested
+        try
+        {
+            sink.GotVideoFrame(Ep, 0, Key(1), H264);
+            Assert.True(hung.Entered.Wait(5000));
+            for (var i = 0; i < 200; i++)               // far more than the queue holds: must neither block nor throw
+                sink.GotVideoFrame(Ep, (uint)i, Delta(2), H264);
+            sink.GotVideoFrame(Ep, 999, Key(9), H264);  // the keyframe must survive the full queue
+        }
+        finally { hung.Release.Set(); }
+
+        Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
+        Assert.Equal(2, hung.Calls);   // the in-flight keyframe and the new one; the 90 queued deltas before it were useless and are gone
+    }
+
+    [Fact]
+    public void Dispose_WithAHungDecoder_ReturnsAtOnce()
+    {
+        var hung = new HangingDecoder();
+        var sink = MakeWithHangLimit(_ => hung, TimeSpan.FromHours(1), new List<int>());
+        try
+        {
+            sink.GotVideoFrame(Ep, 0, Key(1), H264);
+            Assert.True(hung.Entered.Wait(5000));
+
+            var start = System.Diagnostics.Stopwatch.GetTimestamp();
+            sink.Dispose();
+            Assert.True(System.Diagnostics.Stopwatch.GetElapsedTime(start) < TimeSpan.FromMilliseconds(200));
+            Assert.False(hung.Disposed);   // not disposed behind the back of a thread that is inside it
+        }
+        finally { hung.Release.Set(); }
+    }
+
+    [Fact]
+    public void Dispose_WithAnIdleDecoder_StopsTheThreadAndDisposesTheDecoder()
+    {
+        var decoder = new FakeDecoder(_ => true);
+        var (sink, _) = Make(_ => decoder);
+        Feed(sink, Ep, 0, Key(1), H264);
+
+        sink.Dispose();
+
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!decoder.Disposed && DateTime.UtcNow < deadline) Thread.Sleep(10);
+        Assert.True(decoder.Disposed);
     }
 }
