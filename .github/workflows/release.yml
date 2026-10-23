@@ -81,11 +81,7 @@ jobs:
       - name: Build solution
         run: dotnet build DeskShare.sln --configuration Release --no-restore
 
-      # WindowsInputController tests call SendInput on a real desktop session and are flaky on hosted runners.
-      - name: Run tests
-        run: dotnet test DeskShare.sln --configuration Release --no-build --filter "FullyQualifiedName!~WindowsInputController"
-
-      # Minimal FFmpeg 8.1 LGPL shared DLLs (decode, hardware H.264 encode, WebM recording) built by ffmpeg-windows.yml; not in git because of size.
+      # Minimal FFmpeg 8.1 LGPL DLLs from the ffmpeg job (not in git because of size). Installed before the tests, so the native FFmpeg tests (decode, hardware encode, WebM recording) run against these DLLs.
       - name: Get FFmpeg from the ffmpeg job
         uses: actions/download-artifact@v4
         with:
@@ -95,6 +91,10 @@ jobs:
       - name: Install FFmpeg
         shell: pwsh
         run: ./src/DeskShare.DesktopAvalonia/download-ffmpeg.ps1 -Zip ffmpeg-artifact/ffmpeg-win64-min.zip
+
+      # WindowsInputController tests call SendInput on a real desktop session and are flaky on hosted runners.
+      - name: Run tests
+        run: dotnet test DeskShare.sln --configuration Release --no-build --filter "FullyQualifiedName!~WindowsInputController"
 
       # Framework-dependent publish; Velopack's Setup.exe installs the .NET 8 runtime if missing
       # (see --framework below). Keeps the installer small. The csproj copies ./ffmpeg into publish/ffmpeg.

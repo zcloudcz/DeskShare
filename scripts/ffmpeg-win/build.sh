@@ -64,7 +64,8 @@ curl -sSfL --retry 5 -o ffmpeg.tar.xz https://ffmpeg.org/releases/ffmpeg-$FFMPEG
 tar -xJf ffmpeg.tar.xz && cd ffmpeg-$FFMPEG_VER
 
 # Component list = what DeskShare uses (grep of `ffmpeg.` calls and codec names):
-#  decode  : h264, vp8 (viewer, FFmpegVideoEndPoint), rawvideo (gdigrab in FfmpegScreenCapturer)
+#  decode  : h264, vp8 (viewer, FFmpegVideoEndPoint), bmp + rawvideo (gdigrab packets are BMP; configure would add
+#            bmp on its own for gdigrab, listed so it does not depend on that)
 #  encode  : libvpx VP8 (WebM recording, tests), h264_amf/nvenc/qsv/mf (hardware)
 #  mux     : webm over the file protocol
 #  avdevice: FFmpegInit.Initialise always calls avdevice_register_all(); only gdigrab is registered
@@ -74,7 +75,7 @@ tar -xJf ffmpeg.tar.xz && cd ffmpeg-$FFMPEG_VER
   --enable-shared --disable-static --disable-programs --disable-doc --disable-debug --disable-network \
   --disable-autodetect --disable-everything --disable-avfilter --disable-pthreads --enable-w32threads \
   --enable-avcodec --enable-avformat --enable-avutil --enable-swscale --enable-swresample --enable-avdevice \
-  --enable-decoder=h264,vp8,rawvideo \
+  --enable-decoder=h264,vp8,bmp,rawvideo \
   --enable-parser=h264,vp8 \
   --enable-encoder=libvpx_vp8,h264_amf,h264_nvenc,h264_qsv,h264_mf \
   --enable-muxer=webm --enable-protocol=file --enable-indev=gdigrab \
