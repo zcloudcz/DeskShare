@@ -34,6 +34,8 @@
     <PackageReference Include="Velopack" Version="1.2.161" />
     <!-- Status of the unattended-access Windows service (Server Mode tab) -->
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.1" />
+    <!-- Optional ZCLOUD Login sign-in for "My devices" (system browser + loopback redirect), see Services/AccountSession.cs -->
+    <PackageReference Include="Microsoft.Identity.Client" Version="4.90.0" />
   </ItemGroup>
 
   <!-- Window/taskbar icon (Window.Icon="/deskshare.png"); the exe icon comes from ApplicationIcon -->

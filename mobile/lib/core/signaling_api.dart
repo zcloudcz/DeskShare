@@ -131,7 +131,7 @@ class SignalingApi {
     }
     if (r.statusCode < 200 || r.statusCode >= 300) {
       final seconds = int.tryParse(r.headers['retry-after'] ?? '');
-      throw SignalingException('Server error (${r.statusCode})',
+      throw SignalingException(r.statusCode == 429 ? 'Too many attempts, try again later' : 'Server error (${r.statusCode})',
           statusCode: r.statusCode, retryAfter: seconds == null ? null : Duration(seconds: seconds));
     }
     return jsonDecode(r.body) as Map<String, dynamic>;
@@ -140,14 +140,14 @@ class SignalingApi {
   /// Viewer: POST /authenticate with an HMAC-signed body (`ClientAuthenticationMessage`).
   Future<SessionGrant> authenticate({
     required String serverId,
-    required PasskeyCredential credential,
+    required String authKey,
     required String clientId,
     DateTime? now,
     String? nonce,
   }) async {
     final timestamp = formatRequestTimestamp(now ?? DateTime.now());
     final n = nonce ?? uuidV4();
-    final key = credential.wireValue(serverId);
+    final key = authKey;
     final json = await _post('/authenticate', {
       'ServerId': serverId,
       'Passkey': key,

@@ -65,13 +65,12 @@ class _ViewerScreenState extends State<ViewerScreen> {
           key: const Key('passkey-field'),
           controller: _passkey,
           enabled: !busy,
-          textCapitalization: TextCapitalization.characters,
           autocorrect: false,
           enableSuggestions: false,
           decoration: const InputDecoration(
-            labelText: 'Passkey',
+            labelText: 'Passkey or permanent password',
             hintText: 'XXX-XXX-XXX',
-            helperText: 'Changes every 45 seconds',
+            helperText: 'The passkey changes every 45 seconds',
             border: OutlineInputBorder(),
           ),
           onSubmitted: (_) => _connect(),
@@ -286,9 +285,13 @@ class _ToolbarState extends State<_Toolbar> {
                         )
                       : OutlinedButton.icon(
                           key: const Key('control-button'),
-                          onPressed: s.controlAvailable ? () => s.setControl(true) : null,
+                          onPressed: s.controlAvailable && !s.controlPending ? () => s.setControl(true) : null,
                           icon: const Icon(Icons.touch_app_outlined),
-                          label: Text(s.controlAvailable ? 'Enable control' : 'View only'),
+                          label: Text(s.controlPending
+                              ? 'Waiting for approval...'
+                              : s.controlAvailable
+                                  ? 'Enable control'
+                                  : 'View only'),
                         ),
                 ),
                 IconButton(

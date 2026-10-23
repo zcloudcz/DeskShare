@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import '../core/credential.dart';
+import '../core/e2e_binding.dart';
 import '../core/ids.dart';
 import '../core/input_message.dart';
 import '../core/settings.dart';
@@ -75,6 +76,13 @@ class WebRtcSenderSession extends SenderSession {
   GestureMapper? _mapper;
   bool _controlGrantedForSession = false;
   List<IceServer> _iceServers = const [];
+
+  /// e2e keys of the recent passkeys: a viewer that typed the previous passkey must still bind (memory only).
+  final E2EKeyRing _e2eKeys = E2EKeyRing();
+
+  /// Verification state of the CURRENT peer connection only (a new viewer gets a new object, the old one is retired).
+  PeerBinding? _peer;
+  Timer? _bindTimer;
 
   @override
   SenderState get state => _state;
@@ -171,6 +179,9 @@ class WebRtcSenderSession extends SenderSession {
 
     for (var attempt = 1;; attempt++) {
       try {
+        // The server gets the auth key (via wireValue); the e2e key stays here for the viewer check. Derived per
+        // attempt because the Server ID is part of the salt and can change on a 403.
+        _e2eKeys.add(PasskeyCredential(passkey).e2eKey(_serverId), validTo);
         final grant = await _api!.register(
           serverId: _serverId,
           credential: PasskeyCredential(passkey),
@@ -241,7 +252,7 @@ class WebRtcSenderSession extends SenderSession {
       return;
     }
     _socket = socket;
-    _msgSub = socket.messages.listen(_onSignal);
+    _msgSub = socket.messages.listen(_enqueueSignal);
     unawaited(socket.closed.then((_) => _onSocketClosed(socket)));
   }
 
@@ -272,11 +283,37 @@ class WebRtcSenderSession extends SenderSession {
 
   void _send(SignalingMessage m) => _socket?.send(m);
 
+  /// Signaling handlers are async and `Stream.listen` does not wait for them. Peer replacement must never
+  /// interleave (request A suspended in _closePeer while request B builds a new peer), so every message goes
+  /// through one chain and is handled only after the previous one finished.
+  Future<void> _signalQueue = Future.value();
+  void _enqueueSignal(SignalingMessage m) {
+    // Bound to the sharing session that received it: a message still queued when sharing is stopped and
+    // restarted must not run in the new session (it could close the new session's connection).
+    final gen = _startGen;
+    _signalQueue = _signalQueue.then((_) => gen == _startGen && !_stopping ? _onSignal(m) : Future<void>.value());
+  }
+
+  /// Test hook: replaces the WebRTC part of a connection request.
+  @visibleForTesting
+  Future<void> Function(String viewerId)? offerOverride;
+
+  @visibleForTesting
+  void debugSignal(SignalingMessage m) => _enqueueSignal(m);
+
+  /// Bumped by every peer teardown/replacement; an _offerTo that finds it changed after an await is stale.
+  int _peerGen = 0;
+
+  /// Peer connections whose close() has not finished yet. Their senders still hold the shared capture track,
+  /// so the track stays disabled until this is 0.
+  int _pendingCloses = 0;
+
   Future<void> _onSignal(SignalingMessage m) async {
+    if (_stopping) return;
     try {
       switch (m.type) {
         case SignalingType.connectionRequest:
-          if (m.senderId != null) await _offerTo(m.senderId!);
+          if (m.senderId != null) await (offerOverride ?? _offerTo)(m.senderId!);
         case SignalingType.answer:
           if (m.sdp != null && m.senderId == _viewerId) {
             await _pc?.setRemoteDescription(RTCSessionDescription(m.sdp, 'answer'));
@@ -301,8 +338,14 @@ class WebRtcSenderSession extends SenderSession {
   }
 
   Future<void> _offerTo(String viewerId) async {
-    await _closePeer(); // one viewer at a time, like the desktop sender
+    final closing = _closePeer(); // one viewer at a time, like the desktop sender
+    final gen = _peerGen; // _closePeer bumped it synchronously
+    bool stale() => gen != _peerGen || _stopping;
+    await closing; // the old connection is closed completely before the new one gets the track
+    if (stale()) return;
     _viewerId = viewerId;
+    final peer = _peer = PeerBinding();
+    _syncVideo(); // no pixels until this viewer's binding verified
 
     final pc = await createPeerConnection({
       'iceServers': _iceServers.isEmpty
@@ -312,6 +355,10 @@ class WebRtcSenderSession extends SenderSession {
           : _iceServers.map((s) => s.toRtc()).toList(),
       'sdpSemantics': 'unified-plan',
     });
+    if (stale()) {
+      await pc.close();
+      return;
+    }
     _pc = pc;
 
     pc.onIceCandidate = (c) {
@@ -328,7 +375,10 @@ class WebRtcSenderSession extends SenderSession {
       if (!identical(pc, _pc)) return;
       if (s == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
         _viewer = true;
-        _set(SenderState.sharing, 'Viewer connected');
+        if (!peer.isVerified) {
+          _set(SenderState.sharing, 'Verifying viewer...');
+          _startBindTimer(peer);
+        }
       } else if (s == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
           s == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
           s == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
@@ -337,16 +387,27 @@ class WebRtcSenderSession extends SenderSession {
       }
     };
 
-    for (final track in _stream!.getTracks()) {
-      await pc.addTrack(track, _stream!);
+    final stream = _stream;
+    if (stream == null) return;
+    for (final track in stream.getTracks()) {
+      await pc.addTrack(track, stream);
+      if (stale()) return; // whoever replaced us closes _pc; this pc is no longer _pc
     }
 
-    // Like the desktop sender: the "input" channel exists only when the host allowed remote control.
-    if (_controlGrantedForSession) {
-      final dc = await pc.createDataChannel('input', RTCDataChannelInit()..ordered = true);
-      _dc = dc;
-      dc.onMessage = _onDataChannelMessage;
+    // Always created, even for a view-only host: the viewer's e2e_bind arrives over it (like ScreenSenderService).
+    final dc = await pc.createDataChannel('input', RTCDataChannelInit()..ordered = true);
+    if (stale() || !identical(peer, _peer)) {
+      await dc.close(); // replaced while the channel was being created
+      return;
     }
+    _dc = dc;
+    dc.onMessage = (msg) {
+      if (msg.isBinary || !identical(peer, _peer)) return;
+      unawaited(_onText(peer, dc, msg.text, () async => (
+            sender: getFingerprint((await pc.getLocalDescription())?.sdp),
+            viewer: getFingerprint((await pc.getRemoteDescription())?.sdp),
+          )));
+    };
 
     final offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -374,17 +435,61 @@ class WebRtcSenderSession extends SenderSession {
     await pc.addCandidate(RTCIceCandidate(text, mid, index));
   }
 
-  /// Same policy as src/Core/WebRTC/DataChannelPolicy.cs: oversize and unknown messages are dropped.
-  static const maxDataChannelBytes = 64 * 1024;
+  /// Screen video is sent only while the current viewer is verified. A disabled track makes WebRTC send black
+  /// frames instead of the screen; flutter_webrtc supports this reliably on Android (adding the track after
+  /// verification would need renegotiation). The tracks are shared by all connections, hence the reset in
+  /// [_closePeer] and for every new offer.
+  ///
+  /// The track is enabled only while the CURRENT peer is verified and no other peer connection is still closing
+  /// (the sender is single-viewer, so the current verified peer is then the only one that can see the screen).
+  bool get videoEnabled => (_peer?.isVerified ?? false) && _pendingCloses == 0;
+  bool _videoApplied = false;
 
-  void _onDataChannelMessage(RTCDataChannelMessage msg) {
-    if (msg.isBinary) return;
-    handleDataChannelText(msg.text);
+  void _syncVideo() {
+    final enabled = videoEnabled;
+    _videoApplied = enabled;
+    for (final t in _stream?.getVideoTracks() ?? const <MediaStreamTrack>[]) {
+      t.enabled = enabled;
+    }
   }
 
   @visibleForTesting
+  bool get videoEnabledApplied => _videoApplied;
+
+  void _startBindTimer(PeerBinding peer) {
+    _bindTimer?.cancel();
+    _bindTimer = Timer(bindTimeout, () {
+      // Judges only the peer that was waiting; a verified or already replaced one is left alone.
+      if (!peer.isVerified && !peer.isRetired && identical(peer, _peer)) unawaited(_dropUnverified());
+    });
+  }
+
+  Future<void> _dropUnverified() async {
+    await _closePeer();
+    if (_state == SenderState.sharing) _set(_state, 'Viewer rejected: secure connection check failed');
+  }
+
+  /// Same policy as src/Core/WebRTC/DataChannelPolicy.cs: oversize and unknown messages are dropped.
+  static const maxDataChannelBytes = 64 * 1024;
+
+  /// Test hook: a text from the current peer (fingerprints are not needed once it is verified).
+  @visibleForTesting
   void handleDataChannelText(String text) {
-    if (text.length > maxDataChannelBytes) return;
+    final peer = _peer;
+    if (peer == null) return;
+    unawaited(_onText(peer, _dc, text, () async => (sender: null, viewer: null)));
+  }
+
+  /// One data channel message of [peer]. Until the viewer's e2e_bind verified, nothing else is processed
+  /// (DataChannelManager.GrantedCapabilities).
+  Future<void> _onText(
+    PeerBinding peer,
+    RTCDataChannel? dc,
+    String text,
+    Future<({String? sender, String? viewer})> Function() fingerprints, {
+    Future<void> Function(String)? send,
+  }) async {
+    if (text.length > maxDataChannelBytes || peer.isRetired) return;
     final Object? j;
     try {
       j = jsonDecode(text);
@@ -392,15 +497,29 @@ class WebRtcSenderSession extends SenderSession {
       return;
     }
     if (j is! Map<String, dynamic>) return;
+    Future<void> reply(String m) async {
+      if (send != null) {
+        await send(m);
+      } else {
+        await dc?.send(RTCDataChannelMessage(m));
+      }
+    }
+
+    if (j['type'] == 'e2e_bind') {
+      if (!peer.isVerified) await _verifyViewer(peer, j, fingerprints, reply);
+      return;
+    }
+    if (!peer.isVerified) return;
 
     if (j['type'] == 'authorization_request') {
       // Remote control was decided by the toggle before sharing started; the viewer only learns the result.
-      _dc?.send(RTCDataChannelMessage(jsonEncode({
+      await reply(jsonEncode({
         'type': 'authorization_response',
         'authorized': _controlGrantedForSession,
+        'requestable': false, // no interactive approval on the phone: the toggle before sharing decides
         'clipboard': false,
         'timestamp': DateTime.now().toUtc().toIso8601String(),
-      })));
+      }));
       return;
     }
     if (!_controlGrantedForSession || j.containsKey('type')) return;
@@ -410,6 +529,35 @@ class WebRtcSenderSession extends SenderSession {
     if (input == null || mapper == null) return;
     for (final action in mapper.handle(input)) {
       unawaited(device.perform(action).catchError((Object e) => debugPrint('Gesture failed: $e')));
+    }
+  }
+
+  /// Verifies the viewer's bind, answers with our own, and only then opens video and input for that peer.
+  /// A wrong bind sends nothing back (our MAC must not go to an unverified peer) and drops the viewer.
+  Future<void> _verifyViewer(
+    PeerBinding peer,
+    Map<String, dynamic> json,
+    Future<({String? sender, String? viewer})> Function() fingerprints,
+    Future<void> Function(String) reply,
+  ) async {
+    final bind = tryReadBind(json);
+    final fp = await fingerprints();
+    if (peer.isRetired) return; // replaced while the descriptions were read
+    final key = (bind == null || bind.role != viewerRole || fp.sender == null || fp.viewer == null)
+        ? null
+        : _e2eKeys.tryVerify(viewerRole, fp.sender!, fp.viewer!, bind.mac);
+    if (key == null) {
+      debugPrint('Viewer binding did not verify');
+      if (identical(peer, _peer)) await _dropUnverified();
+      return;
+    }
+    await reply(buildBindMessage(senderRole, computeMac(key, senderRole, fp.sender!, fp.viewer!)));
+    // The viewer has our proof before any frame leaves; tryVerify is false if the peer was replaced meanwhile.
+    if (!peer.tryVerify()) return;
+    _bindTimer?.cancel();
+    if (identical(peer, _peer)) {
+      _syncVideo();
+      _set(SenderState.sharing, 'Viewer connected');
     }
   }
 
@@ -437,21 +585,64 @@ class WebRtcSenderSession extends SenderSession {
     _controlGrantedForSession = true;
     _mapper = GestureMapper(width: width, height: height);
     _listenToDevice();
+    _peer = PeerBinding()..tryVerify();
   }
+
+  /// Test hook: feed one data channel text of [peer] through the real handler; [send] replaces the channel.
+  @visibleForTesting
+  Future<void> debugOnText(
+          PeerBinding peer, String text, Future<({String? sender, String? viewer})> Function() fingerprints,
+          {Future<void> Function(String)? send}) =>
+      _onText(peer, null, text, fingerprints, send: send);
+
+  /// Test hook: a fresh, unverified peer connection becomes the current one (the previous one is retired).
+  @visibleForTesting
+  PeerBinding beginDebugPeer() {
+    _peer?.retire();
+    final peer = _peer = PeerBinding();
+    _syncVideo();
+    return peer;
+  }
+
+  @visibleForTesting
+  void addDebugKey(List<int> e2eKey) => _e2eKeys.add(e2eKey, DateTime.now().toUtc().add(const Duration(seconds: 45)));
 
   @visibleForTesting
   bool get controlGranted => _controlGrantedForSession;
 
-  Future<void> _closePeer() async {
+  Future<void> _closePeer() {
     final dc = _dc;
     final pc = _pc;
     _dc = null;
     _pc = null;
     _viewerId = null;
     _viewer = false;
-    await dc?.close();
-    await pc?.close();
+    return _retirePeer(() async {
+      await dc?.close();
+      await pc?.close();
+    });
   }
+
+  /// Everything synchronous (retire, bump generation, disable the track) happens before the first await, so
+  /// nothing can slip in between "replace" and "close"; [close] is the slow part.
+  Future<void> _retirePeer(Future<void> Function() close) async {
+    _peerGen++;
+    _peer?.retire(); // a late verification of this connection can no longer succeed
+    _peer = null;
+    _bindTimer?.cancel();
+    _pendingCloses++;
+    _syncVideo(); // disabled at once, before anything is awaited
+    try {
+      await close();
+    } finally {
+      _pendingCloses--;
+      _syncVideo(); // normally still disabled: the new peer is not verified yet
+    }
+  }
+
+  /// Test hook: retire the current peer with a close() the test controls.
+  @visibleForTesting
+  Future<void> debugRetirePeer(Future<void> Function() close) => _retirePeer(close);
 
   Future<void> _shutdown() async {
     _startGen++;
