@@ -119,6 +119,12 @@ public sealed class DataChannelManager : IDisposable
     /// </summary>
     public FileReceiver? FileReceiver { get; set; }
 
+    /// <summary>
+    /// Display list and switching; set by the host when it knows its displays. One instance for all peers, so the
+    /// rate limit is shared. Without it "switch_display" is ignored and no "displays" message is sent.
+    /// </summary>
+    public Displays.DisplaySwitchService? DisplaySwitcher { get; set; }
+
     private PrivacyScreenController? _privacyScreen;
 
     /// <summary>
@@ -192,6 +198,8 @@ public sealed class DataChannelManager : IDisposable
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _inputController = inputController;
+        if (_inputController != null)
+            _inputController.AuthorizationStateChanged += OnAuthorizationStateChanged;
         _logger.Information("DataChannelManager initialized");
     }
 
@@ -544,7 +552,22 @@ public sealed class DataChannelManager : IDisposable
                 var files = (granted & SessionCapabilities.FileTransfer) != 0;
                 // "privacy" says whether the viewer may offer its privacy screen button.
                 var privacy = (granted & SessionCapabilities.PrivacyScreen) != 0;
-                return () => SendJsonOn(peer, new { type = "authorization_response", authorized, clipboard, files, privacy, timestamp = DateTime.UtcNow });
+                return () =>
+                {
+                    SendJsonOn(peer, new { type = "authorization_response", authorized, clipboard, files, privacy, timestamp = DateTime.UtcNow });
+                    // The display list follows to the same peer; its viewer shows the picker only when it also has control.
+                    if (DisplaySwitcher is { } displays)
+                        SendOn(peer, displays.BuildMessage());
+                };
+            }
+
+            if (messageType == "switch_display")
+            {
+                // Passed the policy: this peer holds Control. The epoch is taken now, in the judging phase, so a revoke
+                // that happens while the new capturer starts cancels the switch (see SwitchDisplayAsync).
+                var request = root.Clone();
+                var epoch = Volatile.Read(ref _controlEpoch);
+                return () => _ = SwitchDisplayAsync(peer, request, epoch);
             }
 
             if (messageType == "privacy_screen")
@@ -655,6 +678,40 @@ public sealed class DataChannelManager : IDisposable
         ViewerVerified?.Invoke(this, peer);
     }
 
+    // Bumped whenever the control authorization changes, so a display switch requested under an earlier grant can be cancelled.
+    private int _controlEpoch;
+
+    private void OnAuthorizationStateChanged(object? sender, InputAuthorizationState state) => Interlocked.Increment(ref _controlEpoch);
+
+    // Runs outside the peer's lock (an effect). The answer goes to the peer that asked.
+    private async Task SwitchDisplayAsync(PeerContext peer, JsonElement message, int epoch)
+    {
+        try
+        {
+            if (DisplaySwitcher is not { } displays)
+                return;
+
+            if (!Displays.DisplaySwitchService.TryReadIndex(message, out var index))
+            {
+                LogRejection("switch_display", "missing or invalid index");
+                return;
+            }
+
+            // Control is checked again when the switch is about to take effect: it may have been revoked while the new capturer started.
+            var result = await displays.SwitchAsync(index,
+                () => !peer.IsRetired && epoch == Volatile.Read(ref _controlEpoch) && (GrantedFor(peer) & SessionCapabilities.Control) != 0);
+            if (result is Displays.DisplaySwitchResult.InvalidIndex or Displays.DisplaySwitchResult.RateLimited or Displays.DisplaySwitchResult.Failed)
+                LogRejection("switch_display", result.ToString());
+
+            // Always answer with the current state: after a refusal it puts the viewer's picker back.
+            SendOn(peer, displays.BuildMessage());
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error switching display");
+        }
+    }
+
     /// <summary>
     /// Logs a rejected message. Only the type name is logged, never the content (it may hold keystrokes or
     /// clipboard text), and only the first few per bucket.
@@ -715,6 +772,8 @@ public sealed class DataChannelManager : IDisposable
             return;
         }
 
+        if (_inputController != null)
+            _inputController.AuthorizationStateChanged -= OnAuthorizationStateChanged;
         DetachDataChannel();
         _disposed = true;
 

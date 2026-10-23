@@ -519,7 +519,11 @@ public sealed class DesktopDuplicator : IScreenCapturer
     /// <param name="OutputName">Name of the output (monitor).</param>
     /// <param name="Width">Width of the display in pixels.</param>
     /// <param name="Height">Height of the display in pixels.</param>
-    public record MonitorInfo(int AdapterIndex, int OutputIndex, string AdapterName, string OutputName, int Width, int Height);
+    /// <param name="Left">X of the top-left corner in the virtual desktop (negative left of the primary monitor).</param>
+    /// <param name="Top">Y of the top-left corner in the virtual desktop.</param>
+    /// <param name="IsPrimary">The primary monitor always sits at 0,0 of the virtual desktop.</param>
+    public record MonitorInfo(int AdapterIndex, int OutputIndex, string AdapterName, string OutputName, int Width, int Height,
+        int Left = 0, int Top = 0, bool IsPrimary = false);
 
     /// <summary>
     /// Enumerates all available monitors (display outputs) in the system.
@@ -567,7 +571,10 @@ public sealed class DesktopDuplicator : IScreenCapturer
                                 adapterName,
                                 outputDesc.DeviceName,
                                 width,
-                                height
+                                height,
+                                bounds.Left,
+                                bounds.Top,
+                                bounds.Left == 0 && bounds.Top == 0
                             ));
                         }
 

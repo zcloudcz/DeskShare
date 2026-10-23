@@ -65,6 +65,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         PrivacyScreenPanel.IsVisible = OperatingSystem.IsWindows(); // the overlay is Windows-only
+        FillDisplayChoices();
         ApplyPolicyLocks();
 
         // Setup logging and services from DI container (same as WPF project)
@@ -206,7 +207,8 @@ public partial class MainWindow : Window
             bool privacyBlocksInput = enablePrivacyScreen && PrivacyScreenBlocksInputCheckBox.IsChecked == true;
 
             _serverManager.FileReceived += OnFileReceived;
-            await _serverManager.StartAsync(serverId, password, enableRemoteControl, trustClientPermanent, enableClipboard, enableFileReceive, enablePrivacyScreen, privacyBlocksInput);
+            var display = DisplayPanel.IsVisible && DisplayComboBox.SelectedIndex >= 0 && DisplayComboBox.SelectedIndex < _displays.Count ? _displays[DisplayComboBox.SelectedIndex] : null;
+            await _serverManager.StartAsync(serverId, password, enableRemoteControl, trustClientPermanent, enableClipboard, enableFileReceive, enablePrivacyScreen, privacyBlocksInput, display?.AdapterIndex, display?.OutputIndex);
 
             _logger.LogInformation("Server started with remote control {Status}",
                 enableRemoteControl ? "ENABLED" : "DISABLED");
@@ -249,6 +251,7 @@ public partial class MainWindow : Window
             EnablePrivacyScreenCheckBox.IsEnabled = false;
             PrivacyScreenBlocksInputCheckBox.IsEnabled = false;
             TrustClientPermanentCheckBox.IsEnabled = false;
+            DisplayComboBox.IsEnabled = false;
 
             UpdateTabAvailability();
 
@@ -279,8 +282,23 @@ public partial class MainWindow : Window
             EnablePrivacyScreenCheckBox.IsEnabled = true;
             PrivacyScreenBlocksInputCheckBox.IsEnabled = true;
             TrustClientPermanentCheckBox.IsEnabled = true;
+            DisplayComboBox.IsEnabled = true;
             ApplyPolicyLocks();
         }
+    }
+
+    private IReadOnlyList<DeskShare.Core.Displays.DisplayInfo> _displays = Array.Empty<DeskShare.Core.Displays.DisplayInfo>();
+
+    // Default display for the next share; only Windows lists more than one (see DisplayCatalog), so the picker is hidden elsewhere.
+    private void FillDisplayChoices()
+    {
+        _displays = DeskShare.Core.Displays.DisplayCatalog.Enumerate(0, 0);
+        DisplayPanel.IsVisible = _displays.Count > 1;
+        DisplayComboBox.ItemsSource = _displays.Select(d => d.Name).ToList();
+        var config = App.ServiceProvider?.GetService<Microsoft.Extensions.Configuration.IConfiguration>();
+        int.TryParse(config?["Server:AdapterIndex"], out var adapter);
+        int.TryParse(config?["Server:OutputIndex"], out var output);
+        DisplayComboBox.SelectedIndex = DeskShare.Core.Displays.DisplayCatalog.FindConfigured(_displays, adapter, output);
     }
 
     private string? _lastReceivedFolder;
@@ -346,6 +364,7 @@ public partial class MainWindow : Window
             EnablePrivacyScreenCheckBox.IsEnabled = true;
             PrivacyScreenBlocksInputCheckBox.IsEnabled = true;
             TrustClientPermanentCheckBox.IsEnabled = true;
+            DisplayComboBox.IsEnabled = true;
             ApplyPolicyLocks();
 
             UpdateTabAvailability();

@@ -51,7 +51,7 @@ public class ServerManager : IDisposable
     /// <summary>
     /// Starts the server with signaling + screen sender services.
     /// </summary>
-    public async Task StartAsync(string serverId, string? password = null, bool enableRemoteControl = false, bool trustClientPermanent = false, bool enableClipboard = false, bool enableFileReceive = false, bool enablePrivacyScreen = false, bool privacyScreenBlocksInput = false)
+    public async Task StartAsync(string serverId, string? password = null, bool enableRemoteControl = false, bool trustClientPermanent = false, bool enableClipboard = false, bool enableFileReceive = false, bool enablePrivacyScreen = false, bool privacyScreenBlocksInput = false, int? adapterIndexOverride = null, int? outputIndexOverride = null)
     {
         if (_isRunning)
         {
@@ -85,8 +85,9 @@ public class ServerManager : IDisposable
 
             var targetFps = _configuration.GetValue<int>("Server:TargetFps", 30);
             var maxOutputWidth = _configuration.GetValue<int>("Server:MaxOutputWidth", 0);
-            var adapterIndex = _configuration.GetValue<int>("Server:AdapterIndex", 0);
-            var outputIndex = _configuration.GetValue<int>("Server:OutputIndex", 0);
+            // The display chosen in the UI wins over the configured default.
+            var adapterIndex = adapterIndexOverride ?? _configuration.GetValue<int>("Server:AdapterIndex", 0);
+            var outputIndex = outputIndexOverride ?? _configuration.GetValue<int>("Server:OutputIndex", 0);
 
             var configuration = new ScreenSenderConfiguration
             {
