@@ -13,7 +13,7 @@
  * - The "fetch" event fires for every network request the page makes.
  */
 
-const CACHE_NAME = 'deskshare-v11';
+const CACHE_NAME = 'deskshare-v12';
 
 // Files to cache during install (the "app shell")
 const APP_SHELL_FILES = [
@@ -21,6 +21,7 @@ const APP_SHELL_FILES = [
     '/webclient/client.js',
     '/webclient/remote-control.js',
     '/webclient/bind-gate.js',
+    '/webclient/accounts.js',
     '/webclient/mobile.css',
     '/webclient/manifest.json'
 ];
@@ -92,8 +93,16 @@ self.addEventListener('fetch', (event) => {
     }
 
     // Skip API endpoints - these need fresh data
-    const apiPaths = ['/health', '/statistics', '/signal', '/register', '/authenticate', '/servers'];
+    const apiPaths = ['/health', '/statistics', '/signal', '/register', '/authenticate', '/servers', '/accounts', '/me/'];
     if (apiPaths.some((path) => url.pathname.startsWith(path))) {
+        return;
+    }
+
+    // Sign-in (accounts.js): never cache what MSAL.js fetches from ZCLOUD Login (other origin), nor the page it
+    // returns to with an authorization response in the query (?code=...&state=...), which would otherwise be stored
+    // in the cache under that URL.
+    if (url.origin !== self.location.origin ||
+        url.searchParams.has('code') || url.searchParams.has('state') || url.searchParams.has('error')) {
         return;
     }
 

@@ -200,6 +200,17 @@
             max-width: none;
         }
 
+        /* My devices (accounts.js) */
+        #accountBar { font-size: 13px; color: #aaa; }
+        #accountBar[hidden], #myDevicesPanel[hidden] { display: none; }
+        #myDevicesPanel { margin-bottom: 15px; }
+        #myDevicesList { list-style: none; padding: 0; margin: 8px 0; }
+        #myDevicesList li { display: flex; gap: 8px; margin-bottom: 6px; }
+        #myDevicesList .device-pick { flex: 1; text-align: left; }
+        .device-online { color: #51cf66; }
+        .device-offline { color: #999; }
+        body.focus #myDevicesPanel { display: none; }
+
         body.focus .header {
             height: 48px;
         }
@@ -234,12 +245,21 @@
         <div class="header">
             <h1>🖥️ RemoteDesktop WebClient</h1>
             <button id="showPanelsBtn" onclick="setFocus(false)">Show panels</button>
+            <!-- ZCLOUD account: shown only when the server has accounts enabled (see accounts.js). -->
+            <span id="accountBar" hidden><span id="accountName"></span> <button id="signInBtn">Sign in</button></span>
         </div>
 
         <div class="controls">
             <div class="control-group">
                 <label for="signalingUrl">Signaling Server:</label>
                 <input type="text" id="signalingUrl" value="wss://localhost:5151/signal" />
+            </div>
+
+            <!-- My devices (signed in only, see accounts.js): a click fills the Server ID; the passkey is still needed. -->
+            <div id="myDevicesPanel" hidden>
+                <strong>My devices</strong> <button id="refreshDevicesBtn">Refresh</button>
+                <ul id="myDevicesList"></ul>
+                <small id="myDevicesStatus"></small>
             </div>
 
             <div class="control-group">
@@ -327,6 +347,7 @@
     <script src="remote-control.js"></script>
     <script src="bind-gate.js"></script>
     <script src="client.js"></script>
+    <script src="accounts.js"></script>
     <script>
         // Register service worker for PWA offline support
         if ('serviceWorker' in navigator) {
