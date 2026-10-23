@@ -318,6 +318,15 @@
                                          Margin="25,0,0,15"
                                          TextWrapping="Wrap"/>
 
+                                <StackPanel x:Name="DisplayPanel" Margin="0,0,0,15" IsVisible="False">
+                                    <TextBlock Text="Display to share" FontSize="14" Margin="0,0,0,5"/>
+                                    <ComboBox x:Name="DisplayComboBox" MinWidth="260"/>
+                                    <TextBlock Text="Viewers with remote control can switch while sharing"
+                                             FontSize="11"
+                                             Foreground="#495057"
+                                             Margin="0,2,0,0"/>
+                                </StackPanel>
+
                                 <CheckBox x:Name="EnableClipboardCheckBox"
                                         Content="Allow clipboard sharing (text)"
                                         Margin="0,0,0,15"

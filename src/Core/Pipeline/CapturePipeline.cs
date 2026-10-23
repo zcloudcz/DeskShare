@@ -17,17 +17,34 @@ public sealed class CapturePipeline : IDisposable
     private const int MaxQueueSize = 3; // Limit buffering to prevent memory issues
     private const int CaptureLoopDelayMs = 10; // Small delay between capture attempts
 
-    private readonly IScreenCapturer _capturer;
+    // Replaced by SwitchCapturerAsync; the swap happens on the capture thread only, between two frames.
+    private IScreenCapturer _capturer;
     private readonly IFrameConverter _converter;
     private readonly IVideoSource _videoSource;
     private readonly int _maxOutputWidth;
 
-    // Resolution actually sent; equals the capture size unless downscaling is active. Set in Start.
-    private int _outputWidth;
-    private int _outputHeight;
+    // Resolution actually sent; equals the capture size unless downscaling is active. Set in Start and when the
+    // capturer is switched. One immutable object so the conversion thread never sees a new width with an old height.
+    private sealed record OutputDims(int Width, int Height);
+    private volatile OutputDims _output = new(0, 0);
 
-    private readonly BlockingCollection<Frame> _captureQueue;
-    private readonly BlockingCollection<VideoFrame> _conversionQueue;
+    // A capturer handed to SwitchCapturerAsync, applied by the capture loop (see ApplyPendingSwitch).
+    private readonly object _switchLock = new();
+    private IScreenCapturer? _pendingCapturer;
+    private TaskCompletionSource<bool>? _pendingSwitch;
+    private int _keyFramePending;
+    private Func<bool>? _pendingGuard;
+    private Action? _pendingOnFirstFrame;
+
+    // Bumped on every capturer switch. Each queued frame carries the generation it was captured in; the later
+    // stages drop frames of an older generation, so nothing of the previous display is sent after the switch.
+    private volatile int _generation;
+    // Callback of the last switch, run by the transmission thread once the first frame of that generation was sent.
+    private sealed record FirstFrame(int Generation, Action Callback);
+    private FirstFrame? _firstFrameCallback; // published by the capture thread, taken with CompareExchange by transmission
+
+    private readonly BlockingCollection<(Frame Frame, int Generation)> _captureQueue;
+    private readonly BlockingCollection<(VideoFrame Frame, int Generation)> _conversionQueue;
 
     private CancellationTokenSource? _cts;
     private Task? _captureTask;
@@ -72,8 +89,8 @@ public sealed class CapturePipeline : IDisposable
         _converter = converter ?? throw new ArgumentNullException(nameof(converter));
         _videoSource = videoSource ?? throw new ArgumentNullException(nameof(videoSource));
 
-        _captureQueue = new BlockingCollection<Frame>(MaxQueueSize);
-        _conversionQueue = new BlockingCollection<VideoFrame>(MaxQueueSize);
+        _captureQueue = new BlockingCollection<(Frame, int)>(MaxQueueSize);
+        _conversionQueue = new BlockingCollection<(VideoFrame, int)>(MaxQueueSize);
     }
 
     /// <summary>
@@ -96,13 +113,14 @@ public sealed class CapturePipeline : IDisposable
             return false;
         }
 
-        (_outputWidth, _outputHeight) = OutputSize.Compute(_capturer.Width, _capturer.Height, _maxOutputWidth);
+        var (outputWidth, outputHeight) = OutputSize.Compute(_capturer.Width, _capturer.Height, _maxOutputWidth);
+        _output = new OutputDims(outputWidth, outputHeight);
 
         // Initialize video source only if not already initialized (e.g., StubVideoSource)
         // For WebRTC scenarios, VideoSource is pre-initialized by WebRTCSession
         if (!_videoSource.IsInitialized)
         {
-            if (!_videoSource.Initialize(_outputWidth, _outputHeight, targetFps))
+            if (!_videoSource.Initialize(outputWidth, outputHeight, targetFps))
             {
                 Log.Error("Failed to initialize video source");
                 return false;
@@ -114,7 +132,7 @@ public sealed class CapturePipeline : IDisposable
         }
 
         Log.Information("Starting pipeline: capture {Width}x{Height} -> output {OutWidth}x{OutHeight} @ {TargetFps}fps",
-            _capturer.Width, _capturer.Height, _outputWidth, _outputHeight, targetFps);
+            _capturer.Width, _capturer.Height, outputWidth, outputHeight, targetFps);
 
         _cts = new CancellationTokenSource();
         _isRunning = true;
@@ -175,6 +193,8 @@ public sealed class CapturePipeline : IDisposable
         {
             while (!cancellationToken.IsCancellationRequested)
             {
+                ApplyPendingSwitch();
+
                 // Try to acquire frame. Only successful acquisitions are timed: a failed attempt just
                 // means "no new frame yet" and would skew the average.
                 var acquireStart = Stopwatch.GetTimestamp();
@@ -188,7 +208,7 @@ public sealed class CapturePipeline : IDisposable
                     }
 
                     // Try to add to queue (non-blocking)
-                    if (!_captureQueue.TryAdd(frame!, 0, cancellationToken))
+                    if (!_captureQueue.TryAdd((frame!, _generation), 0, cancellationToken))
                     {
                         // Queue full, drop frame and release
                         Interlocked.Increment(ref _framesCaptureSkipped);
@@ -211,9 +231,111 @@ public sealed class CapturePipeline : IDisposable
         }
         finally
         {
+            // A switch requested right before shutdown will never be applied: release its capturer and its caller.
+            lock (_switchLock)
+            {
+                _pendingCapturer?.Dispose();
+                _pendingSwitch?.TrySetResult(false);
+                (_pendingCapturer, _pendingSwitch) = (null, null);
+            }
+
             _captureQueue.CompleteAdding();
             Log.Information("Capture thread stopped");
         }
+    }
+
+    /// <summary>
+    /// Replaces the capturer while the pipeline keeps running (display switch): the encoder and the peer
+    /// connection stay, the next frames simply come from <paramref name="next"/> and a keyframe is requested.
+    /// The pipeline owns <paramref name="next"/> from here on (it is disposed when the switch fails).
+    /// </summary>
+    /// <param name="next">The capturer for the new display.</param>
+    /// <param name="canCommit">Checked on the capture thread right before the swap; when it returns false the switch is cancelled
+    /// (the viewer lost the right to switch while the new capturer was starting).</param>
+    /// <param name="onFirstFrameSent">Runs on the transmission thread after the first frame of the new display was sent, never before:
+    /// this is when pointer input may be mapped to the new display.</param>
+    /// <returns>True when <paramref name="next"/> initialised and is now the active capturer; false otherwise (the old one keeps running).</returns>
+    public Task<bool> SwitchCapturerAsync(IScreenCapturer next, Func<bool>? canCommit = null, Action? onFirstFrameSent = null)
+    {
+        ArgumentNullException.ThrowIfNull(next);
+        lock (_switchLock)
+        {
+            if (!_isRunning || _disposed || _cts!.IsCancellationRequested || _pendingCapturer != null)
+            {
+                next.Dispose();
+                return Task.FromResult(false);
+            }
+
+            _pendingCapturer = next;
+            _pendingGuard = canCommit;
+            _pendingOnFirstFrame = onFirstFrameSent;
+            _pendingSwitch = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            return _pendingSwitch.Task;
+        }
+    }
+
+    /// <summary>
+    /// Runs at the top of the capture loop, i.e. when no frame is held, so the old capturer can be disposed safely.
+    /// </summary>
+    private void ApplyPendingSwitch()
+    {
+        IScreenCapturer? next;
+        TaskCompletionSource<bool>? result;
+        Func<bool>? guard;
+        Action? onFirstFrame;
+        lock (_switchLock)
+        {
+            (next, result, guard, onFirstFrame) = (_pendingCapturer, _pendingSwitch, _pendingGuard, _pendingOnFirstFrame);
+            (_pendingCapturer, _pendingSwitch, _pendingGuard, _pendingOnFirstFrame) = (null, null, null, null);
+        }
+
+        if (next == null)
+            return;
+
+        var ok = false;
+        try
+        {
+            ok = next.Initialize();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Switching capturer failed");
+        }
+
+        if (!ok)
+        {
+            Log.Warning("New capturer failed to initialize; keeping the current one");
+            next.Dispose();
+            result!.SetResult(false);
+            return;
+        }
+
+        if (guard != null && !guard())
+        {
+            Log.Warning("Display switch cancelled: no longer allowed");
+            next.Dispose();
+            result!.SetResult(false);
+            return;
+        }
+
+        var old = _capturer;
+        _capturer = next;
+        old.Dispose();
+
+        var (width, height) = OutputSize.Compute(next.Width, next.Height, _maxOutputWidth);
+        _output = new OutputDims(width, height);
+        // Frames of the old display still waiting for conversion would be squeezed into the new size.
+        while (_captureQueue.TryTake(out var stale))
+            stale.Frame.Dispose();
+        // Frames already converted or being converted carry the old generation and are dropped by the later stages.
+        var generation = _generation + 1;
+        if (onFirstFrame != null)
+            Volatile.Write(ref _firstFrameCallback, new FirstFrame(generation, onFirstFrame));
+        _generation = generation;
+        Interlocked.Exchange(ref _keyFramePending, 1);
+        Log.Information("Capturer switched: capture {Width}x{Height} -> output {OutWidth}x{OutHeight}",
+            next.Width, next.Height, width, height);
+        result!.SetResult(true);
     }
 
     /// <summary>
@@ -225,21 +347,25 @@ public sealed class CapturePipeline : IDisposable
 
         try
         {
-            foreach (var frame in _captureQueue.GetConsumingEnumerable(cancellationToken))
+            foreach (var (frame, generation) in _captureQueue.GetConsumingEnumerable(cancellationToken))
             {
                 try
                 {
+                    if (generation != _generation)
+                        continue; // captured before a display switch
+
                     var convertStart = Stopwatch.GetTimestamp();
-                    var videoFrame = frame.Width == _outputWidth && frame.Height == _outputHeight
+                    var output = _output;
+                    var videoFrame = frame.Width == output.Width && frame.Height == output.Height
                         ? _converter.Convert(frame)
-                        : _converter.ConvertAndScale(frame, _outputWidth, _outputHeight);
+                        : _converter.ConvertAndScale(frame, output.Width, output.Height);
                     _convertTimings.Record(Stopwatch.GetTimestamp() - convertStart);
                     _lastOutputWidth = videoFrame.Width;
                     _lastOutputHeight = videoFrame.Height;
                     Interlocked.Increment(ref _framesConverted);
 
                     // Try to add to transmission queue
-                    if (!_conversionQueue.TryAdd(videoFrame, 0, cancellationToken))
+                    if (!_conversionQueue.TryAdd((videoFrame, generation), 0, cancellationToken))
                     {
                         // Queue full, drop frame
                         videoFrame.Dispose();
@@ -277,10 +403,22 @@ public sealed class CapturePipeline : IDisposable
 
         try
         {
-            foreach (var videoFrame in _conversionQueue.GetConsumingEnumerable(cancellationToken))
+            var lastWidth = 0;
+            var lastHeight = 0;
+            foreach (var (videoFrame, generation) in _conversionQueue.GetConsumingEnumerable(cancellationToken))
             {
                 try
                 {
+                    if (generation != _generation)
+                        continue; // converted before a display switch
+
+                    // After a display switch the picture is unrelated to the previous one, and a size change may
+                    // reset the encoder: either way the viewer needs a keyframe to start from.
+                    var sizeChanged = lastWidth != 0 && (videoFrame.Width != lastWidth || videoFrame.Height != lastHeight);
+                    (lastWidth, lastHeight) = (videoFrame.Width, videoFrame.Height);
+                    if (Interlocked.Exchange(ref _keyFramePending, 0) == 1 || sizeChanged)
+                        _videoSource.RequestKeyFrame();
+
                     // PushFrame encodes (software VP8) and sends synchronously, so this is the encode cost.
                     var pushStart = Stopwatch.GetTimestamp();
                     var pushed = _videoSource.PushFrame(videoFrame);
@@ -290,6 +428,15 @@ public sealed class CapturePipeline : IDisposable
                         // drag the encode average down, so only real pushes are timed.
                         _pushTimings.Record(Stopwatch.GetTimestamp() - pushStart);
                         Interlocked.Increment(ref _framesTransmitted);
+                        // Take the callback atomically: if the capture thread publishes the next switch's callback
+                        // between our read and the reset, CompareExchange fails and the newer one is kept.
+                        // ponytail: fires when PushFrame accepted the frame; a hardware H.264 encoder may emit it one
+                        // frame later, so the input remap can lead the picture by ~1 frame (~33 ms at 30 fps).
+                        if (Volatile.Read(ref _firstFrameCallback) is { } first && generation >= first.Generation
+                            && Interlocked.CompareExchange(ref _firstFrameCallback, null, first) == first)
+                        {
+                            first.Callback();
+                        }
                     }
                     else
                     {

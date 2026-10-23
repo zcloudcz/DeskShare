@@ -43,6 +43,8 @@ const sendClipboardBtn = document.getElementById('sendClipboardBtn');
 const copyHostClipboardBtn = document.getElementById('copyHostClipboardBtn');
 const sendFileBtn = document.getElementById('sendFileBtn');
 const privacyBtn = document.getElementById('privacyBtn');
+const displayPicker = document.getElementById('displayPicker');
+const displaySelect = document.getElementById('displaySelect');
 const fileInput = document.getElementById('fileInput');
 
 function updateStatus(message, type = 'info') {
@@ -504,6 +506,7 @@ async function handleOffer(message) {
         hostAllowsControl = false;
         hostAllowsPrivacy = false;
         privacyOn = false;
+        hostDisplays = []; // the previous connection's display list does not carry over
         setClipboardAllowed(false);
         setFilesAllowed(false);
         placeholder.textContent = 'Verifying secure connection...';
@@ -732,6 +735,7 @@ function cleanup() {
     }
     hostAllowsPrivacy = false;
     privacyOn = false;
+    hostDisplays = [];
     updateControlButton();
     setClipboardAllowed(false);
     setFilesAllowed(false);
@@ -791,6 +795,7 @@ function setupDataChannel(session, channel) {
         hostAllowsControl = false;
         hostAllowsPrivacy = false;
         privacyOn = false;
+        hostDisplays = [];
         updateControlButton();
         setClipboardAllowed(false);
         setFilesAllowed(false);
@@ -828,6 +833,8 @@ function setupDataChannel(session, channel) {
                     message.authorized ? 'success' : 'error');
                 updateControlButton();
             }
+        } else if (message.type === 'displays') {
+            onDisplays(message);
         } else if (message.type === 'privacy_screen_state') {
             onPrivacyState(message);
         } else if (message.type === 'clipboard') {
@@ -864,6 +871,7 @@ function updateControlButton() {
     // Only while the host has authorized control: the host rejects the message otherwise.
     if (ctrlAltDelBtn) ctrlAltDelBtn.disabled = !(remoteControl && remoteControl.enabled && remoteControl.authorized);
     updatePrivacyButton();
+    updateDisplayPicker();
 }
 
 // ---- Privacy screen (the host's local monitor shows black; offered only when the host allowed it and control is active) ----
@@ -891,6 +899,28 @@ function onPrivacyState(message) {
     privacyOn = message.enabled === true;
     updatePrivacyButton();
     if (message.reason && !privacyOn) updateStatus('Privacy screen is off: ' + message.reason, 'info');
+}
+
+// ---- Display picker (shown when the host has several displays and control is active; the host refuses a switch without control) ----
+let hostDisplays = [];
+let hostCurrentDisplay = 0;
+
+function onDisplays(message) {
+    hostDisplays = Array.isArray(message.items) ? message.items : [];
+    hostCurrentDisplay = Number.isInteger(message.current) ? message.current : 0;
+    updateDisplayPicker();
+}
+
+function updateDisplayPicker() {
+    if (!displayPicker || !displaySelect) return;
+    const controlActive = !!(remoteControl && remoteControl.enabled && remoteControl.authorized);
+    displayPicker.hidden = !(controlActive && hostDisplays.length > 1);
+    displaySelect.replaceChildren(...hostDisplays.map(d => new Option(d.name, d.index, false, d.index === hostCurrentDisplay)));
+}
+
+function switchDisplay(index) {
+    // The picker follows the host's "displays" answer, so a refused switch (too soon, display gone) puts it back.
+    sessions.send(sessions.current, { type: 'switch_display', index: Number(index) });
 }
 
 // Ctrl+Alt+Del cannot be typed through the browser; the Windows host injects it as a secure attention sequence.

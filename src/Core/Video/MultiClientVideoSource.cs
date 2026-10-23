@@ -134,7 +134,7 @@ public sealed class MultiClientVideoSource : IVideoSource, IDisposable
         Log.Information("Adding new client: {ClientId}", clientId);
 
         // Create dedicated encoder for this client
-        var videoEncoder = VideoEncoderFactory.Create();
+        var videoEncoder = new ResizingVideoEncoder(() => VideoEncoderFactory.Create()); // follows display switches that change the size
 
         // Create peer connection with STUN servers for NAT traversal
         var config = new RTCConfiguration { iceServers = new List<RTCIceServer>(IceServers) };
@@ -302,6 +302,13 @@ public sealed class MultiClientVideoSource : IVideoSource, IDisposable
 
         // Return true if at least one client received the frame
         return successCount > 0;
+    }
+
+    /// <inheritdoc/>
+    public void RequestKeyFrame()
+    {
+        foreach (var client in _clients.Values)
+            client.VideoEncoder.ForceKeyFrame();
     }
 
     /// <inheritdoc/>

@@ -42,6 +42,9 @@
             margin-bottom: 15px;
         }
 
+        /* label is inline-block below, which would override the hidden attribute */
+        #displayPicker[hidden] { display: none; }
+
         label {
             display: inline-block;
             width: 150px;
@@ -260,6 +263,8 @@
                 <button id="ctrlAltDelBtn" onclick="sendCtrlAltDel()" disabled title="Send Ctrl+Alt+Del to the host (Windows host with the unattended service only)">Ctrl+Alt+Del</button>
                 <!-- Shown only when the host allowed the privacy screen and control is active (see updatePrivacyButton in client.js). -->
                 <button id="privacyBtn" onclick="togglePrivacy()" hidden title="Black out the host's local monitor; you still see the desktop">Privacy screen</button>
+                <!-- Shown only when the host has several displays and control is active (see updateDisplayPicker in client.js). -->
+                <label id="displayPicker" hidden>Display <select id="displaySelect" onchange="switchDisplay(this.value)" title="Switch the display you are looking at"></select></label>
                 <!-- Shown only when the host allowed clipboard sharing (see setClipboardAllowed in client.js). -->
                 <button id="sendClipboardBtn" onclick="sendClipboard()" hidden title="Send the text in your clipboard to the host">Send clipboard</button>
                 <button id="copyHostClipboardBtn" onclick="copyHostClipboard()" hidden disabled title="Enabled when the host sent new text">Copy host clipboard</button>
