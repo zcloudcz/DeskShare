@@ -798,4 +798,43 @@ public sealed class MediaFoundationFallbackTests
         }
         finally { sink.Dispose(); }
     }
+
+    // An FFmpeg endpoint that, like the real one, raises a picture synchronously for every frame it gets.
+    private sealed class PicturingEndpoint : IVideoSink
+    {
+        public int Frames;
+        public event VideoSinkSampleDecodedDelegate? OnVideoSinkDecodedSample { add { } remove { } }
+        public event VideoSinkSampleDecodedFasterDelegate? OnVideoSinkDecodedSampleFaster;
+        public void GotVideoFrame(IPEndPoint ep, uint ts, byte[] frame, VideoFormat format)
+        {
+            Frames++;
+            OnVideoSinkDecodedSampleFaster?.Invoke(new RawImage { Width = 2, Height = 2, Stride = 8, PixelFormat = VideoPixelFormatsEnum.Bgra, Sample = IntPtr.Zero });
+        }
+        public void GotVideoRtp(IPEndPoint ep, uint ssrc, uint seq, uint ts, int pt, bool marker, byte[] payload) { }
+        public List<VideoFormat> GetVideoSinkFormats() => new();
+        public void SetVideoSinkFormat(VideoFormat videoFormat) { }
+        public void RestrictFormats(Func<VideoFormat, bool> filter) { }
+        public Task PauseVideoSink() => Task.CompletedTask;
+        public Task ResumeVideoSink() => Task.CompletedTask;
+        public Task StartVideoSink() => Task.CompletedTask;
+        public Task CloseVideoSink() => Task.CompletedTask;
+    }
+
+    [Fact]
+    public void Vp8WithoutLibvpx_EveryFrameReachesTheScreenThroughFfmpeg()
+    {
+        var ffmpeg = new PicturingEndpoint();
+        var pictures = 0;
+        var sink = new MediaFoundationVideoSink(NullLogger.Instance, _ => new FakeDecoder(_ => true), () => ffmpeg, H264Path.MediaFoundationGpu)
+        { CreateVp8 = () => throw new DllNotFoundException("vpxmd") };   // a PC without the VC++ runtime
+        sink.OnVideoSinkDecodedSampleFaster += _ => pictures++;
+        try
+        {
+            Feed(sink, Ep, 0, Vp8Key(1), Vp8);
+            for (var i = 1; i < 5; i++) Feed(sink, Ep, (uint)i, Vp8Delta((byte)(1 + i)), Vp8);
+            Assert.Equal(5, ffmpeg.Frames);
+            Assert.Equal(5, pictures);
+        }
+        finally { sink.Dispose(); }
+    }
 }

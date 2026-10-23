@@ -30,4 +30,12 @@
     <PackageReference Include="Vortice.DXGI" Version="3.6.2" />
   </ItemGroup>
 
+  <!-- libvpx (vpxmd.dll from SIPSorceryMedia.Encoders, VP8 encode and decode) links the VC++ runtime dynamically and fails
+       to load on a clean Windows without the VC++ Redistributable (no VP8 video at all on a PC without a GPU encoder).
+       vcruntime140.dll is a redistributable file Microsoft allows to ship next to the app ("app-local"), so it is copied
+       from the build machine (any Windows with the redistributable, e.g. the CI runner) into every app and agent output. -->
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows')) and Exists('$(SystemRoot)\System32\vcruntime140.dll')">
+    <None Include="$(SystemRoot)\System32\vcruntime140.dll" Link="vcruntime140.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Visible="false" />
+  </ItemGroup>
+
 </Project>
