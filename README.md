@@ -7,6 +7,7 @@ Vysokovýkonná aplikace pro streamování pracovních ploch a oken na Windows p
 - Web: **https://deskshare.zcloud.cz** (CZ/EN)
 - Windows instalátor: [DeskShare-win-Setup.exe](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Setup.exe) (Velopack, automatické aktualizace)
 - Přenosná verze: [DeskShare-win-Portable.zip](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Portable.zip)
+- Hromadné nasazení (MSI pro Intune/GPO/SCCM, nepodepsané): [DeskShare-x64.msi](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-x64.msi), viz [docs/deployment.md](docs/deployment.md)
 - Web viewer (bez instalace): https://app.deskshare.zcloud.cz/webclient/index.html
 - macOS (Apple Silicon, beta, jen prohlížení): [DeskShare-osx-Setup.pkg](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-osx-Setup.pkg) (podepsáno + notarizováno)
 - Linux x64 (beta, jen prohlížení): [DeskShare.AppImage](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare.AppImage)
