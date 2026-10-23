@@ -53,6 +53,9 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
     /// <summary>Test seam: runs after a replacement decoder thread started and before its recovery replay is queued.</summary>
     internal Action? AfterReplacementStarted { get; init; }
 
+    /// <summary>Test seam: the VP8 decoder to use instead of libvpx.</summary>
+    internal Func<IH264FrameDecoder>? CreateVp8 { get; init; }
+
     // After this many abandoned decoders the machine clearly cannot be trusted with Media Foundation: go to FFmpeg for good
     // (each abandoned decoder keeps a thread and native memory alive).
     private const int MaxAbandonedDecoders = 2;
@@ -80,7 +83,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
     private bool _h264SawIdr;      // silence only counts once the decoder got a keyframe: before it, no picture is expected
     private int _h264SilentUnits;  // access units fed since the last picture came out
     private long _h264SilentSince; // Stopwatch ticks of the first of those units (0 = none); read by the hang timer
-    private VpxDecoder? _vp8;
+    private IH264FrameDecoder? _vp8; // a VpxDecoder (same Decode shape), replaceable in tests via CreateVp8
     private int _vp8Failures;
     private bool _vp8OnFfmpeg;
     private IVideoSink? _ffmpeg;
@@ -126,12 +129,13 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         }
     }
 
-    // Every H.264 access unit RECEIVED since the last keyframe, written by the receive thread only (under _gate), so it is
+    // Every video frame (H.264 access unit or VP8 frame) RECEIVED since the last keyframe, written by the receive thread only (under _gate), so it is
     // always complete whatever the decoder threads are doing. The viewer cannot ask the host for a new keyframe (there is
     // no feedback channel), and a new decoder needs one to start, so on a switch we replay these instead. A replay takes
     // a snapshot and removes the queued H.264 frames (the snapshot already contains them), so nothing is decoded twice.
     private readonly List<(IPEndPoint Ep, uint Ts, byte[] Data, VideoFormat Format)> _gop = new();
     private long _gopBytes;
+    private int _replayGeneration; // decoder thread only, see Replay
     private bool _gopOverflow; // too long without a keyframe: replay is not possible, the new decoder waits for the next one
 
     internal MediaFoundationVideoSink(ILogger logger, Func<H264Path, IH264FrameDecoder> createH264, Func<IVideoSink> createFfmpeg,
@@ -340,7 +344,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
             if (_disposed) return;
             // Checked here too (not only by the timer), so a hang is handled before this frame is queued behind it.
             if (_worker.TryClaimStuck(HangLimit)) Abandon(_worker);
-            if (format.Codec == VideoCodecsEnum.H264) RememberLocked(remoteEndPoint, timestamp, frame, format);
+            if (format.Codec is VideoCodecsEnum.H264 or VideoCodecsEnum.VP8) RememberLocked(remoteEndPoint, timestamp, frame, format);
             Enqueue(_worker, new Item(remoteEndPoint, timestamp, frame, format));
         }
     }
@@ -350,10 +354,10 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
     {
         lock (w.Gate)
         {
-            if (item.Format.Codec == VideoCodecsEnum.H264 && item.Replay == null && ContainsIdr(item.Data) && w.Queue.Count > 0)
+            if (item.Replay == null && IsKeyframe(item) && w.Queue.Count > 0)
             {
-                // An IDR resets the decoder: queued H.264 frames and catch-up replays before it would only be decoded in vain.
-                var keep = w.Queue.Where(i => !IsH264Work(i)).ToArray();
+                // A keyframe resets the decoder: queued frames and catch-up replays before it would only be decoded in vain.
+                var keep = w.Queue.Where(i => !IsVideoWork(i)).ToArray();
                 w.Queue.Clear();
                 foreach (var other in keep) w.Queue.Enqueue(other);
             }
@@ -361,12 +365,12 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
             {
                 // Nothing before a keyframe is needed to show the picture again, so a keyframe empties the queue.
                 if (IsKeyframe(item)) w.Queue.Clear();
-                else if (item.Format.Codec == VideoCodecsEnum.H264 && !_gopOverflow && _gop.Count > 0)
+                else if (IsVideoWork(item) && !_gopOverflow && _gop.Count > 0)
                 {
-                    // A dropped H.264 delta would break the reference chain and, if it was the last change of a static
-                    // screen, would never be shown. Instead the queued H.264 frames become ONE catch-up item: the whole GOP
+                    // A dropped delta (H.264 or VP8) would break the reference chain and, if it was the last change of a
+                    // static screen, would never be shown. Instead the queued frames become ONE catch-up item: the whole GOP
                     // (it already contains this frame) decoded again from its keyframe, which resets the decoder.
-                    var keep = w.Queue.Where(i => !IsH264Work(i)).ToArray();
+                    var keep = w.Queue.Where(i => !IsVideoWork(i)).ToArray();
                     w.Queue.Clear();
                     foreach (var other in keep) w.Queue.Enqueue(other);
                     item = new Item(null!, 0, Array.Empty<byte>(), default, _gop.ToArray());
@@ -374,7 +378,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
                 }
                 else
                 {
-                    // VP8 (no replay), or too long since the keyframe to replay: dropped, the picture recovers at the next keyframe.
+                    // Too long since the keyframe to replay: dropped, the picture recovers at the next keyframe.
                     if (++_dropped % 30 == 1) _logger.LogWarning("Video decoder queue full, dropped {Count} frames so far", _dropped);
                     return;
                 }
@@ -384,8 +388,8 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         }
     }
 
-    // H.264 frames and catch-up snapshots: everything a newer GOP snapshot or an IDR makes obsolete.
-    private static bool IsH264Work(Item i) => i.Replay != null || i.Format.Codec == VideoCodecsEnum.H264;
+    // Video frames and catch-up snapshots: everything a newer GOP snapshot or a keyframe makes obsolete.
+    private static bool IsVideoWork(Item i) => i.Replay != null || i.Format.Codec is VideoCodecsEnum.H264 or VideoCodecsEnum.VP8;
 
     private static bool IsKeyframe(Item item) =>
         item.Format.Codec == VideoCodecsEnum.H264 ? ContainsIdr(item.Data) : item.Data.Length > 0 && (item.Data[0] & 1) == 0; // VP8: bit 0 of the frame tag is 0 for keyframes
@@ -413,13 +417,13 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         else _vp8OnFfmpeg = true;
         if (cappedOut) { _path = H264Path.FFmpeg; _vp8OnFfmpeg = true; }
 
-        // Everything H.264 the hung thread had queued (frames and older catch-up snapshots) is inside the current GOP
-        // snapshot; only VP8 frames carry over (no replay for those). The H.264 decoder is gone with the thread whichever
-        // codec hung, so the new worker always starts with the snapshot; if it hangs too, the next Abandon takes a fresh one.
+        // Everything the hung thread had queued (frames and older catch-up snapshots) is inside the current GOP snapshot,
+        // and its decoders are gone with the thread, so the new worker starts with that snapshot; if it hangs too, the
+        // next Abandon takes a fresh one.
         Item[] leftovers;
         lock (stuck.Gate)
         {
-            leftovers = stuck.Queue.Where(i => !IsH264Work(i) && !i.StallCheck).ToArray();
+            leftovers = stuck.Queue.Where(i => !IsVideoWork(i) && !i.StallCheck).ToArray();
             stuck.Queue.Clear();
         }
         _worker = StartWorker();
@@ -442,7 +446,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         {
             lock (w.Gate)
             {
-                var keep = w.Queue.Where(i => !IsH264Work(i)).ToArray();
+                var keep = w.Queue.Where(i => !IsVideoWork(i)).ToArray();
                 w.Queue.Clear();
                 foreach (var item in keep) w.Queue.Enqueue(item);
             }
@@ -453,6 +457,11 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
     // Feeds one replayed frame to the current decoder (Media Foundation or FFmpeg) without touching the GOP.
     private void FeedReplay((IPEndPoint Ep, uint Ts, byte[] Data, VideoFormat Format) frame)
     {
+        if (frame.Format.Codec == VideoCodecsEnum.VP8)
+        {
+            DecodeVp8(frame.Ep, frame.Ts, frame.Data, frame.Format);
+            return;
+        }
         if (_path == H264Path.FFmpeg)
         {
             EnsureFfmpeg();
@@ -579,16 +588,19 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         if (_gopOverflow)
             _logger.LogWarning("No replay possible (too long since the last keyframe): the picture resumes at the next keyframe");
         frames ??= TakeSnapshot();
+        // A decoder switch inside this replay (VP8 falling back to FFmpeg) starts its own, newer replay; this one must
+        // then stop, or the rest of its frames would reach the new decoder twice.
+        var generation = ++_replayGeneration;
         _suppressEvents = true;
         try
         {
-            for (var i = 0; i < frames.Length; i++)
+            for (var i = 0; i < frames.Length && generation == _replayGeneration; i++)
             {
                 _suppressEvents = i < frames.Length - 1; // show only the newest picture, not a burst of old ones
                 decode(frames[i]);
             }
         }
-        catch (Exception ex) when (_path != H264Path.FFmpeg && !IsStale)
+        catch (Exception ex) when (frames.Length > 0 && frames[0].Format.Codec == VideoCodecsEnum.H264 && _path != H264Path.FFmpeg && !IsStale)
         {
             // The next decoder is broken as well: keep stepping down (ends at FFmpeg, which is not guarded here on purpose).
             _suppressEvents = false;
@@ -602,7 +614,8 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
     }
     private void RememberLocked(IPEndPoint ep, uint ts, byte[] frame, VideoFormat format)
     {
-        if (ContainsIdr(frame))
+        // A keyframe starts a new GOP; so does a codec change (the sender switched between VP8 and H.264).
+        if (IsKeyframe(new Item(ep, ts, frame, format)) || (_gop.Count > 0 && _gop[0].Format.Codec != format.Codec))
         {
             _gop.Clear();
             _gopBytes = 0;
@@ -634,7 +647,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         {
             try
             {
-                var vp8 = _vp8 ??= Timed(VideoCodecsEnum.VP8, () => new VpxDecoder());
+                var vp8 = _vp8 ??= Timed(VideoCodecsEnum.VP8, () => CreateVp8?.Invoke() ?? new VpxDecoder());
                 Timed(VideoCodecsEnum.VP8, () => { vp8.Decode(frame, Raise); return 0; });
                 _vp8Failures = 0;
                 return;
@@ -648,6 +661,10 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
                 _vp8 = null;
                 _vp8OnFfmpeg = true;
                 _logger.LogWarning("Switching VP8 decoding to FFmpeg");
+                // Catch FFmpeg up from the last keyframe (the snapshot contains this frame too) so the picture continues.
+                EnsureFfmpeg();
+                Replay(FeedReplay);
+                return;
             }
         }
         EnsureFfmpeg();

@@ -739,4 +739,42 @@ public sealed class MediaFoundationFallbackTests
         while (!decoder.Disposed && DateTime.UtcNow < deadline) Thread.Sleep(10);
         Assert.True(decoder.Disposed);
     }
+
+    private static readonly VideoFormat Vp8 = new(VideoCodecsEnum.VP8, 96);
+    private static byte[] Vp8Key(byte tag) => new byte[] { 0x00, 0, 0, 0, 0, tag };   // frame tag bit 0 = 0: keyframe
+    private static byte[] Vp8Delta(byte tag) => new byte[] { 0x01, 0, 0, 0, 0, tag };
+
+    [Fact]
+    public void Vp8QueueOverflow_DoesNotLoseTheLastFrame_TheDecoderCatchesUpFromTheKeyframe()
+    {
+        var slow = new SlowStartDecoder();
+        var pictures = new List<int>();
+        var sink = new MediaFoundationVideoSink(NullLogger.Instance, _ => new FakeDecoder(_ => true), () => Substitute.For<IVideoSink>(),
+            H264Path.MediaFoundationGpu) { HangLimit = TimeSpan.FromSeconds(30), CreateVp8 = () => slow };
+        try
+        {
+            var sent = new List<byte> { 1 };
+            sink.GotVideoFrame(Ep, 0, Vp8Key(1), Vp8);
+            Assert.True(slow.Entered.Wait(5000));
+            for (var i = 1; i <= 150; i++)
+            {
+                var tag = (byte)(2 + i % 200);
+                sent.Add(tag);
+                sink.GotVideoFrame(Ep, (uint)i, Vp8Delta(tag), Vp8);
+            }
+            slow.Release.Set();                       // static screen: nothing else arrives
+            Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
+
+            lock (slow.Seen)
+            {
+                Assert.Equal(sent.Last(), slow.Seen.Last());
+                Assert.Equal(sent, slow.Seen.Skip(slow.Seen.LastIndexOf(1)).ToList());
+            }
+        }
+        finally
+        {
+            slow.Release.Set();
+            sink.Dispose();
+        }
+    }
 }

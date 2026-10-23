@@ -7,7 +7,7 @@ using Vortice.MediaFoundation;
 
 namespace DeskShare.Desktop.Shared.Services;
 
-/// <summary>An H.264 decoder the sink can swap for another one at runtime (and tests can replace with a fake).</summary>
+/// <summary>A frame decoder (H.264, or VP8 via VpxDecoder) the sink can swap at runtime (and tests can replace with a fake).</summary>
 internal interface IH264FrameDecoder : IDisposable
 {
     /// <summary>Feeds one Annex B access unit; calls <paramref name="onFrame"/> with (bgra, width, height) per picture. Throws when the decoder is broken.</summary>
