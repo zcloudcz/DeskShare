@@ -31,6 +31,10 @@ public sealed class AccountsServerFactory : WebApplicationFactory<Program>
 
     private static readonly Dictionary<string, string> Settings = new()
     {
+        // Two hosts in one process: only one may bind the STUN/TURN UDP ports (Development config turns TURN on), so
+        // this one runs without them. Otherwise the second host stops itself and every test in the collection fails.
+        ["Stun__Enabled"] = "false",
+        ["Turn__Enabled"] = "false",
         ["Accounts__Enabled"] = "true",
         ["Accounts__Authority"] = $"https://test.ciamlogin.com/{TenantId}",
         ["Accounts__Audience"] = Audience,
