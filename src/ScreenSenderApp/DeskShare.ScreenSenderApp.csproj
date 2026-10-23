@@ -29,6 +29,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Core\DeskShare.Core.csproj" />
+    <ProjectReference Include="..\DeskShare.Unattended\DeskShare.Unattended.csproj" />
   </ItemGroup>
 
 </Project>

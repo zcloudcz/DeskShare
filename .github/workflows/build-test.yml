@@ -38,6 +38,10 @@ jobs:
       - name: Run tests
         run: dotnet test DeskShare.sln --configuration Release --no-build --logger trx --results-directory TestResults --filter "FullyQualifiedName!~WindowsInputController"
 
+      # Builds the per-machine MSI (WiX, ICE validation included) so it cannot rot; not attached anywhere (release.yml does that)
+      - name: Build MSI
+        run: dotnet build installer/DeskShare.Msi -c Release
+
       # Step 6: Upload test results as a build artifact (useful for debugging failed tests)
       - name: Upload test results
         uses: actions/upload-artifact@v4
