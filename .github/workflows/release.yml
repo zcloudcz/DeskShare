@@ -79,6 +79,21 @@ jobs:
           dotnet publish src/DeskShare.Service/DeskShare.Service.csproj -c Release -r win-x64 --self-contained false -o publish/service -p:PublishSingleFile=true -p:Version=${{ steps.version.outputs.version }}
           dotnet publish src/ScreenSenderApp/DeskShare.ScreenSenderApp.csproj -c Release -r win-x64 --self-contained false -o publish/service/agent -p:Version=${{ steps.version.outputs.version }}
           Copy-Item publish/ffmpeg publish/service/agent/ffmpeg -Recurse
+          # Agent files byte-identical to the app's (same relative path under publish/) are shipped only once: dropped here,
+          # listed with their SHA-256 in agent/agent-shared.txt and copied back + verified by the elevated installer
+          # (AgentSharedFiles.Restore). DeskShare.* stay: the installer requires and signature-checks them in the source folder.
+          $agent = (Resolve-Path publish/service/agent).Path
+          $lines = foreach ($f in Get-ChildItem $agent -Recurse -File) {
+            $rel = $f.FullName.Substring($agent.Length + 1)
+            $app = Join-Path publish $rel
+            if ($f.Name -like 'DeskShare.*' -or -not (Test-Path $app)) { continue }
+            $h = (Get-FileHash $f.FullName -Algorithm SHA256).Hash
+            if ($h -ne (Get-FileHash $app -Algorithm SHA256).Hash) { continue }
+            Remove-Item $f.FullName
+            "$h  $($rel.Replace('\', '/'))"
+          }
+          [IO.File]::WriteAllLines("$agent/agent-shared.txt", [string[]]@($lines))
+          "Deduplicated $(@($lines).Count) agent files"
 
       # Per-machine MSI for IT admins (Intune / GPO / SCCM, see docs/deployment.md). Self-contained, so it publishes the
       # projects again on its own. UNSIGNED: sign DeskShare-x64.msi (and the exes) separately before enterprise rollout.
