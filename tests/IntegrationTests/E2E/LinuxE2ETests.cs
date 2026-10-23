@@ -317,6 +317,39 @@ public class LinuxE2ETests
     }
 
     [E2EFact]
+    public async Task PermanentPassword_GivesVideo_WrongPasswordIs401_PasskeyStillWorks()
+    {
+        // What "DeskShare.Service set-password" leaves on an unattended host: keys only, bound to the Server ID.
+        const string password = "unattended e2e password";
+        var serverId = "server-" + Random.Shared.Next(100_000_000, 1_000_000_000);
+        var keys = E2EBinding.FromPermanentPassword(password, serverId);
+        var keyFile = Path.Combine(Path.GetTempPath(), $"permanent-{Guid.NewGuid():N}.key");
+        PermanentKeyFile.Save(keyFile, serverId, keys.AuthKey, keys.E2EKey);
+        try
+        {
+            using var sender = await SenderProcess.StartAsync(remoteControl: false, serverId: serverId, permanentKeyFile: keyFile);
+            Assert.Equal(serverId, sender.ServerId);
+
+            var (wrong, _) = await Viewer.AuthenticateAsync(serverId, "not the right password", ServerIdGenerator.GenerateClientId());
+            Assert.Equal(HttpStatusCode.Unauthorized, wrong);
+
+            // The passkey still works next to the password. Same client id for the password connection below,
+            // because the server keeps the session reserved for the client that authenticated last.
+            var clientId = ServerIdGenerator.GenerateClientId();
+            var (passkeyStatus, _) = await Viewer.AuthenticateAsync(serverId, sender.Passkey, clientId);
+            Assert.Equal(HttpStatusCode.OK, passkeyStatus);
+
+            // Frames only flow after the end-to-end binding verified (see ViewerWithWrongE2EKey_...), so a frame proves
+            // that the sender accepted the binding made with the password's e2e key.
+            var frames = 0;
+            using var client = await Viewer.ConnectAsync(sender, (_, _) => Interlocked.Increment(ref frames), credential: password, clientId: clientId);
+            Assert.True(await XServer.WaitUntilAsync(() => Volatile.Read(ref frames) > 0, TimeSpan.FromSeconds(45)),
+                $"No video with the permanent password\n{sender.Output}\n{Viewer.LogText()}");
+        }
+        finally { File.Delete(keyFile); }
+    }
+
+    [E2EFact]
     public async Task WrongPasskey_IsRejected()
     {
         using var sender = await SenderProcess.StartAsync(remoteControl: false);

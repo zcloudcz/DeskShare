@@ -541,7 +541,9 @@ public partial class MainWindow : Window
         try
         {
             string serverId = ServerIdGenerator.NormalizeServerIdInput(ManualServerIdTextBox.Text);
-            string passkey = DeskShare.Core.Auth.AuthenticationService.UnformatPasskey(ManualPasskeyTextBox.Text?.Trim() ?? "");
+            // Passkey OR permanent password, kept as typed: a password must not be upper-cased or lose its dashes.
+            // ConnectToServerAsync tells them apart (E2EBinding.DeriveFromUserInput).
+            string passkey = ManualPasskeyTextBox.Text ?? "";
             // In Avalonia, TextBox with PasswordChar is used instead of PasswordBox
             string password = ManualPasswordBox.Text ?? "";
 
@@ -556,11 +558,11 @@ public partial class MainWindow : Window
                 return;
             }
 
-            if (string.IsNullOrEmpty(passkey) || passkey.Length != 9)
+            if (!IsPasskeyOrPassword(passkey))
             {
                 var msgBox = MessageBoxManager.GetMessageBoxStandard(
                     "Validation Error",
-                    "Please enter a valid 9-character passkey",
+                    PasskeyOrPasswordHint,
                     ButtonEnum.Ok,
                     MsBoxIcon.Warning);
                 await msgBox.ShowWindowDialogAsync(this);
@@ -623,13 +625,15 @@ public partial class MainWindow : Window
                 return; // User cancelled
             }
 
-            string passkey = DeskShare.Core.Auth.AuthenticationService.UnformatPasskey(passkeyResult.Trim());
+            // Passkey or permanent password. PasskeyDialog trims, which is harmless: a permanent password cannot
+            // start or end with whitespace (E2EBinding.ValidatePermanentPassword).
+            string passkey = passkeyResult;
 
-            if (passkey.Length != 9)
+            if (!IsPasskeyOrPassword(passkey))
             {
                 var msgBox = MessageBoxManager.GetMessageBoxStandard(
                     "Validation Error",
-                    "Invalid passkey. Must be 9 characters.",
+                    PasskeyOrPasswordHint,
                     ButtonEnum.Ok,
                     MsBoxIcon.Warning);
                 await msgBox.ShowWindowDialogAsync(this);
@@ -704,6 +708,13 @@ public partial class MainWindow : Window
         }
     }
 
+    private const string PasskeyOrPasswordHint =
+        "Please enter the 9-character passkey or the permanent password of the unattended computer (at least 12 characters)";
+
+    private static bool IsPasskeyOrPassword(string input) =>
+        DeskShare.Core.Auth.E2EBinding.LooksLikePasskey(input) ||
+        input.Length >= DeskShare.Core.Auth.E2EBinding.PermanentPasswordMinLength;
+
     private async Task ConnectToServerAsync(string serverId, string passkey, string? password)
     {
         _logger.LogInformation("Authenticating with server {ServerId}", serverId);
@@ -728,7 +739,9 @@ public partial class MainWindow : Window
 
             // The server never gets the passkey: it gets authKey, derived from it. The matching e2eKey stays on this
             // machine and is used to check, end to end, that nobody sits between us and the sender (see E2EBinding).
-            var keys = DeskShare.Core.Auth.E2EBinding.DeriveKeys(passkey, serverId);
+            // The field takes the passkey or the host's permanent password; the password path runs PBKDF2 (about a
+            // second), hence off the UI thread.
+            var keys = await Task.Run(() => DeskShare.Core.Auth.E2EBinding.DeriveFromUserInput(passkey, serverId));
 
             var signature = DeskShare.Core.Auth.RequestSigningService.SignRequest(
                 serverId, keys.AuthKey, timestamp, nonce);
