@@ -117,6 +117,23 @@ public class ClientManager : IDisposable
     /// <summary>Fired when <see cref="HostAllowsPrivacyScreen"/> changes.</summary>
     public event EventHandler<bool>? HostAllowsPrivacyScreenChanged;
 
+    /// <summary>Fired when the state of this viewer's request for control changes (see <see cref="ControlRequestState"/>).</summary>
+    public event EventHandler<ControlRequestState>? ControlRequestStateChanged;
+
+    private volatile bool _hostAllowsRequests; // from the host's last authorization_response ("requestable")
+
+    private void RaiseControlRequest(PeerContext peer, ControlRequestState state)
+    {
+        if (!peer.IsRetired) ControlRequestStateChanged?.Invoke(this, state);
+    }
+
+    /// <summary>
+    /// The user asks the host for control. A host that wants its user to approve shows a question; the answer arrives as
+    /// <see cref="ControlRequestStateChanged"/> (Pending first, then Granted, Denied or TimedOut).
+    /// </summary>
+    public void RequestControl() =>
+        _peer.TrySend(channel => channel.send("{\"type\":\"authorization_request\",\"interactive\":true}"), requireVerified: true);
+
     /// <summary>Fired with the host's answer (privacy_screen_state): enabled, and a reason when it is off.</summary>
     public event EventHandler<(bool Enabled, string? Reason)>? PrivacyScreenStateChanged;
 
@@ -623,7 +640,24 @@ public class ClientManager : IDisposable
                     SetHostAllowsPrivacyScreen(
                         doc.RootElement.TryGetProperty("privacy", out var privacy) && privacy.ValueKind == JsonValueKind.True
                         && doc.RootElement.TryGetProperty("authorized", out var authorized) && authorized.ValueKind == JsonValueKind.True, peer);
-                    UpdateDisplays(peer, doc.RootElement.TryGetProperty("authorized", out var control) && control.ValueKind == JsonValueKind.True);
+                    var controlGranted = doc.RootElement.TryGetProperty("authorized", out var control) && control.ValueKind == JsonValueKind.True;
+                    UpdateDisplays(peer, controlGranted);
+                    // A grant answers "requestable: false" (nothing left to ask for); that must not erase what the earlier probe
+                    // said, or after "Stop control" the viewer could never ask again.
+                    _hostAllowsRequests = ControlRequestStates.NextHostAllowsRequests(doc.RootElement, _hostAllowsRequests);
+                    RaiseControlRequest(peer, ControlRequestStates.FromAuthorizationResponse(doc.RootElement));
+                }
+                else if (messageType == "authorization_revoked")
+                {
+                    // The host stopped our control ("Stop control", timeout): input no longer works, so show the state truthfully
+                    // and offer to ask again when the host still allows requests.
+                    UpdateDisplays(peer, false);
+                    SetHostAllowsPrivacyScreen(false, peer);
+                    RaiseControlRequest(peer, ControlRequestStates.AfterRevoked(_hostAllowsRequests));
+                }
+                else if (messageType == "approval_pending" && doc.RootElement.TryGetProperty("what", out var what) && what.GetString() == "control")
+                {
+                    RaiseControlRequest(peer, ControlRequestState.Pending);
                 }
                 else if (messageType == "displays")
                 {
@@ -704,7 +738,8 @@ public class ClientManager : IDisposable
         _logger.LogInformation("Sender passed the end-to-end binding check");
 
         // The host answers with authorization_response, which also says whether it shares the clipboard.
-        peer.TrySend(c => c.send("{\"type\":\"authorization_request\"}"), requireVerified: true);
+        // "interactive": false = this viewer knows the approval protocol (a viewer without the field is told to update).
+        peer.TrySend(c => c.send("{\"type\":\"authorization_request\",\"interactive\":false}"), requireVerified: true);
         return true;
     }
 

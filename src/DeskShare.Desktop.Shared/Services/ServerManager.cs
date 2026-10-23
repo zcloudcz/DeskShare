@@ -21,6 +21,13 @@ public class ServerManager : IDisposable
     private int _activeConnections;
 
     public bool IsRunning => _isRunning;
+
+    /// <summary>
+    /// Shows "a viewer wants to control your mouse and keyboard" and returns true for Allow. Set by the UI before
+    /// <see cref="StartAsync"/>; control then needs this approval for every session (see ScreenSenderConfiguration.RequireControlApproval).
+    /// The token is cancelled on timeout or when the viewer leaves; the UI must close the question then.
+    /// </summary>
+    public Func<CancellationToken, Task<bool>>? ControlApprovalPrompt { get; set; }
     public string? ServerId => _serverId;
 
     /// <summary>Raised when the sender replaced the Server ID after a collision on the signaling server.</summary>
@@ -99,6 +106,7 @@ public class ServerManager : IDisposable
                 AdapterIndex = adapterIndex,
                 OutputIndex = outputIndex,
                 EnableRemoteControl = enableRemoteControl,
+                RequireControlApproval = ControlApprovalPrompt != null,
                 EnableClipboard = enableClipboard,
                 EnableFileReceive = enableFileReceive,
                 EnablePrivacyScreen = enablePrivacyScreen,
@@ -112,7 +120,7 @@ public class ServerManager : IDisposable
                 signalingUrl, targetFps);
 
             var serviceLogger = _loggerFactory.CreateLogger<ScreenSenderService>();
-            _screenSenderService = new ScreenSenderService(serviceLogger, configuration);
+            _screenSenderService = new ScreenSenderService(serviceLogger, configuration) { ControlApprovalPrompt = ControlApprovalPrompt };
 
             // Subscribe to passkey changes
             _screenSenderService.PasskeyChanged += (sender, args) =>

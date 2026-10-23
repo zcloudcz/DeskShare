@@ -82,6 +82,7 @@ internal static class Installer
                 {
                     FileLog.Write("WARNING: could not set SoftwareSASGeneration, remote Ctrl+Alt+Del will not work: " + ex.Message);
                 }
+                AuditEventSource.Register(); // session audit (Event Viewer > Windows Logs > Application > source DeskShare)
                 FileLog.Write("Installed and started.");
                 return 0;
             case SwapResult.FailedRolledBack:
@@ -206,6 +207,7 @@ internal static class Installer
         {
             FileLog.Write("Could not restore SoftwareSASGeneration: " + ex.Message);
         }
+        AuditEventSource.Unregister();
         // %ProgramData%\DeskShare (server id, owner secret, config) is kept on purpose so re-enabling keeps the same identity.
         FileLog.Write("Uninstalled.");
         return 0;
@@ -288,7 +290,7 @@ internal static class Installer
             File.WriteAllText(UnattendedPaths.ConfigPath, """
                 {
                   "Signaling": { "ServerUrl": "wss://app.deskshare.zcloud.cz/signal" },
-                  "Security": { "EnableRemoteControl": false, "TrustClientPermanent": false }
+                  "Security": { "EnableRemoteControl": false, "TrustClientPermanent": false, "RequireConfirmationWhenUserLoggedOn": true }
                 }
                 """);
         return aside;

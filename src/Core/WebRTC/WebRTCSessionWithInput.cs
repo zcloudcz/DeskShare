@@ -193,6 +193,9 @@ public sealed class WebRTCSessionWithInput : IDisposable
         };
 
         _dataChannelManager.ViewerBindFailed += (_, peer) => DropUnverifiedPeer(peer.Connection, "binding did not verify");
+        // The host refused the viewer (unattended confirmation). Give the "approval_denied" message a moment to leave, then hang up.
+        _dataChannelManager.ViewerAdmissionDenied += (_, peer) =>
+            _ = Task.Delay(500).ContinueWith(_ => { try { peer.Connection?.close(); } catch (Exception ex) { _logger.Warning(ex, "Closing the refused peer connection failed"); } }, TaskScheduler.Default);
         _baseSession.ConnectionStateChanged += (_, state) =>
         {
             var peer = video.CurrentPeer;
@@ -213,7 +216,7 @@ public sealed class WebRTCSessionWithInput : IDisposable
         _ = Task.Delay(BindTimeout, _bindCts.Token).ContinueWith(t =>
         {
             // Judges only the peer that was waiting; a verified or already replaced one is left alone.
-            if (!t.IsCanceled && !peer.IsVerified && !peer.IsRetired)
+            if (!t.IsCanceled && !peer.IsVerified && !peer.IsRetired && !peer.AdmissionStarted) // waiting for the host's answer is not a failed binding
             {
                 DropUnverifiedPeer(peer.Connection, "no binding within the deadline");
             }

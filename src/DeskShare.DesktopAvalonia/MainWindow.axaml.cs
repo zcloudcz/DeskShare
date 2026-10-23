@@ -79,6 +79,9 @@ public partial class MainWindow : Window
         _serverManager.ServerIdChanged += (_, newId) =>
             Dispatcher.UIThread.Post(() => ServerIdText.Text = ServerIdGenerator.FormatServerIdForDisplay(newId));
 
+        // Control is never granted silently: the person at this computer approves each viewer's request (see ServerManager).
+        _serverManager.ControlApprovalPrompt = AskControlApprovalAsync;
+
         _connectionManager = App.ServiceProvider?.GetService<ConnectionManager>()
                   ?? throw new InvalidOperationException("ConnectionManager not available");
 
@@ -185,10 +188,59 @@ public partial class MainWindow : Window
 
     #region Server Mode Event Handlers
 
+    // Per-user "don't show this again" marker for the warning before sharing (a plain file: no settings store exists yet).
+    private static readonly string ShareWarningMarker = System.IO.Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RemoteDesktop.NET", "share-warning-dismissed");
+
+    /// <summary>True when sharing may go on. Anti-scam: shown before every start unless the user ticked "don't show again".</summary>
+    private async Task<bool> ConfirmShareWarningAsync()
+    {
+        if (System.IO.File.Exists(ShareWarningMarker))
+            return true;
+
+        var dialog = new SafetyPromptDialog(
+            "Share your screen?",
+            "Only share your screen with people you know and trust. Banks, police, Microsoft or DeskShare will never ask you to install or run DeskShare. " +
+            "If someone called you unexpectedly and asked for this, stop now.",
+            "Cancel", "Start sharing", "Don't show this again");
+        var start = await dialog.ShowAndWaitAsync();
+        if (start && dialog.DontShowAgain)
+        {
+            try
+            {
+                System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(ShareWarningMarker)!);
+                System.IO.File.WriteAllText(ShareWarningMarker, "");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not remember that the sharing warning was dismissed");
+            }
+        }
+        return start;
+    }
+
+    /// <summary>
+    /// "A viewer wants to control your mouse and keyboard." The sender cancels <paramref name="cancellationToken"/> after
+    /// 30 s (or when the viewer leaves); the question then closes itself, which counts as Deny.
+    /// </summary>
+    private Task<bool> AskControlApprovalAsync(CancellationToken cancellationToken) =>
+        Dispatcher.UIThread.InvokeAsync(async () =>
+        {
+            var dialog = new SafetyPromptDialog(
+                "Remote control request",
+                "A viewer wants to control your mouse and keyboard. Allow only if you know who it is and expect this.",
+                "Deny", "Allow");
+            using var closeOnCancel = cancellationToken.Register(() => Dispatcher.UIThread.Post(dialog.Close));
+            return await dialog.ShowAndWaitAsync();
+        });
+
     private async void StartServer_Click(object? sender, RoutedEventArgs e)
     {
         try
         {
+            if (!await ConfirmShareWarningAsync())
+                return;
+
             _logger.LogInformation("Starting server...");
 
             StartServerButton.IsEnabled = false;

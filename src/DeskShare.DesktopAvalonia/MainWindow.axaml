@@ -307,12 +307,12 @@
                                          Margin="0,0,0,15"/>
 
                                 <CheckBox x:Name="EnableRemoteControlCheckBox"
-                                        Content="Allow remote control (keyboard and mouse)"
+                                        Content="Viewers may ask to control this computer (you approve each request)"
                                         Margin="0,0,0,5"
                                         FontSize="14"
                                         IsChecked="False"/>
                                 <TextBlock x:Name="RemoteControlWarningText"
-                                         Text="Security: Only enable if you trust the connecting user"
+                                         Text="Security: control is only given after you click Allow on the request"
                                          FontSize="11"
                                          Foreground="#856404"
                                          Margin="25,0,0,15"

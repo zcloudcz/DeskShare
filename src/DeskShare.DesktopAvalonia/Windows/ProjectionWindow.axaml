@@ -137,6 +137,18 @@
                                     IsChecked="False"
                                     IsCheckedChanged="ShareClipboard_Changed"/>
 
+                            <!-- Visible only while the host's user can approve control (see OnControlRequestStateChanged). -->
+                            <Button x:Name="RequestControlButton"
+                                  Content="Request control"
+                                  Background="#0078D4"
+                                  Foreground="White"
+                                  BorderThickness="0"
+                                  Padding="12,8"
+                                  Margin="5,0"
+                                  Cursor="Hand"
+                                  IsVisible="False"
+                                  Click="RequestControl_Click"/>
+
                             <Button x:Name="SendFileButton"
                                   Content="Send file..."
                                   Background="#444444"

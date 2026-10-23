@@ -37,6 +37,8 @@ try
         AdapterIndex = configuration.GetValue("Capture:AdapterIndex", 0),
         OutputIndex = configuration.GetValue("Capture:OutputIndex", 0),
         EnableRemoteControl = configuration.GetValue("Security:EnableRemoteControl", false),
+        RequireControlApproval = configuration.GetValue("Security:RequireControlApproval", false), // headless: nobody to ask
+        ShowSessionBanner = configuration.GetValue("Security:ShowSessionBanner", true),
         EnableClipboard = configuration.GetValue("Security:EnableClipboard", false),
         EnableFileReceive = configuration.GetValue("Security:EnableFileReceive", false),
         EnablePrivacyScreen = configuration.GetValue("Security:EnablePrivacyScreen", false),
@@ -65,6 +67,12 @@ try
         service = new ScreenSenderService(logger, config, idPath, new DeskShare.Core.Auth.ServerOwnerSecretStore(Path.Combine(dataDir, "server-owner.key")));
     }
     using var serviceLifetime = service;
+
+    // Unattended agent (--config): while a user is logged on and the screen is unlocked, a new viewer must be confirmed
+    // on that user's desktop first. On the lock screen / without a user it connects at once (nobody could answer).
+    if (configFile is not null)
+        service.ViewerAdmission = DeskShare.Core.Safety.UnattendedAdmission.Create(
+            configuration.GetValue("Security:RequireConfirmationWhenUserLoggedOn", true));
 
     // Subscribe before StartAsync, otherwise the first passkey would be missed.
     service.PasskeyChanged += (_, e) =>
