@@ -150,6 +150,7 @@ public partial class ProjectionWindow : Window
         Dispatcher.UIThread.Invoke(() =>
         {
             _isConnected = true;
+            _ = StopRecordingAsync(); // a recording belongs to the previous peer connection; the new host was not told about it
             CtrlAltDelButton.IsEnabled = true; // this viewer sends input as soon as it is connected (no separate "Enable control")
             ConnectionStatusOverlay.IsVisible = false;
             TopToolbar.IsVisible = true;
@@ -341,6 +342,7 @@ public partial class ProjectionWindow : Window
         Dispatcher.UIThread.Invoke(async () =>
         {
             _logger.LogInformation("Disconnected: {Reason}", reason);
+            await StopRecordingAsync(); // keeps what was recorded so far
             // A failed end-to-end check is a security warning, not an ordinary disconnect.
             var intercepted = reason == ClientManager.BindFailedMessage;
             var msgBox = MessageBoxManager.GetMessageBoxStandard(
@@ -708,6 +710,7 @@ public partial class ProjectionWindow : Window
         _clientManager.DisplaysChanged -= OnDisplaysChanged;
         _clientManager.ControlRequestStateChanged -= OnControlRequestStateChanged;
         _fileSendCts?.Cancel();
+        FinishRecordingInBackground(); // finishes the file without blocking the UI thread; no "saved" message (the window is closing)
 
         _clientManager.DisconnectAsync().GetAwaiter().GetResult();
 
@@ -727,6 +730,7 @@ public partial class ProjectionWindow : Window
     private void OnFrameReceived(object? sender, VideoFrameReceivedEventArgs received)
     {
         _logger.LogDebug("[ProjectionWindow] Frame {Width}x{Height}, {Size} bytes", received.Width, received.Height, received.FrameData.Length);
+        OfferFrameToRecorder(received.FrameData, received.Width, received.Height); // no-op unless recording; never blocks
 
         // Post, never Invoke: this runs on the decode thread, inside the native decoder. Invoke would park that thread
         // until the UI thread is free, and the UI thread may be busy closing this window and disposing the decoder.

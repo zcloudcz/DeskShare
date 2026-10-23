@@ -17,6 +17,8 @@ public enum AuditKind
     FileReceived = 130,
     ClipboardTransfer = 140,
     DisplaySwitched = 150,
+    RecordingStarted = 160,
+    RecordingStopped = 161,
 }
 
 /// <summary>One audit record. <see cref="Text"/> is already formatted and never holds content (clipboard text, keystrokes).</summary>
@@ -57,6 +59,10 @@ public static class AuditEvents
 
     public static AuditEvent DisplaySwitched(string displayName) =>
         new(AuditKind.DisplaySwitched, $"The viewer switched the shared display to: {Clean(displayName)}.");
+
+    public static AuditEvent Recording(bool on) =>
+        new(on ? AuditKind.RecordingStarted : AuditKind.RecordingStopped,
+            on ? "The viewer started recording this session." : "The viewer stopped recording this session.");
 
     /// <summary>Drops control characters (log injection, fake extra lines) and caps the length.</summary>
     internal static string Clean(string? value, int max = 120)

@@ -23,6 +23,7 @@ public sealed class SessionBanner : IDisposable
     private readonly object _lock = new();
     private Win32Panel? _panel;
     private bool _disposed;
+    private long _version; // newest model version shown (0 = callers that do not number their updates)
 
     /// <param name="stopControl">Revokes the viewer's control (the viewer keeps watching).</param>
     /// <param name="endSession">Disconnects the viewer.</param>
@@ -32,7 +33,9 @@ public sealed class SessionBanner : IDisposable
         _endSession = endSession;
     }
 
-    public static string TextFor(SessionBannerState state) => state == SessionBannerState.Controlling ? ControllingText : ViewingText;
+    /// <summary>"(recording)" is appended when the viewer says it records. Informational: the host cannot detect recording.</summary>
+    public static string TextFor(SessionBannerState state, bool recording = false) =>
+        (state == SessionBannerState.Controlling ? ControllingText : ViewingText) + (recording ? " (recording)" : "");
 
     /// <summary>Handle of the banner window, zero while none is shown. For the smoke test.</summary>
     internal IntPtr WindowHandle
@@ -41,12 +44,18 @@ public sealed class SessionBanner : IDisposable
     }
 
     /// <summary>Shows, updates or removes the banner. Safe from any thread.</summary>
-    public void Update(SessionBannerState state)
+    public void Update(SessionBannerState state, bool recording = false, long version = 0)
     {
         Win32Panel? toClose = null;
         lock (_lock)
         {
             if (_disposed) return;
+            // Updates from different threads can arrive out of order; the model numbers its states, so an old one is dropped.
+            if (version != 0)
+            {
+                if (version < _version) return;
+                _version = version;
+            }
             if (state == SessionBannerState.None)
             {
                 toClose = _panel;
@@ -55,9 +64,9 @@ public sealed class SessionBanner : IDisposable
             else if (_panel == null)
             {
                 var panel = new Win32Panel(new PanelOptions(
-                    "DeskShare remote session", TextFor(state),
+                    "DeskShare remote session", TextFor(state, recording),
                     new[] { new PanelButton(StopControlId, "Stop control"), new PanelButton(EndSessionId, "End session") },
-                    Banner: true, HideOnSecureDesktop: true, Width: 640, Height: 38,
+                    Banner: true, HideOnSecureDesktop: true, Width: 760, Height: 38,
                     Background: 0x0007C1FF /* amber (BGR) */, Foreground: 0x00000000));
                 panel.ButtonClicked += OnButton;
                 if (!panel.Start())
@@ -70,7 +79,7 @@ public sealed class SessionBanner : IDisposable
             }
             else
             {
-                _panel.SetText(TextFor(state));
+                _panel.SetText(TextFor(state, recording));
                 _panel.SetButtonVisible(StopControlId, state == SessionBannerState.Controlling);
             }
         }

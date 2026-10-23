@@ -179,6 +179,25 @@
                                   IsVisible="False"
                                   Click="Privacy_Click"/>
 
+                            <!-- Recording is the viewer's own copy; the host is told (see ProjectionWindow.Recording.cs). -->
+                            <TextBlock x:Name="RecIndicator"
+                                  Foreground="#FF5555"
+                                  FontWeight="Bold"
+                                  FontSize="13"
+                                  VerticalAlignment="Center"
+                                  Margin="5,0"
+                                  IsVisible="False"/>
+
+                            <ToggleButton x:Name="RecordButton"
+                                  Content="Record"
+                                  Background="#444444"
+                                  Foreground="White"
+                                  BorderThickness="0"
+                                  Padding="12,8"
+                                  Margin="5,0"
+                                  Cursor="Hand"
+                                  Click="Record_Click"/>
+
                             <Button x:Name="FullscreenButton"
                                   Content="Fullscreen"
                                   Background="#444444"
@@ -210,6 +229,29 @@
                                   Click="Disconnect_Click"/>
                         </StackPanel>
                     </Grid>
+                </Border>
+
+                <!-- Shown after a recording was saved -->
+                <Border x:Name="RecordingSavedBar"
+                      Background="#CC000000"
+                      CornerRadius="4"
+                      Padding="15,8"
+                      VerticalAlignment="Bottom"
+                      HorizontalAlignment="Center"
+                      Margin="0,0,0,20"
+                      IsVisible="False">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock x:Name="RecordingSavedText"
+                                 Foreground="White"
+                                 FontSize="14"
+                                 VerticalAlignment="Center"/>
+                        <Button Content="Open folder"
+                              Margin="12,0,0,0"
+                              Click="OpenRecordingFolder_Click"/>
+                        <Button Content="Close"
+                              Margin="6,0,0,0"
+                              Click="CloseRecordingSaved_Click"/>
+                    </StackPanel>
                 </Border>
 
                 <!-- Fullscreen hint -->

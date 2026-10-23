@@ -145,6 +145,16 @@ public class ClientManager : IDisposable
         _peer.TrySend(channel => channel.send(json), requireVerified: true);
     }
 
+    /// <summary>
+    /// Tells the host that this viewer records (or stopped recording) the session, so its banner can say so.
+    /// Returns false when the message could not be sent (not connected or not verified): the caller then does not record.
+    /// </summary>
+    public bool SendRecordingState(bool on)
+    {
+        var json = "{\"type\":\"recording_state\",\"on\":" + (on ? "true" : "false") + "}";
+        return _isConnected && _peer.TrySend(channel => channel.send(json), requireVerified: true);
+    }
+
     // The three "host allows ..." flags describe the CURRENT connection. They change under _hostStateGate, which also
     // refuses a change that comes from a retired peer, and their events are raised AFTER the gate is released: a
     // handler may block on the UI thread, and the UI thread must be free to send input.

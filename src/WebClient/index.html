@@ -291,6 +291,9 @@
                 <!-- Shown only when the host allowed receiving files (see setFilesAllowed in client.js). A file can also be dropped on the video. -->
                 <button id="sendFileBtn" onclick="onSendFileClick()" hidden title="Send a file to the host, or drop it on the shared screen">Send file</button>
                 <input type="file" id="fileInput" hidden>
+                <!-- Shown once a verified session shows video (see showVideo in client.js). The host is told while recording. -->
+                <button id="recordBtn" onclick="toggleRecording()" hidden title="Record the shared screen to a .webm file; the host sees that you are recording">Record</button>
+                <span id="recIndicator" hidden style="color:#c00;font-weight:bold"></span>
                 <button id="hidePanelsBtn" onclick="setFocus(true)" title="Hide everything except the title and the shared screen">Hide panels</button>
             </div>
 

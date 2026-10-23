@@ -21,6 +21,9 @@ internal sealed class SessionSafety : IDisposable
     private IDisposable? _banner;
     private PeerContext? _active; // the verified viewer we count as "the session"
     private string _sessionId = "";
+    private bool _recording; // recording state of the active session (guarded by _recordingLock)
+    private long _recordingSeq; // numbers the recording decisions in the order they were made (guarded by _recordingLock)
+    private readonly object _recordingLock = new();
 
     /// <param name="controlPrompt">Asks the person at the computer for control (attended app). Without one a requested control is always denied.</param>
     /// <param name="admission">Unattended agent: asks before a viewer may connect. Null admits every verified viewer.</param>
@@ -51,6 +54,7 @@ internal sealed class SessionSafety : IDisposable
 
         dataChannel.ViewerVerified += (_, peer) => OnViewerStarted(peer);
         dataChannel.ViewerEnded += (_, peer) => OnViewerEnded(peer);
+        dataChannel.ViewerRecordingChanged += (_, peer) => OnRecordingChanged(peer);
         dataChannel.ClipboardMessageReceived += (_, message) => _audit.Write(AuditEvents.ClipboardTransfer(toHost: true, message.SizeBytes));
         dataChannel.ClipboardSent += size => _audit.Write(AuditEvents.ClipboardTransfer(toHost: false, size));
         if (dataChannel.PrivacyScreen is { } privacy)
@@ -71,7 +75,8 @@ internal sealed class SessionSafety : IDisposable
         {
             var banner = new SessionBanner(StopControl, EndSession);
             _banner = banner;
-            _model.Changed += banner.Update;
+            // The check is repeated inside the lambda because the analyzer does not carry the one above into it.
+            _model.Changed += _ => { if (OperatingSystem.IsWindows()) { var s = _model.Snapshot; banner.Update(s.State, s.Recording, s.Version); } };
         }
         else
         {
@@ -82,12 +87,20 @@ internal sealed class SessionSafety : IDisposable
     /// <summary>For the display switch callback of the service (the switch happens outside the data channel manager).</summary>
     public void DisplaySwitched(string displayName) => _audit.Write(AuditEvents.DisplaySwitched(displayName));
 
+    // Session identity and the recording flag change together under _recordingLock: a "recording" callback is checked against
+    // the CURRENT session and applied in the same critical section, so it can never publish into a replacement session.
+    // Only leaf calls happen inside the lock (the audit sink); the banner is updated after it, with a sequence number
+    // (and the model's version) that make a delayed call harmless.
     private void OnViewerStarted(PeerContext peer)
     {
         // A new id per viewer connection, short enough to read in the Event Viewer.
         var id = Guid.NewGuid().ToString("N")[..8];
-        _sessionId = id;
-        _active = peer;
+        lock (_recordingLock)
+        {
+            _sessionId = id;
+            _active = peer;
+            _recording = false; // a new session starts without recording until its viewer says so
+        }
         _audit.Write(AuditEvents.SessionStarted(id, RemoteAddressOf(peer), endToEndVerified: true));
         _model.ViewerStarted();
 
@@ -104,12 +117,44 @@ internal sealed class SessionSafety : IDisposable
 
     private void OnViewerEnded(PeerContext peer)
     {
-        // Both the channel and the connection can report the end of the same session: count it once.
-        if (Interlocked.CompareExchange(ref _active, null, peer) != peer)
-            return;
-        _audit.Write(AuditEvents.SessionEnded(_sessionId));
+        string sessionId;
+        long sequence = 0;
+        lock (_recordingLock)
+        {
+            // Both the channel and the connection can report the end of the same session: count it once.
+            if (!ReferenceEquals(_active, peer)) return;
+            _active = null;
+            sessionId = _sessionId;
+            if (_recording)
+            {
+                // The flag is per peer (PeerContext.Recording is cleared when it is retired); log the stop before the end.
+                _recording = false;
+                sequence = ++_recordingSeq;
+                _audit.Write(AuditEvents.Recording(false));
+            }
+        }
+        if (sequence != 0) _model.RecordingChanged(false, sequence);
+        _audit.Write(AuditEvents.SessionEnded(sessionId));
         _model.ViewerEnded();
     }
+
+    private void OnRecordingChanged(PeerContext peer)
+    {
+        bool on;
+        long sequence;
+        lock (_recordingLock)
+        {
+            // Only the verified viewer we count as the session may change the banner.
+            if (!ReferenceEquals(_active, peer)) return;
+            on = peer.Recording; // the peer's current word, not the order the callbacks happened to run in
+            if (on == _recording) return;
+            _recording = on;
+            sequence = ++_recordingSeq;
+            _audit.Write(AuditEvents.Recording(on)); // inside the lock: the audit trail keeps the order of the decisions
+        }
+        _model.RecordingChanged(on, sequence);
+    }
+
 
     private void OnControlStateChanged(InputAuthorizationState state)
     {
