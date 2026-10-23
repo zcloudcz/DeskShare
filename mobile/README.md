@@ -23,8 +23,31 @@ only HTTPS/WSS; debug builds also allow `ws://` (emulator reaches the host at `1
 | `lib/sender` | sender session, `GestureMapper` (InputMessage to Android gestures), `DeviceControl` channel, screen |
 | `android/app/src/main/kotlin` | `MainActivity` (method channel), `DeskShareAccessibilityService`, `CaptureService` |
 
-`PasskeyCredential.wireValue(serverId)` is the single place that turns the shown passkey into the wire value
-(`Passkey` field and HMAC key). The planned T3 change (HKDF auth key + `e2e_bind` handshake) goes there.
+## End-to-end binding (protocol T3)
+
+Mirror of `src/Core/Auth/E2EBinding.cs` / `E2EKeyRing.cs` in `lib/core/e2e_binding.dart`. The raw passkey never
+leaves the phone: `PasskeyCredential.wireValue(serverId)` is the HKDF-SHA256 auth key (sent as `Passkey` and used
+as the request-signing HMAC key), the e2e key stays local. Both roles then exchange `e2e_bind` MACs over the data
+channel (HMAC over role and both DTLS fingerprints from the SDPs), 10 s deadline, same error text as the web viewer.
+
+- **Viewer**: sends its bind when the channel opens, ignores everything until the host's bind verified, keeps the
+  video stream away from the renderer and sends no input/`authorization_request` before that. State is per peer
+  connection (`PeerBinding`); a replaced connection is retired, so a late result cannot verify the new one.
+- **Android sender**: always creates the `input` data channel now (the bind travels over it, also for view-only
+  hosts). A key ring holds the keys of recent passkeys (viewers that typed the previous one still bind). The
+  viewer's bind is verified first, then the sender's own bind goes out, then video and input open up.
+  Until then the screen track is **disabled** (`track.enabled = false` = black frames, no pixels); this is
+  reliable in flutter_webrtc on Android, adding the track after verification would need renegotiation.
+- **Permanent password**: the viewer field takes the passkey or a 12+ character permanent password
+  (PBKDF2-HMAC-SHA256, NFC, 600 000 rounds in a background isolate via pointycastle + unorm_dart, then the same
+  HKDF; vector shared with `tests/js/perm-vector.mjs`). HTTP 429 from `/authenticate` reads "Too many attempts".
+- **Control approval**: the probe after binding is `authorization_request {interactive:false}`; "Enable control" sends
+  `interactive:true` when the host answered `requestable:true`, shows `approval_pending` and the final
+  `authorization_response` (`reason` denied / timeout / client_update_required). `approval_pending` /
+  `approval_denied` with `what:"connection"` are handled for unattended hosts. Written against the protocol
+  description; not yet exercised against a real approving host.
+- Tests: `test/e2e_binding_test.dart` uses the fixed vector shared with `tests/js/e2e-vector.mjs`. Old clients
+  (raw passkey) cannot talk to new senders and vice versa.
 
 ## Tests
 
@@ -48,6 +71,11 @@ dotnet run --project src/SignalingServer
   cannot be used from an agent session (DXGI access denied); the Linux E2E image (`docker/e2e`) works, but its
   container IP is unreachable from the emulator, so give the server a TURN entry reachable by both
   (`IceServers__0__Urls=turn:<host LAN IP>:3479?transport=udp`, user `testuser`/`testpass`, Development only).
+  Run coturn for it: `docker run -d -p 3479:3479/udp -p 50000-50040:50000-50040/udp coturn/coturn -n
+  --listening-port=3479 --min-port=50000 --max-port=50040 --lt-cred-mech --user=testuser:testpass --realm=test
+  --no-tls --external-ip=<host LAN IP>` and start the server with `Turn__Enabled=false` (the server's built-in
+  TURN logs relay address 0.0.0.0; not verified whether it works). A passkey is single use: a second viewer test
+  needs the next rotation.
   `flutter test integration_test/e2e_test.dart -d emulator-5554 --plain-name viewer:`
 - **Sender test** is self-contained (sender and viewer both run in the app, through the real server) but the
   system MediaProjection dialog must be accepted: choose "Share entire screen" in the drop-down, then

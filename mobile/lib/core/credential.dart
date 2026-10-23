@@ -1,18 +1,33 @@
+import 'e2e_binding.dart' as e2e;
 import 'ids.dart';
 
-/// The single place that turns the passkey shown on screen into what goes on the wire
-/// (the `Passkey` field and the HMAC key).
+/// The single place that turns what the user typed (or the generated passkey) into what goes on the wire.
 ///
-/// Today the wire value IS the raw passkey. The planned "T3" change (HKDF-derived auth key + e2e_bind
-/// data channel handshake) only has to change [wireValue]; no other file knows how the key is made.
+/// The raw passkey/password never leaves the device (the signaling server sees everything we send it): the server
+/// gets `authKey` and the peers prove to each other over the data channel with `e2eKey`, both HKDF-derived from
+/// the secret and the Server ID (see e2e_binding.dart). The viewer field accepts a 9-character passkey or a
+/// permanent password (12+ characters).
 class PasskeyCredential {
-  PasskeyCredential(String typedOrDisplayed) : passkey = normalizePasskey(typedOrDisplayed);
+  PasskeyCredential(this.typed) : passkey = normalizePasskey(typed);
+
+  /// Exactly what was typed (a permanent password is case sensitive and keeps dashes and spaces).
+  final String typed;
 
   /// Canonical 9-character passkey (upper case, no separators).
   final String passkey;
 
-  bool get isComplete => passkey.length == passkeyLength;
+  bool get isPasskey => e2e.looksLikePasskey(typed);
+  bool get isPermanentPassword => e2e.isPermanentPassword(typed);
 
-  /// Value sent as `Passkey` and used as HMAC key for [serverId].
-  String wireValue(String serverId) => passkey;
+  bool get isComplete => isPasskey || isPermanentPassword;
+
+  /// Both keys for [serverId]; the password path is slow (PBKDF2) and runs in a background isolate.
+  Future<e2e.DerivedKeys> deriveFor(String serverId) => e2e.deriveFromUserInput(typed, serverId);
+
+  /// Auth key of a generated passkey (sender side; synchronous, no PBKDF2). Sent as `Passkey` and used as the
+  /// request-signing HMAC key.
+  String wireValue(String serverId) => e2e.deriveKeys(passkey, serverId).authKey;
+
+  /// e2e key of a generated passkey (sender side). Stays on the device.
+  List<int> e2eKey(String serverId) => e2e.deriveKeys(passkey, serverId).e2eKey;
 }
