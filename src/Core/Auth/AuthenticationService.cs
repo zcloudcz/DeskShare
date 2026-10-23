@@ -83,16 +83,10 @@ public sealed class AuthenticationService
     /// </summary>
     /// <param name="timestamp">The timestamp when passkey was generated.</param>
     /// <returns>DateTime when the passkey expires (timestamp + 45 seconds).</returns>
-    public static DateTime GetPasskeyExpiration(DateTime timestamp)
-    {
-        // Round to start of current interval, then add validity duration
-        long totalSeconds = (long)timestamp.ToUniversalTime().TimeOfDay.TotalSeconds;
-        long intervalNumber = totalSeconds / PasskeyValiditySeconds;
-        long roundedSeconds = intervalNumber * PasskeyValiditySeconds;
-
-        var roundedTime = timestamp.ToUniversalTime().Date.AddSeconds(roundedSeconds);
-        return roundedTime.AddSeconds(PasskeyValiditySeconds);
-    }
+    public static DateTime GetPasskeyExpiration(DateTime timestamp) =>
+        // The full validity from the moment the passkey is made. (It used to end at the next 45 s slot boundary of the
+        // day, so a passkey made just before a boundary was valid for a second or two and a viewer typing it was rejected.)
+        timestamp.ToUniversalTime().AddSeconds(PasskeyValiditySeconds);
 
     /// <summary>
     /// Compares a provided passkey with the registered one in constant time, ignoring case.

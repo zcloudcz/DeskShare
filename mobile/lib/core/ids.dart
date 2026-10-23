@@ -52,14 +52,9 @@ String generatePasskey([Random? random]) {
       passkeyLength, (_) => passkeyCharset.codeUnitAt(r.nextInt(passkeyCharset.length))));
 }
 
-/// End of the current 45 s slot of the UTC day (`AuthenticationService.GetPasskeyExpiration`).
-DateTime passkeyExpiration(DateTime now) {
-  final utc = now.toUtc();
-  final day = DateTime.utc(utc.year, utc.month, utc.day);
-  final seconds = utc.difference(day).inSeconds;
-  final slot = seconds ~/ passkeyValiditySeconds;
-  return day.add(Duration(seconds: (slot + 1) * passkeyValiditySeconds));
-}
+/// The full validity from now (`AuthenticationService.GetPasskeyExpiration`). It used to end at the next 45 s slot
+/// boundary, so a passkey made just before one was valid for a second and the viewer typing it was rejected.
+DateTime passkeyExpiration(DateTime now) => now.toUtc().add(const Duration(seconds: passkeyValiditySeconds));
 
 /// Fresh viewer identity per connection ("client-" + 32 hex). The signaling server refuses "server-"
 /// prefixes and IDs that are still in use, so a new one per connect avoids a stale-socket clash.

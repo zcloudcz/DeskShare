@@ -37,18 +37,14 @@ public class AuthenticationServiceTests
     }
 
     [Fact]
-    public void GetPasskeyExpiration_ShouldReturn45SecondsFromIntervalStart()
+    public void GetPasskeyExpiration_IsTheFullValidityFromNow()
     {
-        // Arrange
-        var timestamp = new DateTime(2025, 1, 15, 10, 30, 25, DateTimeKind.Utc); // 10:30:25
+        var timestamp = new DateTime(2025, 1, 15, 10, 30, 44, DateTimeKind.Utc); // one second before an old slot boundary
 
-        // Act
         var expiration = AuthenticationService.GetPasskeyExpiration(timestamp);
 
-        // Assert
-        // 10:30:25 is in interval 10:30:00-10:30:44, so expiration should be 10:30:45
-        var expectedExpiration = new DateTime(2025, 1, 15, 10, 30, 45, DateTimeKind.Utc);
-        Assert.Equal(expectedExpiration, expiration);
+        // Valid for the full 45 s, not just until 10:30:45.
+        Assert.Equal(new DateTime(2025, 1, 15, 10, 31, 29, DateTimeKind.Utc), expiration);
     }
 
     [Fact]
