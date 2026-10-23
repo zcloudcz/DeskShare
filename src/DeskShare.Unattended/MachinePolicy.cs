@@ -122,6 +122,16 @@ public sealed class MachinePolicy
     private static string? WebSocketUrl(JsonElement? e) =>
         e is { ValueKind: JsonValueKind.String } v && IsWebSocketUrl(v.GetString()) ? v.GetString() : null;
 
+    /// <summary>A value the MSI may have remembered: only the known property names, a ws/wss URL (or empty) for SIGNALING_URL,
+    /// short plain words (0, 1, user) for the rest. Used before anything read back from disk is written to HKLM.</summary>
+    public static bool IsValidRememberedValue(string name, string value) => name switch
+    {
+        "SIGNALING_URL" => value.Length == 0 || IsWebSocketUrl(value),
+        "ENABLE_UNATTENDED" or "ALLOW_REMOTE_CONTROL" or "ALLOW_CLIPBOARD" or "ALLOW_FILES" or "ALLOW_PRIVACY_SCREEN" or "DISABLE_AUTOUPDATE"
+            => value.Length <= 16 && value.All(char.IsAsciiLetterOrDigit),
+        _ => false,
+    };
+
     public static bool IsWebSocketUrl(string? s) =>
         Uri.TryCreate(s, UriKind.Absolute, out var u) && u.Scheme is "ws" or "wss";
 }

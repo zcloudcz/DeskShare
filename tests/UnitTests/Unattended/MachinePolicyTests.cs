@@ -143,6 +143,32 @@ public class MachinePolicyTests
     }
 
     [Fact]
+    public void AclProblem_RejectsBackupFolderWithProgramDataDefaults()
+    {
+        // A .bak folder created with ProgramData's inherited DACL: not protected, Users may create files in it.
+        var inherited = new[]
+        {
+            Allow(WellKnownSidType.LocalSystemSid, FileSystemRights.FullControl),
+            Allow(WellKnownSidType.BuiltinAdministratorsSid, FileSystemRights.FullControl),
+            Allow(WellKnownSidType.BuiltinUsersSid, FileSystemRights.CreateFiles | FileSystemRights.ReadAndExecute),
+        };
+        Assert.NotNull(PolicyTrust.AclProblem(Sid(WellKnownSidType.BuiltinAdministratorsSid), true, false, inherited));
+        Assert.NotNull(PolicyTrust.AclProblem(Sid(WellKnownSidType.BuiltinAdministratorsSid), true, true, inherited)); // even if protected: Users can write
+    }
+
+    [Theory]
+    [InlineData("SIGNALING_URL", "wss://ok.example/signal", true)]
+    [InlineData("SIGNALING_URL", "", true)]
+    [InlineData("SIGNALING_URL", "http://evil", false)]
+    [InlineData("SIGNALING_URL", "javascript:alert(1)", false)]
+    [InlineData("ALLOW_FILES", "1", true)]
+    [InlineData("ALLOW_FILES", "user", true)]
+    [InlineData("ALLOW_FILES", "1; calc", false)]
+    [InlineData("SOMETHING_ELSE", "1", false)]
+    public void IsValidRememberedValue_FiltersPlantedRegistryBackup(string name, string value, bool expected)
+        => Assert.Equal(expected, MachinePolicy.IsValidRememberedValue(name, value));
+
+    [Fact]
     public void Parse_WrongTypesAndNonWebSocketUrl_AreSkippedIndividually()
     {
         var p = MachinePolicy.Parse("""

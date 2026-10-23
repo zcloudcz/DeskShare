@@ -57,7 +57,7 @@ internal static class PolicyCommand
             }
 
             bool? Flag(string key) => Get(key) switch { "1" => true, "0" => false, _ => null };
-            CreateProtectedDir(dir);
+            CreateProtectedDir(dir, AclSpec.PolicyDirSddl);
             File.WriteAllText(MachinePolicy.DefaultPath, MachinePolicy.ToJson(
                 string.IsNullOrEmpty(url) ? null : url, Flag("rc"), Flag("cb"), Flag("fl"), Flag("pv"), Flag("nu") == true));
 
@@ -84,7 +84,9 @@ internal static class PolicyCommand
     private static void Backup(string dir, string backup, string txn)
     {
         DeleteDir(backup);
-        Directory.CreateDirectory(backup);
+        // Admin-only from the first moment (a ProgramData default DACL would let a user plant txn.txt / registry.json that Restore later trusts).
+        CreateProtectedDir(backup, AclSpec.DataDirSddl);
+        if (PolicyTrust.FolderProblem(backup) is { } problem) throw new IOException("backup folder is not admin-only: " + problem); // someone re-created it in between
         using (var key = Registry.LocalMachine.OpenSubKey(RegKey))
         {
             if (key != null)
@@ -99,26 +101,28 @@ internal static class PolicyCommand
     private static int Restore(string dir, string backup, string txn)
     {
         var marker = Path.Combine(backup, "txn.txt");
-        if (!File.Exists(marker) || File.ReadAllText(marker) != txn) return 0; // not our backup: leave the live policy alone
+        // Believe nothing in a backup folder that is not admin-only (a user could have planted it) or is not stamped with our id.
+        if (!File.Exists(marker) || PolicyTrust.Problem(marker) != null || File.ReadAllText(marker) != txn) return 0;
         DeleteDir(dir);
         var prev = Path.Combine(backup, "prev");
         if (Directory.Exists(prev)) Directory.Move(prev, dir);
         Registry.LocalMachine.DeleteSubKeyTree(RegKey, false);
         var saved = Path.Combine(backup, "registry.json");
-        if (File.Exists(saved))
+        if (File.Exists(saved) && PolicyTrust.Problem(saved) == null)
         {
             using var key = Registry.LocalMachine.CreateSubKey(RegKey);
-            foreach (var (name, value) in JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(saved))!) key.SetValue(name, value);
+            foreach (var (name, value) in JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(saved))!)
+                if (MachinePolicy.IsValidRememberedValue(name, value)) key.SetValue(name, value);
         }
         DeleteDir(backup);
         return 0;
     }
 
     [SupportedOSPlatform("windows")]
-    private static void CreateProtectedDir(string dir)
+    private static void CreateProtectedDir(string dir, string sddl)
     {
         var sec = new DirectorySecurity();
-        sec.SetSecurityDescriptorSddlForm(AclSpec.PolicyDirSddl);
+        sec.SetSecurityDescriptorSddlForm(sddl);
         new DirectoryInfo(dir).Create(sec);
     }
 }
