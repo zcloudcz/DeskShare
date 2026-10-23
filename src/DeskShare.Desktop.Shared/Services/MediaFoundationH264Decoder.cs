@@ -92,8 +92,22 @@ internal sealed class MediaFoundationH264Decoder : IH264FrameDecoder
         if (hr < 0 || ptr == IntPtr.Zero)
             throw new InvalidOperationException($"H.264 decoder MFT not available (HRESULT 0x{hr:X8}).");
         _mft = new IMFTransform(ptr);
+        try
+        {
+            Configure(hardware);
+        }
+        catch
+        {
+            // SharpGen does not release COM objects on finalization, so a failed setup must free the MFT, the device
+            // manager and the D3D device here; otherwise every failed GPU attempt (one per connection) leaks them.
+            Dispose(); // releases all three (each only if it was created)
+            throw;
+        }
+    }
 
-        using (var attrs = _mft.Attributes)
+    private void Configure(bool hardware)
+    {
+        using (var attrs = _mft!.Attributes)
         {
             attrs.Set(MfLowLatency, 1u);
             if (hardware)

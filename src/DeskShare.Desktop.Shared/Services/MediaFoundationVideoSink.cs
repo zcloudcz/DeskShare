@@ -149,7 +149,16 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
     {
         if (_path == H264Path.FFmpeg)
         {
-            _ffmpeg!.GotVideoFrame(ep, ts, frame, format);
+            if (_ffmpeg == null)
+            {
+                // Creating the FFmpeg endpoint failed when we switched to it: retry, then catch up from the last keyframe
+                // (this frame included). Throws again if it still fails; the caller logs it and the next frame retries.
+                Remember(ep, ts, frame, format);
+                EnsureFfmpeg();
+                Replay(f => _ffmpeg!.GotVideoFrame(f.Ep, f.Ts, f.Data, f.Format));
+                return;
+            }
+            _ffmpeg.GotVideoFrame(ep, ts, frame, format);
             return;
         }
 

@@ -117,4 +117,20 @@ public sealed class MediaFoundationFallbackTests
 
         Assert.Equal(new byte[] { 3, 4, 5, 6 }, software.Seen);
     }
+
+    [Fact]
+    public void FfmpegFallbackThatFailsToStart_IsRetried_AndCatchesUpFromTheKeyframe()
+    {
+        var ffmpeg = Substitute.For<IVideoSink>();
+        var attempts = 0;
+        var sink = new MediaFoundationVideoSink(NullLogger.Instance, _ => throw new InvalidOperationException("no MF"),
+            () => ++attempts == 1 ? throw new InvalidOperationException("FFmpeg not ready") : ffmpeg, H264Path.MediaFoundationSoftware);
+
+        sink.GotVideoFrame(Ep, 0, Key(1), H264);   // MF cannot be created -> FFmpeg, whose creation fails (logged, not thrown)
+        sink.GotVideoFrame(Ep, 1, Delta(2), H264); // retried: works now, gets the keyframe and this frame
+
+        Assert.Equal(2, attempts);
+        ffmpeg.Received(1).GotVideoFrame(Ep, 0, Arg.Is<byte[]>(b => b[5] == 1), H264);
+        ffmpeg.Received(1).GotVideoFrame(Ep, 1, Arg.Is<byte[]>(b => b[5] == 2), H264);
+    }
 }
