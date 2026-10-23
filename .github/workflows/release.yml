@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: write   # vpk upload creates the GitHub Release and uploads assets
+  actions: read     # download-ffmpeg.ps1 fetches the ffmpeg-win64-min artifact of ffmpeg-windows.yml
 
 env:
   VPK_VERSION: 1.2.161
@@ -61,9 +62,11 @@ jobs:
       - name: Run tests
         run: dotnet test DeskShare.sln --configuration Release --no-build --filter "FullyQualifiedName!~WindowsInputController"
 
-      # FFmpeg 8.1 LGPL shared DLLs (video decoding in the viewer); not in git because of size.
+      # Minimal FFmpeg 8.1 LGPL shared DLLs (decode, hardware H.264 encode, WebM recording) built by ffmpeg-windows.yml; not in git because of size.
       - name: Download FFmpeg
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: ./src/DeskShare.DesktopAvalonia/download-ffmpeg.ps1
 
       # Framework-dependent publish; Velopack's Setup.exe installs the .NET 8 runtime if missing

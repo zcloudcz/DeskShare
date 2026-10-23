@@ -1,0 +1,45 @@
+# Builds the minimal FFmpeg 8.1 LGPL shared libs for the Windows desktop app (see scripts/ffmpeg-win/README.md)
+# and uploads them as the artifact "ffmpeg-win64-min", which src/DeskShare.DesktopAvalonia/download-ffmpeg.ps1
+# (and so release.yml) downloads. The zip is cached on the build script hash, so a normal run only re-uploads it.
+# The monthly schedule keeps a non-expired artifact around (artifact retention is 90 days).
+
+name: ffmpeg-windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, build/ffmpeg-min-windows]
+    paths:
+      - 'scripts/ffmpeg-win/**'
+      - '.github/workflows/ffmpeg-windows.yml'
+  schedule:
+    - cron: '17 4 1 * *'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore cached build
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: out/ffmpeg-win64-min.zip
+          key: ffmpeg-win64-min-${{ hashFiles('scripts/ffmpeg-win/build.sh') }}
+
+      - name: Build (mingw-w64 cross-compile in Docker)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p out
+          docker run --rm -v "$PWD:/src" -v "$PWD/out:/out" ubuntu:24.04 bash /src/scripts/ffmpeg-win/build.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-win64-min
+          path: out/ffmpeg-win64-min.zip
+          retention-days: 90
