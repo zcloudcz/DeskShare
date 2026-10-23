@@ -132,6 +132,20 @@ public sealed class MachinePolicy
         _ => false,
     };
 
+    /// <summary>
+    /// The value to write back on rollback, or null to skip it. A flag value other than 0/1 means "leave it to the user"
+    /// for the MSI, so anything else that is not clearly valid is written as "user" instead of being dropped: dropping
+    /// it would make the next repair fall back to the default 0 and silently lock the option.
+    /// </summary>
+    public static string? NormalizeRememberedValue(string name, string value)
+    {
+        if (name == "SIGNALING_URL")
+            return IsValidRememberedValue(name, value) ? value : null;
+        if (!IsValidRememberedValue(name, "0"))
+            return null; // unknown property name
+        return value is "0" or "1" ? value : "user";
+    }
+
     public static bool IsWebSocketUrl(string? s) =>
         Uri.TryCreate(s, UriKind.Absolute, out var u) && u.Scheme is "ws" or "wss";
 }

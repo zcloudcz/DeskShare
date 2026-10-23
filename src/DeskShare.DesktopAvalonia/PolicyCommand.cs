@@ -112,7 +112,7 @@ internal static class PolicyCommand
         {
             using var key = Registry.LocalMachine.CreateSubKey(RegKey);
             foreach (var (name, value) in JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(saved))!)
-                if (MachinePolicy.IsValidRememberedValue(name, value)) key.SetValue(name, value);
+                if (MachinePolicy.NormalizeRememberedValue(name, value) is { } safe) key.SetValue(name, safe);
         }
         DeleteDir(backup);
         return 0;

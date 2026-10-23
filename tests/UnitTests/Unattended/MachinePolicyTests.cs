@@ -201,4 +201,15 @@ public class MachinePolicyTests
         Assert.False(MachinePolicy.IsMsiInstall(Path.Combine(pf, "DeskShare", "Service")));
         Assert.False(MachinePolicy.IsMsiInstall(Path.GetTempPath()));
     }
+
+    [Theory]
+    [InlineData("ALLOW_FILES", "1", "1")]
+    [InlineData("ALLOW_FILES", "0", "0")]
+    [InlineData("ALLOW_FILES", "not-set", "user")]
+    [InlineData("ALLOW_FILES", "1; calc", "user")]
+    [InlineData("SIGNALING_URL", "wss://corp/signal", "wss://corp/signal")]
+    [InlineData("SIGNALING_URL", "http://evil", null)]
+    [InlineData("SOMETHING_ELSE", "1", null)]
+    public void RememberedValues_AreNormalizedForRollback(string name, string value, string? expected) =>
+        Assert.Equal(expected, MachinePolicy.NormalizeRememberedValue(name, value));
 }
