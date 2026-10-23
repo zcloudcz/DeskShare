@@ -84,6 +84,112 @@ async function signAuthRequest(serverId, passkey, timestamp, nonce) {
     return btoa(String.fromCharCode(...new Uint8Array(sig)));
 }
 
+// ---- End-to-end binding (mirrors E2EBinding.cs; tests/js/e2e-vector.mjs checks both give the same bytes) ----
+// The signaling server relays the SDP (and so the DTLS fingerprints) and sees what we send it, so the passkey itself
+// never goes there: we send authKey, derived from it. e2eKey, derived from the same passkey, stays in this page and
+// is used to prove over the data channel that both sides see the same fingerprints (no man in the middle).
+const PLACEHOLDER_IDLE = placeholder.textContent;
+const BIND_TIMEOUT_MS = 10000;
+const BIND_FAILED_MESSAGE = 'Secure connection check failed. The connection may be intercepted. Do not continue.';
+let e2eKey = null; // { serverId, bytes }; memory only. A page reload needs the passkey again.
+// All per-connection state (verified, clipboard/file permission, transfer, held-back video) lives in the PeerSession of
+// the current peer connection (bind-gate.js). Its messages go out only through sessions.send().
+const sessions = new SessionHost();
+let bindTimer = null;
+let bindFailed = false; // keeps the red error on screen when the socket close handler would overwrite it
+
+function toHex(buf) {
+    return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Returns { authKey (base64url), e2eKey (Uint8Array) }: HKDF-SHA256(passkey, salt "DeskShare/v1/"+serverId, info "auth"/"e2e").
+async function deriveKeys(passkey, serverId) {
+    const enc = new TextEncoder();
+    const ikm = await crypto.subtle.importKey('raw', enc.encode(passkey.replace(/[-\s]/g, '').toUpperCase()), 'HKDF', false, ['deriveBits']);
+    const salt = enc.encode('DeskShare/v1/' + serverId);
+    const derive = async (info) => new Uint8Array(await crypto.subtle.deriveBits(
+        { name: 'HKDF', hash: 'SHA-256', salt, info: enc.encode(info) }, ikm, 256));
+    const auth = await derive('auth');
+    return {
+        authKey: btoa(String.fromCharCode(...auth)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+        e2eKey: await derive('e2e')
+    };
+}
+
+// The sha-256 DTLS fingerprint of an SDP (uppercase, colons), or null when there is none or the SDP names two
+// different ones (we could not tell which certificate DTLS uses).
+function getFingerprint(sdp) {
+    let found = null;
+    const re = /^a=fingerprint:sha-256[ \t]+((?:[0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2})[ \t]*$/gm;
+    for (const m of (sdp || '').replace(/\r/g, '').matchAll(re)) {
+        const fp = m[1].toUpperCase();
+        if (found && found !== fp) return null;
+        found = fp;
+    }
+    return found;
+}
+
+async function bindKey(usage) {
+    return crypto.subtle.importKey('raw', e2eKey.bytes, { name: 'HMAC', hash: 'SHA-256' }, false, [usage]);
+}
+
+function bindData(role, senderFp, viewerFp) {
+    return new TextEncoder().encode(`DeskShare-bind-v1|${role}|${senderFp}|${viewerFp}`);
+}
+
+// Fingerprints as this side sees them: the sender's is in the remote description, ours in the local one.
+// Always for an explicit peer connection (never the global pc, which a new offer may have replaced).
+function bindFingerprints(peer) {
+    return {
+        senderFp: getFingerprint(peer?.remoteDescription?.sdp),
+        viewerFp: getFingerprint(peer?.localDescription?.sdp)
+    };
+}
+
+async function sendBind(session) {
+    const { senderFp, viewerFp } = bindFingerprints(session.pc);
+    if (!e2eKey || !senderFp || !viewerFp) return false;
+    const mac = toHex(await crypto.subtle.sign('HMAC', await bindKey('sign'), bindData('viewer', senderFp, viewerFp)));
+    // The session is re-checked inside send(): replaced meanwhile means nothing is sent, and that is not a failure.
+    if (!sessions.send(session, { type: 'e2e_bind', v: 1, role: 'viewer', mac }, { bind: true })) return !sessions.isCurrent(session);
+    session.bindSent = true;
+    return true;
+}
+
+// crypto.subtle.verify compares in constant time.
+async function verifySenderBind(message, peer) {
+    const { senderFp, viewerFp } = bindFingerprints(peer);
+    if (!e2eKey || !senderFp || !viewerFp || message.v !== 1 || message.role !== 'sender'
+        || typeof message.mac !== 'string' || !/^[0-9a-fA-F]{64}$/.test(message.mac)) return false;
+    const mac = Uint8Array.from(message.mac.match(/../g), (h) => parseInt(h, 16));
+    return crypto.subtle.verify('HMAC', await bindKey('verify'), mac, bindData('sender', senderFp, viewerFp));
+}
+
+function showVideo(session) {
+    if (!session.pendingStream || !session.verified || !sessions.isCurrent(session)) return;
+    remoteVideo.srcObject = session.pendingStream;
+    placeholder.style.display = 'none';
+    remoteVideo.style.display = 'block';
+    fullscreenBtn.disabled = false;
+    updateStatus('Receiving video stream', 'success');
+}
+
+function failBinding() {
+    console.warn('End-to-end check failed'); // no keys or fingerprints in the console
+    bindFailed = true;
+    disconnect();
+    updateStatus(BIND_FAILED_MESSAGE, 'error');
+}
+
+function startBindTimer(session) {
+    clearTimeout(bindTimer);
+    if (session.verified) return;
+    bindTimer = setTimeout(() => {
+        // Only the session that was waiting counts, not a newer one created by a reconnect.
+        if (!session.verified && sessions.isCurrent(session)) failBinding();
+    }, BIND_TIMEOUT_MS);
+}
+
 // Mirrors ServerIdGenerator.NormalizeServerIdInput: "123 456 789", "123-456-789", "123456789" and
 // "server-123456789" all become "server-123456789". Anything else is only trimmed so legacy IDs still work.
 function normalizeServerId(input) {
@@ -109,17 +215,34 @@ async function authenticate() {
         return null;
     }
 
+    if (!crypto.subtle) {
+        updateStatus('A secure context (https) is required to connect.', 'error');
+        return null;
+    }
+
     clientId = clientId || crypto.randomUUID();
+
+    // The server gets authKey instead of the passkey. Without a typed passkey (a trusted client reconnecting) there
+    // is nothing to derive: we keep the e2eKey of this page session if it belongs to the same server, otherwise the
+    // end-to-end check will fail and the passkey has to be entered again.
+    let authKey = '';
+    if (passkey) {
+        const keys = await deriveKeys(passkey, serverId);
+        authKey = keys.authKey;
+        e2eKey = { serverId, bytes: keys.e2eKey };
+    } else if (e2eKey && e2eKey.serverId !== serverId) {
+        e2eKey = null;
+    }
 
     const timestamp = new Date().toISOString();
     const nonce = crypto.randomUUID();
     const body = {
         ServerId: serverId,
-        Passkey: passkey,
+        Passkey: authKey,
         ClientId: clientId,
         Timestamp: timestamp,
         Nonce: nonce,
-        Signature: await signAuthRequest(serverId, passkey, timestamp, nonce)
+        Signature: await signAuthRequest(serverId, authKey, timestamp, nonce)
     };
 
     updateStatus('Authenticating...', 'info');
@@ -174,6 +297,7 @@ async function resume() {
  * Returns true when a WebSocket was created, false when authentication or setup failed.
  */
 async function connect(tryResume = false) {
+    bindFailed = false;
     try {
         let authResult = null;
         if (tryResume && resumeToken) {
@@ -310,7 +434,7 @@ async function connect(tryResume = false) {
             } else if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
                 updateStatus('Max reconnection attempts reached. Please reconnect manually.', 'error');
             } else {
-                updateStatus('Disconnected from signaling server', 'info');
+                if (!bindFailed) updateStatus('Disconnected from signaling server', 'info');
             }
         };
 
@@ -327,21 +451,41 @@ async function handleOffer(message) {
     try {
         updateStatus('Received offer, creating peer connection...', 'info');
 
+        // A new offer replaces the connection: detach and close the old one first, so none of its late events or
+        // callbacks can act on the new one.
+        if (remoteControl) { remoteControl.disable(); remoteControl = null; }
+        if (dataChannel) {
+            dataChannel.onopen = dataChannel.onclose = dataChannel.onmessage = null;
+            dataChannel.close();
+            dataChannel = null;
+        }
+        if (pc) {
+            pc.ondatachannel = pc.ontrack = pc.onicecandidate = pc.onconnectionstatechange = pc.oniceconnectionstatechange = null;
+            pc.close();
+        }
+        clearTimeout(bindTimer);
+
         // Create peer connection
         pc = new RTCPeerConnection(config);
+        // A new session per peer connection (the old one dies: its checks, clipboard reads and file transfers are
+        // void), and every peer connection must pass the end-to-end check again.
+        const session = sessions.begin(pc);
+        hostAllowsControl = false;
+        hostAllowsPrivacy = false;
+        privacyOn = false;
+        setClipboardAllowed(false);
+        setFilesAllowed(false);
+        placeholder.textContent = 'Verifying secure connection...';
 
-        // The sender opens an "input" data channel only when the host allowed remote control.
-        pc.ondatachannel = (event) => setupDataChannel(event.channel);
+        // The sender always opens the "input" data channel: the end-to-end check runs over it.
+        pc.ondatachannel = (event) => setupDataChannel(session, event.channel);
 
-        // Handle incoming tracks
+        // Handle incoming tracks. The video is held back until the sender is verified (see showVideo).
         pc.ontrack = (event) => {
             console.log('Received remote track:', event.track.kind);
             if (event.streams && event.streams[0]) {
-                remoteVideo.srcObject = event.streams[0];
-                placeholder.style.display = 'none';
-                remoteVideo.style.display = 'block';
-                fullscreenBtn.disabled = false; // Enable fullscreen button
-                updateStatus('Receiving video stream', 'success');
+                session.pendingStream = event.streams[0];
+                showVideo(session); // only shows once the session is verified
             }
         };
 
@@ -361,11 +505,20 @@ async function handleOffer(message) {
 
         // Handle connection state changes
         pc.onconnectionstatechange = () => {
+            if (session.dead) return; // event of a replaced connection
             console.log('Connection state:', pc.connectionState);
             updateWebRtcState(pc.connectionState);
 
+            // The sender drops a viewer whose binding does not verify. Losing the connection after we sent our
+            // binding but before the sender's arrived is treated as a failed check, not as a network glitch to retry.
+            if (session.bindSent && !session.verified && !userDisconnected && ['failed', 'closed', 'disconnected'].includes(pc.connectionState)) {
+                failBinding();
+                return;
+            }
+
             if (pc.connectionState === 'connected') {
                 updateStatus('WebRTC connection established', 'success');
+                startBindTimer(session);
                 startStatsMonitoring(); // Start collecting statistics
             } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
                 updateStatus('WebRTC connection failed', 'error');
@@ -477,6 +630,7 @@ function disconnect() {
     reconnectAttempts = 0;
     isReconnecting = false;
     resumeToken = null; // a manual disconnect ends the session; the next Connect must use the passkey
+    e2eKey = null; // ...which also derives the end-to-end key again
 
     if (ws) {
         ws.close();
@@ -535,6 +689,7 @@ function cleanup() {
     // Stop statistics and ping monitoring
     stopStatsMonitoring();
     stopPingMonitoring();
+    sessions.begin(null); // no live session any more: nothing can be sent, no check or transfer can finish
 
     if (remoteControl) {
         remoteControl.disable();
@@ -560,7 +715,10 @@ function cleanup() {
         remoteVideo.srcObject = null;
     }
 
+    clearTimeout(bindTimer);
+
     remoteVideo.style.display = 'none';
+    placeholder.textContent = bindFailed ? BIND_FAILED_MESSAGE : PLACEHOLDER_IDLE;
     placeholder.style.display = 'block';
     fullscreenBtn.disabled = true; // Disable fullscreen button
 
@@ -573,17 +731,29 @@ function cleanup() {
 
 // ---- Remote control (mouse, keyboard, touch) over the WebRTC data channel ----
 
-function setupDataChannel(channel) {
+function setupDataChannel(session, channel) {
+    if (!sessions.isCurrent(session)) { channel.close(); return; }
+    session.channel = channel;
     dataChannel = channel;
-    dataChannel.onopen = () => {
-        remoteControl = new RemoteControl(remoteVideo, dataChannel);
-        // The host's authorization_response also tells us whether it shares the clipboard.
-        dataChannel.send(JSON.stringify({ type: 'authorization_request', timestamp: new Date().toISOString() }));
+    // The remote control gets a gated view of the channel: it can send only while its session is the current,
+    // live and verified one, however long it lives.
+    const gatedChannel = {
+        get readyState() { return session.verified && sessions.isCurrent(session) ? channel.readyState : 'closed'; },
+        send: (json) => sessions.send(session, json)
+    };
+    channel.onopen = () => {
+        if (!sessions.isCurrent(session)) return;
+        remoteControl = new RemoteControl(remoteVideo, gatedChannel);
+        // First message on the channel is our e2e binding. The authorization_request follows only after the
+        // sender's binding verified (below); nothing else is sent before that.
+        sendBind(session).then((sent) => { if (!sent && sessions.isCurrent(session)) failBinding(); },
+            () => { if (sessions.isCurrent(session)) failBinding(); });
         updateControlButton();
         // The channel also exists for clipboard-only sessions, so "control available" is only said once the
         // host's authorization_response confirms it.
     };
-    dataChannel.onclose = () => {
+    channel.onclose = () => {
+        if (!sessions.isCurrent(session)) return; // an old channel closing must not tear down the current one
         if (remoteControl) remoteControl.disable();
         remoteControl = null;
         dataChannel = null;
@@ -594,9 +764,23 @@ function setupDataChannel(channel) {
         setClipboardAllowed(false);
         setFilesAllowed(false);
     };
-    dataChannel.onmessage = (event) => {
+    channel.onmessage = (event) => {
+        if (!sessions.isCurrent(session)) return; // message of a replaced connection
         let message;
         try { message = JSON.parse(event.data); } catch { return; }
+        if (message.type === 'e2e_bind') {
+            if (session.verified) return;
+            // Success AND failure only count for the session the check started on.
+            verifySenderBind(message, session.pc).then((ok) => sessions.completeVerification(session, ok, () => {
+                clearTimeout(bindTimer);
+                showVideo(session);
+                // The host's authorization_response also tells us whether it shares the clipboard.
+                sessions.send(session, { type: 'authorization_request', timestamp: new Date().toISOString() });
+            }, failBinding), () => { if (sessions.isCurrent(session)) failBinding(); });
+            return;
+        }
+        // Until the sender's binding verified, whatever else arrives is ignored (it could come from a man in the middle).
+        if (!session.verified) return;
         if (message.type === 'authorization_response') {
             setClipboardAllowed(message.clipboard === true);
             setFilesAllowed(message.files === true);
@@ -658,8 +842,8 @@ let privacyOn = false;
 function updatePrivacyButton() {
     if (!privacyBtn) return;
     const controlActive = !!(remoteControl && remoteControl.enabled && remoteControl.authorized);
-    if (!controlActive && privacyOn && dataChannel && dataChannel.readyState === 'open') {
-        dataChannel.send(JSON.stringify({ type: 'privacy_screen', enabled: false })); // the host needs Control for this message
+    if (!controlActive && privacyOn) {
+        sessions.send(sessions.current, { type: 'privacy_screen', enabled: false }); // the host needs Control for this message
     }
     if (!controlActive) privacyOn = false;
     privacyBtn.hidden = !(hostAllowsPrivacy && controlActive);
@@ -667,9 +851,9 @@ function updatePrivacyButton() {
 }
 
 function togglePrivacy() {
-    if (!dataChannel || dataChannel.readyState !== 'open') return;
-    // The button follows the host's privacy_screen_state answer, not the click.
-    dataChannel.send(JSON.stringify({ type: 'privacy_screen', enabled: !privacyOn }));
+    // The button follows the host's privacy_screen_state answer, not the click. Goes through the session gate like
+    // everything else: only to the current, live, verified connection.
+    sessions.send(sessions.current, { type: 'privacy_screen', enabled: !privacyOn });
 }
 
 function onPrivacyState(message) {
@@ -692,14 +876,14 @@ const MAX_MESSAGE_BYTES = 64 * 1024; // the host drops larger data channel messa
 let hostClipboardText = null;
 let clipboardSequence = 0;
 
-let clipboardAllowed = false;
-
+// The permission belongs to the current session; the buttons only mirror it.
 function setClipboardAllowed(allowed) {
+    const session = sessions.current;
     // Telling the host we want its clipboard text is harmless: it only reaches the OS clipboard on a click.
-    if (allowed && !clipboardAllowed && dataChannel && dataChannel.readyState === 'open') {
-        dataChannel.send(JSON.stringify({ type: 'clipboard_subscribe', enabled: true }));
+    if (session && allowed && !session.clipboardAllowed) {
+        sessions.send(session, { type: 'clipboard_subscribe', enabled: true });
     }
-    clipboardAllowed = allowed;
+    if (session) session.clipboardAllowed = allowed;
     sendClipboardBtn.hidden = !allowed;
     copyHostClipboardBtn.hidden = !allowed;
     if (!allowed) {
@@ -711,7 +895,10 @@ function setClipboardAllowed(allowed) {
 
 // Needs a user gesture (the button click), otherwise the browser refuses to read the clipboard.
 async function sendClipboard() {
-    if (!dataChannel || dataChannel.readyState !== 'open') return;
+    // Captured before the first await: the text read now is for THIS connection only. If another one replaced it
+    // while the browser was reading, sendClipboardText drops it.
+    const session = sessions.current;
+    if (!session || !session.verified) return;
     let text;
     try {
         text = await navigator.clipboard.readText();
@@ -720,11 +907,11 @@ async function sendClipboard() {
         showFallbackField('input');
         return;
     }
-    sendClipboardText(text);
+    sendClipboardText(text, session);
 }
 
-function sendClipboardText(text) {
-    if (!dataChannel || dataChannel.readyState !== 'open') return;
+function sendClipboardText(text, session = sessions.current) {
+    if (!session || !session.verified || !sessions.isCurrent(session)) return;
     if (!text) {
         updateStatus('Your clipboard has no text', 'info');
         return;
@@ -743,7 +930,7 @@ function sendClipboardText(text) {
         updateStatus('Clipboard text is too large once encoded; not sent', 'error');
         return;
     }
-    dataChannel.send(json);
+    if (!sessions.send(session, json)) return;
     updateStatus(`Clipboard sent to the host (${bytes} bytes)`, 'success');
 }
 
@@ -829,11 +1016,10 @@ function showFallbackField(kind) {
 const FILE_CHUNK_BYTES = 45000;          // keep in sync with FileReceiver.MaxChunkBytes (base64 must stay < 64 KB)
 const FILE_BUFFER_HIGH = 1024 * 1024;    // stop queuing chunks above this many buffered bytes
 const FILE_REPLY_TIMEOUT_MS = 30000;
-let filesAllowed = false;
-let fileTransfer = null; // { id, replies, waiter, cancelled } while a file is being sent
+let fileTransfer = null; // { id, replies, waiter, cancelled } while a file is being sent (also on its session)
 
 function setFilesAllowed(allowed) {
-    filesAllowed = allowed;
+    if (sessions.current) sessions.current.filesAllowed = allowed;
     sendFileBtn.hidden = !allowed;
     if (!allowed && fileTransfer) {
         fileTransfer.cancelled = true;
@@ -889,20 +1075,20 @@ function nextHostReply(t) {
 // bufferedAmountLowThreshold + event, with a short poll as safety net (the event does not fire on a closed channel).
 // Waits until at most `limit` bytes are buffered. `stop` runs on every wake-up: it throws to abort (cancel, host error)
 // or returns true to leave early. Fails only when the buffer has not shrunk for FILE_REPLY_TIMEOUT_MS (a slow link is fine).
-async function waitForChannelDrain(limit, stop) {
-    dataChannel.bufferedAmountLowThreshold = FILE_BUFFER_HIGH / 4;
+async function waitForChannelDrain(channel, limit, stop) {
+    channel.bufferedAmountLowThreshold = FILE_BUFFER_HIGH / 4;
     let lowest = Infinity, lastProgress = Date.now();
-    while (dataChannel && dataChannel.readyState === 'open' && dataChannel.bufferedAmount > limit) {
+    while (channel.readyState === 'open' && channel.bufferedAmount > limit) {
         if (stop()) return;
-        if (dataChannel.bufferedAmount < lowest) {
-            lowest = dataChannel.bufferedAmount;
+        if (channel.bufferedAmount < lowest) {
+            lowest = channel.bufferedAmount;
             lastProgress = Date.now();
         } else if (Date.now() - lastProgress >= FILE_REPLY_TIMEOUT_MS) {
             throw new Error('The connection to the host stalled');
         }
         await new Promise((resolve) => {
-            const done = () => { dataChannel && dataChannel.removeEventListener('bufferedamountlow', done); resolve(); };
-            dataChannel.addEventListener('bufferedamountlow', done, { once: true });
+            const done = () => { channel.removeEventListener('bufferedamountlow', done); resolve(); };
+            channel.addEventListener('bufferedamountlow', done, { once: true });
             setTimeout(done, 200);
         });
     }
@@ -925,7 +1111,10 @@ function bytesToBase64(bytes) {
 }
 
 async function sendFile(file) {
-    if (!filesAllowed || !dataChannel || dataChannel.readyState !== 'open') {
+    // The whole transfer belongs to this session: when a new connection replaces it, the transfer is cancelled
+    // (PeerSession.kill) and every step below re-checks it before it sends.
+    const session = sessions.current;
+    if (!session || !session.verified || !session.filesAllowed || !session.channel || session.channel.readyState !== 'open') {
         updateStatus('The host does not accept files', 'error');
         return;
     }
@@ -934,12 +1123,13 @@ async function sendFile(file) {
         return;
     }
 
-    const t = fileTransfer = { id: newGuid(), replies: [], waiter: null, cancelled: false };
-    const send = (obj) => dataChannel.send(JSON.stringify(obj));
+    const t = fileTransfer = session.transfer = { id: newGuid(), replies: [], waiter: null, cancelled: false };
+    session.onKilled = () => onHostFileMessage({ type: 'file_error', id: t.id, reason: 'connection_closed' }); // wake the loop
+    const send = (obj) => { if (!sessions.send(session, obj)) throw new Error('The connection to the host is closed'); };
     const abortIfStopped = () => {
         if (t.cancelled) throw new Error('cancelled');
         if (t.replies.length) throw new Error(`The host stopped the transfer (${t.replies[0].reason || t.replies[0].type})`);
-        if (!dataChannel || dataChannel.readyState !== 'open') throw new Error('The connection to the host is closed');
+        if (!sessions.isCurrent(session) || session.channel.readyState !== 'open') throw new Error('The connection to the host is closed');
     };
 
     try {
@@ -952,7 +1142,7 @@ async function sendFile(file) {
         let seq = 0, sent = 0, lastPercent = -1;
         for (let offset = 0; offset < file.size; offset += FILE_CHUNK_BYTES) {
             abortIfStopped();
-            await waitForChannelDrain(FILE_BUFFER_HIGH, abortIfStopped);
+            await waitForChannelDrain(session.channel, FILE_BUFFER_HIGH, abortIfStopped);
             abortIfStopped();
             const bytes = new Uint8Array(await file.slice(offset, offset + FILE_CHUNK_BYTES).arrayBuffer());
             hash.update(bytes);
@@ -968,18 +1158,17 @@ async function sendFile(file) {
         abortIfStopped();
         send({ type: 'file_end', id: t.id, sha256: hash.hex() });
         // The reply clock starts only once file_end has left; a host reply (done or error) ends the wait early.
-        await waitForChannelDrain(0, () => { if (t.replies.length) return true; abortIfStopped(); });
+        await waitForChannelDrain(session.channel, 0, () => { if (t.replies.length) return true; abortIfStopped(); });
         const done = await nextHostReply(t);
         if (done.type !== 'file_done') throw new Error(`The host could not save ${file.name}: ${done.reason || done.type}`);
         updateStatus(`Sent ${file.name} (saved on the host as ${done.savedAs})`, 'success');
     } catch (error) {
-        if (dataChannel && dataChannel.readyState === 'open') {
-            try { send({ type: 'file_cancel', id: t.id }); } catch { /* channel went away */ }
-        }
+        try { send({ type: 'file_cancel', id: t.id }); } catch { /* connection went away or was replaced: nothing to tell */ }
         if (error.message === 'cancelled') updateStatus(`Cancelled sending ${file.name}`, 'info');
         else updateStatus(error.message, 'error');
     } finally {
-        fileTransfer = null;
+        if (fileTransfer === t) fileTransfer = null;
+        session.transfer = null;
     }
 }
 

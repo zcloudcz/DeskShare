@@ -43,6 +43,9 @@ internal sealed class HybridVideoEncoder : IVideoSource, IDisposable
 
     public void ForceKeyFrame() => _active.ForceKeyFrame();
 
+    /// <summary>Drops frames still buffered inside the encoder (a new viewer starts). Only the GPU encoder buffers.</summary>
+    public void DiscardPending() => _h264.DiscardPending();
+
     public void ExternalVideoSourceRawSample(uint durationMilliseconds, int width, int height, byte[] sample, VideoPixelFormatsEnum pixelFormat) =>
         _active.ExternalVideoSourceRawSample(durationMilliseconds, width, height, sample, pixelFormat);
 
