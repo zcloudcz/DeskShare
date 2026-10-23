@@ -78,4 +78,10 @@ public sealed class AgentSharedFilesTests : IDisposable
         Manifest("not-a-hash a.dll");
         Assert.Throws<InvalidOperationException>(() => AgentSharedFiles.Restore(ServiceDir, AppRoot));
     }
+
+    [Theory]
+    [InlineData(@"C:\App\service\")] // AppContext.BaseDirectory form (trailing separator)
+    [InlineData(@"C:\App\service")]
+    public void AppRootOf_IsTheParentOfTheServiceFolder(string serviceDir) =>
+        Assert.Equal(@"C:\App", AgentSharedFiles.AppRootOf(serviceDir));
 }

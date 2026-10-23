@@ -53,6 +53,13 @@ public static class AgentSharedFiles
         return count;
     }
 
+    /// <summary>
+    /// The app root for the package's service folder (<c>&lt;app&gt;\service</c>). The trailing separator is removed first:
+    /// AppContext.BaseDirectory ends with one, and GetParent("...\service\") would return the service folder itself.
+    /// </summary>
+    public static string AppRootOf(string serviceSourceDir) =>
+        Directory.GetParent(Path.TrimEndingDirectorySeparator(Path.GetFullPath(serviceSourceDir)))!.FullName;
+
     private static string Hash(string path)
     {
         using var fs = File.OpenRead(path);
