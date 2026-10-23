@@ -35,8 +35,6 @@ internal sealed class MediaFoundationH264Decoder : IH264FrameDecoder
     // does not wrap). A remote desktop has no B-frames, so waiting would only add delay.
     private static readonly Guid MfLowLatency = new("9C27891A-ED7A-40e1-88E8-B22727A024EE");
 
-    // MF_MT_MINIMUM_DISPLAY_APERTURE: the visible rectangle inside the (16-aligned) coded frame.
-    private static readonly Guid MfMtMinimumDisplayAperture = new("66758743-7e5f-400d-980a-aa8596c85696");
 
     private const int MfETransformNeedMoreInput = unchecked((int)0xC00D6D72);
     private const int MfETransformStreamChange = unchecked((int)0xC00D6D61);
@@ -257,11 +255,19 @@ internal sealed class MediaFoundationH264Decoder : IH264FrameDecoder
                 _width = codedWidth;
                 _height = _bufferHeight;
                 // MFVideoArea: MFOffset x (fract u16 + value i16), MFOffset y, SIZE (cx, cy as i32). Size is at bytes 8..15.
-                if (type.GetBlobSize(MfMtMinimumDisplayAperture, out var areaSize).Success && areaSize >= 16)
+                // The visible rectangle inside the (16-aligned) coded frame, e.g. 1920x1080 in 1920x1088. The minimum
+                // display aperture is the one MS says must be honoured; the geometric aperture is the older fallback.
+                // Clamped to the coded size, so a bogus value can never make us read past the buffer.
+                foreach (var key in new[] { MediaTypeAttributeKeys.MinimumDisplayAperture, MediaTypeAttributeKeys.GeometricAperture })
                 {
-                    var area = type.GetBlob(MfMtMinimumDisplayAperture);
-                    _width = BitConverter.ToInt32(area, 8);
-                    _height = BitConverter.ToInt32(area, 12);
+                    if (!type.GetBlobSize(key, out var areaSize).Success || areaSize < 16) continue;
+                    var area = type.GetBlob(key);
+                    var w = BitConverter.ToInt32(area, 8);
+                    var h = BitConverter.ToInt32(area, 12);
+                    if (w <= 0 || h <= 0 || w > codedWidth || h > _bufferHeight) continue;
+                    _width = w;
+                    _height = h;
+                    break;
                 }
                 _stride = type.GetUInt32(MediaTypeAttributeKeys.DefaultStride, out var stride).Success && stride != 0 ? unchecked((int)stride) : codedWidth;
                 if (_stride < 0) _stride = -_stride; // bottom-up never happens for NV12, but a negative stride must not index backwards
