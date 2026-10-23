@@ -44,6 +44,8 @@ dependencies:
   web_socket_channel: ^3.0.3
   shared_preferences: ^2.5.6
   crypto: ^3.0.7
+  pointycastle: ^4.0.0
+  unorm_dart: ^0.3.3
 
 dev_dependencies:
   flutter_test:

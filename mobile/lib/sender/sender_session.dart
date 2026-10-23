@@ -468,6 +468,7 @@ class WebRtcSenderSession extends SenderSession {
       await reply(jsonEncode({
         'type': 'authorization_response',
         'authorized': _controlGrantedForSession,
+        'requestable': false, // no interactive approval on the phone: the toggle before sharing decides
         'clipboard': false,
         'timestamp': DateTime.now().toUtc().toIso8601String(),
       }));

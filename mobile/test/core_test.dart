@@ -205,7 +205,7 @@ void main() {
 
       final grant = await api.authenticate(
         serverId: 'server-123456789',
-        credential: PasskeyCredential('abc-def-ghj'),
+        authKey: PasskeyCredential('abc-def-ghj').wireValue('server-123456789'),
         clientId: 'client-x',
         now: DateTime.utc(2026, 1, 2, 3, 4, 5, 123),
         nonce: '11111111-2222-3333-4444-555555555555',
@@ -247,8 +247,16 @@ void main() {
     test('401 becomes a readable error', () async {
       final api = SignalingApi('wss://example.test/signal', client: MockClient((_) async => http.Response('', 401)));
       expect(
-        api.authenticate(serverId: 'server-123456789', credential: PasskeyCredential('ABCDEFGHJ'), clientId: 'c'),
+        api.authenticate(serverId: 'server-123456789', authKey: 'k', clientId: 'c'),
         throwsA(isA<SignalingException>().having((e) => e.message, 'message', 'Invalid passkey or server ID')),
+      );
+    });
+
+    test('authenticate 429 says too many attempts', () async {
+      final api = SignalingApi('wss://example.test/signal', client: MockClient((_) async => http.Response('', 429)));
+      await expectLater(
+        api.authenticate(serverId: 'server-123456789', authKey: 'k', clientId: 'c'),
+        throwsA(isA<SignalingException>().having((e) => e.message, 'message', 'Too many attempts, try again later')),
       );
     });
 

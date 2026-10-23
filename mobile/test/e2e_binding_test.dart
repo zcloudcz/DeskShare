@@ -41,6 +41,33 @@ void main() {
     });
   });
 
+  group('permanent password', () {
+    // Same constants as tests/js/perm-vector.mjs and PermanentPasswordTests.cs (non-ASCII on purpose).
+    const password = 'Žluťoučký kůň 2026';
+    const permAuth = 'JHEeLJCuuOig-SzfCVF1yovJDLH-yQas8TlWd0gJ5y8';
+    const permE2e = '66325114af86ffca1b9bfe6d612c7d763d10c7ed509909362993ca2d29d295ec';
+
+    test('matches the shared vector, also when typed decomposed (NFD)', () async {
+      final k = await deriveFromUserInput(password, _serverId);
+      expect(k.authKey, permAuth);
+      expect(_hex(k.e2eKey), permE2e);
+      // The macOS keyboard form: base letters plus combining marks.
+      const nfd = 'Žluťoučký kůň 2026';
+      expect(nfd, isNot(password));
+      final k2 = await deriveFromUserInput(nfd, _serverId);
+      expect(k2.authKey, permAuth);
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    test('input classification', () {
+      expect(looksLikePasskey('a3f-7k9-m2p'), isTrue);
+      expect(looksLikePasskey('A3F7K9M2'), isFalse);
+      expect(isPermanentPassword('correct horse battery'), isTrue);
+      expect(isPermanentPassword('short pw'), isFalse);
+      expect(isPermanentPassword('a3f-7k9-m2p'), isFalse);
+      expect(deriveFromUserInput('short', _serverId), throwsArgumentError);
+    });
+  });
+
   group('bind MAC', () {
     final key = deriveKeys(_passkey, _serverId).e2eKey;
 

@@ -1,6 +1,10 @@
 import 'dart:convert';
+import 'dart:isolate';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
+import 'package:pointycastle/export.dart' show HMac, PBKDF2KeyDerivator, Pbkdf2Parameters, SHA256Digest;
+import 'package:unorm_dart/unorm_dart.dart' as unorm;
 
 import 'ids.dart';
 
@@ -38,13 +42,54 @@ List<int> _hkdf32(List<int> ikm, List<int> salt, String info) {
   return Hmac(sha256, prk).convert([...utf8.encode(info), 1]).bytes;
 }
 
-DerivedKeys deriveKeys(String passkey, String serverId) {
-  final ikm = utf8.encode(normalizePasskey(passkey));
+/// The shared HKDF step: passkey and permanent password differ only in how the input secret is made.
+DerivedKeys _deriveFromSecret(List<int> ikm, String serverId) {
   final salt = utf8.encode('$_saltPrefix$serverId');
   return DerivedKeys(
     base64Url.encode(_hkdf32(ikm, salt, 'auth')).replaceAll('=', ''),
     _hkdf32(ikm, salt, 'e2e'),
   );
+}
+
+DerivedKeys deriveKeys(String passkey, String serverId) =>
+    _deriveFromSecret(utf8.encode(normalizePasskey(passkey)), serverId);
+
+/// Shortest permanent password accepted (longer than the 9-character passkey, so the two never look alike).
+const permanentPasswordMinLength = 12;
+const permanentPasswordIterations = 600000;
+const _permanentSaltPrefix = 'DeskShare/v1/perm/';
+
+/// Keys from a long-lived password (E2EBinding.FromPermanentPassword): PBKDF2-HMAC-SHA256 over the NFC-normalized
+/// password with the public salt "DeskShare/v1/perm/" + serverId, then the usual HKDF step. Slow on purpose
+/// (600 000 iterations): call it off the UI isolate, see [deriveFromUserInput].
+///
+/// pointycastle (pure Dart) because package:crypto has no PBKDF2, and 600 000 `Hmac.convert` calls would re-hash
+/// the key pads every time; pointycastle's HMac keeps the padded-key state. unorm_dart supplies the NFC step
+/// (Dart has no Unicode normalization), needed so a macOS-typed (decomposed) password gives the same keys.
+DerivedKeys fromPermanentPassword(String password, String serverId, {int iterations = permanentPasswordIterations}) {
+  final derivator = PBKDF2KeyDerivator(HMac(SHA256Digest(), 64))
+    ..init(Pbkdf2Parameters(Uint8List.fromList(utf8.encode('$_permanentSaltPrefix$serverId')), iterations, 32));
+  final master = derivator.process(Uint8List.fromList(utf8.encode(unorm.nfc(password))));
+  return _deriveFromSecret(master, serverId);
+}
+
+/// True when the input is a passkey: 9 ASCII letters/digits once dashes and spaces are removed.
+bool looksLikePasskey(String? input) {
+  final p = normalizePasskey(input);
+  return p.length == passkeyLength && RegExp(r'^[A-Z0-9]+$').hasMatch(p);
+}
+
+bool isPermanentPassword(String? input) =>
+    !looksLikePasskey(input) && (input ?? '').length >= permanentPasswordMinLength;
+
+/// What the viewer does with its one "passkey or password" field. The password path runs in a background isolate.
+Future<DerivedKeys> deriveFromUserInput(String input, String serverId) async {
+  if (looksLikePasskey(input)) return deriveKeys(input, serverId);
+  if (!isPermanentPassword(input)) {
+    throw ArgumentError(
+        'Enter the 9-character passkey or the permanent password (at least $permanentPasswordMinLength characters).');
+  }
+  return Isolate.run(() => fromPermanentPassword(input, serverId));
 }
 
 final _fingerprintLine = RegExp(

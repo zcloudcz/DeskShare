@@ -11,6 +11,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:deskshare/app.dart';
+import 'package:deskshare/core/e2e_binding.dart';
 import 'package:deskshare/core/ids.dart';
 import 'package:deskshare/core/input_message.dart';
 import 'package:deskshare/core/settings.dart';
@@ -89,6 +90,26 @@ void main() {
 
     await tester.tap(find.byKey(const Key('disconnect-button')));
     await tester.pumpAndSettle();
+  });
+
+  testWidgets('viewer: a wrong end-to-end key is rejected with the interception warning and shows no video', (tester) async {
+    final c = HttpClient();
+    final body = await (await (await c.getUrl(Uri.parse(credentialsUrl))).close()).transform(const SystemEncoding().decoder).join();
+    final parts = body.trim().split(' ');
+    // Authenticates fine (right passkey), but binds with a key derived from another passkey: like a man in the middle
+    // who got the server to relay the SDP but does not know the passkey.
+    final viewer = WebRtcViewerSession(
+      signalingUrl: signaling,
+      e2eKeyOverride: deriveKeys('AAAAAAAAA', normalizeServerId(parts[0])).e2eKey,
+    );
+    addTearDown(viewer.dispose);
+    await viewer.connect(serverId: parts[0], passkey: parts[1]);
+    await until(tester, () => viewer.state == ViewerState.failed || viewer.state == ViewerState.connected,
+        timeout: const Duration(seconds: 40), what: 'binding to fail');
+    expect(viewer.state, ViewerState.failed);
+    expect(viewer.status, bindFailedMessage);
+    expect(hasFrames(viewer), isFalse, reason: 'no video before the binding verified');
+    expect(viewer.controlAvailable, isFalse);
   });
 
   testWidgets('sender: shares the emulator screen and a viewer receives frames', (tester) async {

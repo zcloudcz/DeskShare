@@ -24,6 +24,9 @@ abstract class ViewerSession extends ChangeNotifier {
   /// Host said it allows remote control (authorization_response.authorized).
   bool get controlAvailable;
   bool get controlEnabled;
+
+  /// An interactive control request waits for the person at the computer.
+  bool get controlPending => false;
   RTCVideoRenderer? get renderer;
 
   Future<void> connect({required String serverId, required String passkey});
@@ -34,9 +37,13 @@ abstract class ViewerSession extends ChangeNotifier {
 
 /// Viewer role of the signaling protocol (mirror of src/WebClient/client.js).
 class WebRtcViewerSession extends ViewerSession {
-  WebRtcViewerSession({required this.signalingUrl});
+  WebRtcViewerSession({required this.signalingUrl, @visibleForTesting List<int>? e2eKeyOverride})
+      : _e2eKeyOverride = e2eKeyOverride;
 
   final String signalingUrl;
+
+  /// Test seam: the key the viewer binds with instead of the one derived from the passkey (wrong-key tests).
+  final List<int>? _e2eKeyOverride;
 
   static const _pingInterval = Duration(seconds: 5);
   static const _pingTimeout = Duration(seconds: 15);
@@ -49,7 +56,9 @@ class WebRtcViewerSession extends ViewerSession {
   /// dispose) must not touch the session: it would store sockets and peers nobody will ever close.
   int _gen = 0;
   bool _stale(int gen) => _disposed || gen != _gen;
-  bool _controlAvailable = false;
+  bool _controlAvailable = false; // the host allows control right now
+  bool _controlRequestable = false; // the host would ask its user (approval)
+  bool _controlPending = false; // our interactive request waits for the answer
   bool _controlEnabled = false;
   RTCVideoRenderer? _renderer;
 
@@ -81,7 +90,9 @@ class WebRtcViewerSession extends ViewerSession {
   @override
   String get status => _status;
   @override
-  bool get controlAvailable => _controlAvailable;
+  bool get controlAvailable => _controlAvailable || _controlRequestable;
+  @override
+  bool get controlPending => _controlPending;
   @override
   bool get controlEnabled => _controlEnabled;
   @override
@@ -104,17 +115,24 @@ class WebRtcViewerSession extends ViewerSession {
     final id = normalizeServerId(serverId);
     final credential = PasskeyCredential(passkey);
     if (id.isEmpty) return _set(ViewerState.failed, 'Server ID is required');
-    if (!credential.isComplete) return _set(ViewerState.failed, 'The passkey has 9 characters (XXX-XXX-XXX)');
+    if (!credential.isComplete) {
+      return _set(ViewerState.failed,
+          'Enter the passkey (9 characters, XXX-XXX-XXX) or the permanent password (at least $permanentPasswordMinLength characters)');
+    }
 
     _serverId = id;
-    _e2eKey = credential.e2eKey(id);
     final gen = ++_gen;
-    _set(ViewerState.connecting, 'Authenticating...');
+    _set(ViewerState.connecting, credential.isPermanentPassword ? 'Deriving the key from the password...' : 'Authenticating...');
     try {
+      // The permanent password path is PBKDF2 with 600 000 rounds: it runs in a background isolate.
+      final keys = await credential.deriveFor(id);
+      if (_stale(gen)) return;
+      _e2eKey = _e2eKeyOverride ?? keys.e2eKey;
+      _set(ViewerState.connecting, 'Authenticating...');
       _api = SignalingApi(signalingUrl);
       final grant = await _api!.authenticate(
         serverId: id,
-        credential: credential,
+        authKey: keys.authKey,
         clientId: generateClientId(),
       );
       if (_stale(gen)) return;
@@ -338,6 +356,8 @@ class WebRtcViewerSession extends ViewerSession {
         }));
       } else if (s == RTCDataChannelState.RTCDataChannelClosed) {
         _controlAvailable = false;
+        _controlRequestable = false;
+        _controlPending = false;
         _controlEnabled = false;
         _notify();
       }
@@ -370,11 +390,22 @@ class WebRtcViewerSession extends ViewerSession {
       if (!binding.isVerified) return;
       switch (j['type']) {
         case 'authorization_response':
-          _controlAvailable = j['authorized'] == true;
-          if (!_controlAvailable) _controlEnabled = false;
-          _set(_state, _controlAvailable ? 'Remote control is available' : 'View only: the host did not allow control');
+          _onAuthorizationResponse(j);
+        case 'approval_pending':
+          // The person at the computer is being asked: about the connection (unattended host) or about control.
+          if (j['what'] == 'connection') {
+            _set(_state, 'Waiting for the person at the computer to allow the connection...');
+          } else if (_controlPending) {
+            _set(_state, 'Waiting for the person at the computer to allow control...');
+          }
+        case 'approval_denied':
+          if (j['what'] == 'connection') {
+            unawaited(_teardown().then((_) => _set(ViewerState.failed, 'The person at the computer did not allow the connection')));
+          }
         case 'authorization_revoked':
           _controlAvailable = false;
+          _controlRequestable = false;
+          _controlPending = false;
           _controlEnabled = false;
           _set(_state, 'The host revoked remote control');
       }
@@ -393,8 +424,9 @@ class WebRtcViewerSession extends ViewerSession {
     if (binding.isRetired || !identical(channel, _dc)) return true; // replaced meanwhile: not a failure
     if (key == null || fp.sender == null || fp.viewer == null) return false;
     final mac = computeMac(key, viewerRole, fp.sender!, fp.viewer!);
-    await channel.send(RTCDataChannelMessage(buildBindMessage(viewerRole, mac)));
+    // Set before the send completes: the host may drop us (and the state callback fire) before send() returns.
     binding.bindSent = true;
+    await channel.send(RTCDataChannelMessage(buildBindMessage(viewerRole, mac)));
     return true;
   }
 
@@ -412,7 +444,9 @@ class WebRtcViewerSession extends ViewerSession {
     _showVideo(binding);
     _set(ViewerState.connected, 'Receiving video stream');
     // The reply tells us whether the host allows remote control.
-    _sendDc({'type': 'authorization_request', 'timestamp': DateTime.now().toUtc().toIso8601String()});
+    // "interactive" must always be present: a host that asks its user answers requests without it with
+    // client_update_required. The probe never prompts anybody (interactive: false).
+    _sendDc({'type': 'authorization_request', 'interactive': false, 'timestamp': DateTime.now().toUtc().toIso8601String()});
   }
 
   void _showVideo(PeerBinding binding) {
@@ -445,11 +479,50 @@ class WebRtcViewerSession extends ViewerSession {
     dc.send(RTCDataChannelMessage(jsonEncode(json)));
   }
 
+  /// `authorization_response {authorized, requestable?, reason?, ...}`; unknown fields are ignored. Before the user
+  /// asked for control it only says what the host allows; afterwards it is the answer to the interactive request.
+  void _onAuthorizationResponse(Map<String, dynamic> j) {
+    final authorized = j['authorized'] == true;
+    if (_controlPending) {
+      _controlPending = false;
+      _controlAvailable = authorized;
+      _controlEnabled = authorized;
+      _set(_state, authorized ? 'Remote control active' : _denialText(j['reason']));
+      return;
+    }
+    _controlAvailable = authorized;
+    _controlRequestable = !authorized && j['requestable'] == true;
+    if (!authorized) _controlEnabled = false;
+    _set(
+        _state,
+        authorized
+            ? 'Remote control is available'
+            : _controlRequestable
+                ? 'Control can be requested from the person at the computer'
+                : 'View only: the host did not allow control');
+  }
+
+  static String _denialText(Object? reason) => switch (reason) {
+        'denied' => 'The person at the computer denied remote control',
+        'timeout' => 'Nobody at the computer answered the control request',
+        'client_update_required' => 'The host requires a newer app version to allow remote control',
+        _ => 'The host did not allow remote control',
+      };
+
   @override
   void setControl(bool enabled) {
-    if (enabled && !_controlAvailable) return;
-    _controlEnabled = enabled;
-    _notify();
+    if (!enabled) {
+      _controlEnabled = false;
+      _notify();
+    } else if (_controlAvailable) {
+      _controlEnabled = true;
+      _notify();
+    } else if (_controlRequestable && !_controlPending) {
+      // Ask the host; the probe on channel open is interactive:false.
+      _controlPending = true;
+      _set(_state, 'Requesting remote control...');
+      _sendDc({'type': 'authorization_request', 'interactive': true, 'timestamp': DateTime.now().toUtc().toIso8601String()});
+    }
   }
 
   @override
@@ -467,10 +540,12 @@ class WebRtcViewerSession extends ViewerSession {
     _pendingStream = null;
     _bindTimer?.cancel();
     _controlAvailable = false;
+    _controlRequestable = false;
+    _controlPending = false;
     _controlEnabled = false;
     await dc?.close();
     await pc?.close();
-    if (_renderer != null) _renderer!.srcObject = null;
+    if (_renderer != null && !_disposed) _renderer!.srcObject = null; // dispose() disposes the renderer first
   }
 
   Future<void> _teardown() async {
