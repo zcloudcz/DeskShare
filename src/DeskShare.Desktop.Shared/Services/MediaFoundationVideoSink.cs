@@ -126,6 +126,26 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         _path = start;
         _h264 = firstDecoder;
         _worker = StartWorker();
+        // Hang checks also run on a timer: after the last change of a static screen no further frame arrives, so a
+        // decoder stuck on that frame would otherwise never be noticed and the viewer would keep showing old content.
+        _hangTimer = new Timer(_ => CheckForHang(), null, HangCheckInterval, HangCheckInterval);
+    }
+
+    private static readonly TimeSpan HangCheckInterval = TimeSpan.FromMilliseconds(250);
+    private readonly Timer _hangTimer;
+
+    private void CheckForHang()
+    {
+        try
+        {
+            lock (_gate)
+                if (!_disposed && _worker.IsStuck(HangLimit)) Abandon(_worker);
+        }
+        catch (Exception ex)
+        {
+            // A timer callback must never throw (it would crash the process).
+            _logger.LogError(ex, "Decoder hang check failed");
+        }
     }
 
     private Worker StartWorker()
@@ -294,8 +314,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         lock (_gate)
         {
             if (_disposed) return;
-            // Hang detection piggybacks on the frames arriving anyway (no timer thread). A static screen sends nothing,
-            // but then there is no moving picture to lose; the next frame notices the hang.
+            // Checked here too (not only by the timer), so a hang is handled before this frame is queued behind it.
             if (_worker.IsStuck(HangLimit)) Abandon(_worker);
             if (format.Codec == VideoCodecsEnum.H264) RememberLocked(remoteEndPoint, timestamp, frame, format);
             Enqueue(_worker, new Item(remoteEndPoint, timestamp, frame, format));
@@ -604,6 +623,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
             _disposed = true;
             w = _worker;
         }
+        _hangTimer.Dispose();
         // Never waits: the decoder thread frees the decoders itself when it leaves (see Run). If it is hung it stays hung
         // and leaks, but Dispose still returns at once (it may run on the UI thread).
         lock (w.Gate) { w.Stop = true; System.Threading.Monitor.PulseAll(w.Gate); }

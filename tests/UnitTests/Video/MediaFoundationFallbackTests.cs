@@ -530,4 +530,31 @@ public sealed class MediaFoundationFallbackTests
             sink.Dispose();
         }
     }
+
+    [Fact]
+    public void HangOnTheLastFrame_OfAStaticScreen_IsNoticedWithoutAnotherFrame()
+    {
+        var hung = new HangingDecoder();
+        var software = new FakeDecoder(_ => true);
+        var pictures = new List<int>();
+        var sink = MakeWithHangLimit(p => p == H264Path.MediaFoundationGpu ? hung : software, TimeSpan.FromMilliseconds(150), pictures);
+        try
+        {
+            sink.GotVideoFrame(Ep, 0, Key(1), H264);   // the last change of the screen; nothing follows
+            Assert.True(hung.Entered.Wait(5000));
+
+            // The timer alone must abandon the decoder and replay the keyframe into the next one.
+            var deadline = Stopwatch.StartNew();
+            while (software.Seen.Count == 0 && deadline.ElapsedMilliseconds < 5000) Thread.Sleep(20);
+
+            Assert.Equal(new byte[] { 1 }, software.Seen);
+            Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(5)));
+            lock (pictures) Assert.Single(pictures);    // the update that had arrived is shown after all
+        }
+        finally
+        {
+            hung.Release.Set();
+            sink.Dispose();
+        }
+    }
 }
