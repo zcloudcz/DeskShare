@@ -531,7 +531,11 @@ public class ClientManager : IDisposable
         };
 
         // Setup video sink to receive video frames
-        _videoSink = new VideoSink(_videoSinkLogger);
+        // Windows decodes with its built-in Media Foundation codecs (Video:Decoder, default Auto); TryCreate returns null
+        // when FFmpeg is chosen or Media Foundation is unavailable. The IsWindows check keeps Media Foundation types
+        // from being touched on Linux/macOS.
+        var mfSink = OperatingSystem.IsWindows() ? MediaFoundationVideoSink.TryCreate(_configuration, _videoSinkLogger) : null;
+        _videoSink = mfSink != null ? new VideoSink(_videoSinkLogger, mfSink) : new VideoSink(_videoSinkLogger);
         _videoSink.FrameReceived += (sender, args) =>
         {
             // Nothing is shown until the sender proved (e2e binding) that nobody sits in the middle.
