@@ -58,6 +58,9 @@ internal sealed unsafe class VpxDecoder : IDisposable
             // vpx_image_t (libvpx 1.9): d_w at byte 24, d_h at 28; planes[4] pointers at 48; stride[4] ints at 80.
             // The image memory belongs to the decoder and stays valid until the next decode call, so convert right now.
             var b = (byte*)image;
+            // fmt at byte 0. VP8 is always 8-bit I420 (VPX_IMG_FMT_I420 = 0x102); anything else would have other plane
+            // sizes, so refuse it instead of reading past the planes.
+            if (*(int*)b != 0x102) throw new InvalidOperationException($"Unexpected vpx image format 0x{*(int*)b:X}.");
             var w = *(int*)(b + 24);
             var h = *(int*)(b + 28);
             var planes = (byte**)(b + 48);
