@@ -1,6 +1,6 @@
 # Builds the minimal FFmpeg 8.1 LGPL shared libs for the Windows desktop app (see scripts/ffmpeg-win/README.md)
 # and uploads them as the artifact "ffmpeg-win64-min", which src/DeskShare.DesktopAvalonia/download-ffmpeg.ps1
-# (and so release.yml) downloads. The zip is cached on the build script hash, so a normal run only re-uploads it.
+# downloads for developers (release.yml builds its own copy from the tagged recipe, same cache key). The zip is cached on the build script hash, so a normal run only re-uploads it.
 # The monthly schedule keeps a non-expired artifact around (artifact retention is 90 days).
 
 name: ffmpeg-windows

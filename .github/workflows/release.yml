@@ -20,15 +20,38 @@ on:
 
 permissions:
   contents: write   # vpk upload creates the GitHub Release and uploads assets
-  actions: read     # download-ffmpeg.ps1 fetches the ffmpeg-win64-min artifact of ffmpeg-windows.yml
 
 env:
   VPK_VERSION: 1.2.161
   FFMPEG_BTBN: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest
 
 jobs:
+  # The minimal Windows FFmpeg built from THIS checkout's scripts/ffmpeg-win/build.sh (cache hit = same recipe, so
+  # normally seconds). Built inside the release run so a tag can never pick up DLLs of another branch or recipe.
+  ffmpeg:
+    name: FFmpeg (Windows, minimal)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: out/ffmpeg-win64-min.zip
+          key: ffmpeg-win64-min-${{ hashFiles('scripts/ffmpeg-win/build.sh') }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p out
+          docker run --rm -v "$PWD:/src" -v "$PWD/out:/out" ubuntu:24.04 bash /src/scripts/ffmpeg-win/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-win64-min
+          path: out/ffmpeg-win64-min.zip
+          retention-days: 1
+
   release:
     name: Windows
+    needs: ffmpeg
     runs-on: windows-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -63,11 +86,15 @@ jobs:
         run: dotnet test DeskShare.sln --configuration Release --no-build --filter "FullyQualifiedName!~WindowsInputController"
 
       # Minimal FFmpeg 8.1 LGPL shared DLLs (decode, hardware H.264 encode, WebM recording) built by ffmpeg-windows.yml; not in git because of size.
-      - name: Download FFmpeg
+      - name: Get FFmpeg from the ffmpeg job
+        uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-win64-min
+          path: ffmpeg-artifact
+
+      - name: Install FFmpeg
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: ./src/DeskShare.DesktopAvalonia/download-ffmpeg.ps1
+        run: ./src/DeskShare.DesktopAvalonia/download-ffmpeg.ps1 -Zip ffmpeg-artifact/ffmpeg-win64-min.zip
 
       # Framework-dependent publish; Velopack's Setup.exe installs the .NET 8 runtime if missing
       # (see --framework below). Keeps the installer small. The csproj copies ./ffmpeg into publish/ffmpeg.

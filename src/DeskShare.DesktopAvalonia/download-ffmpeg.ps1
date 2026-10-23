@@ -2,12 +2,14 @@
 # (FFmpeg.AutoGen 8.1 → avcodec-62 etc.) into ./ffmpeg. Used by developers and by the release CI.
 #
 # Default: the MINIMAL build (~9 MB instead of 159 MB) made by .github/workflows/ffmpeg-windows.yml from
-# scripts/ffmpeg-win/build.sh and published as the artifact "ffmpeg-win64-min" of that workflow (needs `gh` logged in,
-# in CI GH_TOKEN). To rebuild it: run that workflow (Actions > ffmpeg-windows > Run workflow) or see scripts/ffmpeg-win/README.md.
+# scripts/ffmpeg-win/build.sh and published as the artifact "ffmpeg-win64-min" of that workflow (needs `gh` logged in;
+# release.yml instead builds it in the same run and passes -Zip). To rebuild it: run that workflow (Actions > ffmpeg-windows > Run workflow) or see scripts/ffmpeg-win/README.md.
 # -Full: the generic BtbN build (https://github.com/BtbN/FFmpeg-Builds, LGPL), e.g. when the minimal build lacks something.
 # -Url:  any zip with the DLLs either in a bin folder or at the zip root.
+# -Zip:  a local zip (release.yml builds the minimal one in the same run from the tagged recipe and passes it here).
 param(
     [string]$Url,
+    [string]$Zip,
     [switch]$Full,
     [string]$Repo = "zcloudcz/DeskShare",
     [string]$RunId,   # a specific ffmpeg-windows run; default is the latest successful one
@@ -20,13 +22,16 @@ $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "deskshare-ffmpeg"
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $tmp, $Destination | Out-Null
 
-if ($Url) {
+if ($Zip) {
+    Copy-Item $Zip (Join-Path $tmp "ffmpeg.zip")
+} elseif ($Url) {
     Write-Host "Downloading $Url"
     Invoke-WebRequest -Uri $Url -OutFile "$tmp\ffmpeg.zip"
 } else {
     if (-not $RunId) {
-        $RunId = gh run list -R $Repo --workflow ffmpeg-windows.yml --status success --limit 1 --json databaseId --jq ".[0].databaseId"
-        if (-not $RunId) { throw "No successful ffmpeg-windows run found in $Repo. Run that workflow first, or use -Full." }
+        # main only: a manually dispatched branch build must not become everyone's default.
+        $RunId = gh run list -R $Repo --workflow ffmpeg-windows.yml --branch main --status success --limit 1 --json databaseId --jq ".[0].databaseId"
+        if (-not $RunId) { throw "No successful ffmpeg-windows run on main in $Repo. Run that workflow first, or use -Full." }
     }
     Write-Host "Downloading artifact ffmpeg-win64-min from $Repo run $RunId"
     # Artifacts expire after 90 days; the workflow also runs monthly to keep a fresh one.
