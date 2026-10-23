@@ -20,6 +20,8 @@ internal static class DataChannelPolicy
         // so it has to pass without any grant. Every other message stays behind a grant that unverified peers lack.
         ["e2e_bind"] = SessionCapabilities.None,
         ["authorization_request"] = SessionCapabilities.View,
+        // The viewer tells the host it is recording the stream (informational: see PeerContext.Recording).
+        ["recording_state"] = SessionCapabilities.View,
         ["clipboard"] = SessionCapabilities.Clipboard,
         ["clipboard_subscribe"] = SessionCapabilities.Clipboard,
         // File transfer viewer -> host. file_accept/reject/done/error are host -> viewer and deliberately absent.

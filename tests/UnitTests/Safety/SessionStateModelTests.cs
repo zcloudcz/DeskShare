@@ -51,6 +51,29 @@ public sealed class SessionStateModelTests
     }
 
     [Fact]
+    public void Recording_ChangesTheBannerTextAndEndsWithTheViewer()
+    {
+        var (model, seen) = Create();
+
+        model.RecordingChanged(true); // nobody connected: nothing to show
+        Assert.False(model.Recording);
+        Assert.Empty(seen);
+
+        model.ViewerStarted();
+        model.RecordingChanged(true);
+        Assert.True(model.Recording);
+        Assert.Equal(SessionBannerState.Viewing, model.State);
+        Assert.Equal(DeskShare.Core.Platforms.Windows.SessionBanner.ViewingText + " (recording)",
+            DeskShare.Core.Platforms.Windows.SessionBanner.TextFor(model.State, model.Recording));
+        Assert.Equal(DeskShare.Core.Platforms.Windows.SessionBanner.ControllingText + " (recording)",
+            DeskShare.Core.Platforms.Windows.SessionBanner.TextFor(SessionBannerState.Controlling, true));
+
+        model.ViewerEnded();
+        Assert.False(model.Recording);
+        Assert.Equal(3, seen.Count); // viewing, viewing+recording, none
+    }
+
+    [Fact]
     public void RepeatedEvents_DoNotRaiseChangedAgain()
     {
         var (model, seen) = Create();

@@ -138,6 +138,12 @@ public sealed class DataChannelManager : IDisposable
     /// <summary>Raised when a verified viewer is gone (its channel closed or another connection replaced it).</summary>
     public event EventHandler<PeerContext>? ViewerEnded;
 
+    /// <summary>
+    /// Raised (outside any lock) when the viewer's "recording_state" changed. Read <see cref="PeerContext.Recording"/> for the
+    /// current value rather than trusting event order: the effects of two quick messages may run in either order.
+    /// </summary>
+    public event EventHandler<PeerContext>? ViewerRecordingChanged;
+
     /// <summary>Raised with the size in bytes of every clipboard message sent to the viewer.</summary>
     public event Action<int>? ClipboardSent;
 
@@ -664,6 +670,15 @@ public sealed class DataChannelManager : IDisposable
                 // Passed the policy: PrivacyScreen and Control are both granted. The state goes back through StateChanged.
                 var on = root.TryGetProperty("enabled", out var onElement) && onElement.ValueKind == JsonValueKind.True;
                 return () => PrivacyScreen?.Set(on, privacyEpoch, () => (GrantedFor(peer) & required) == required);
+            }
+
+            if (messageType == "recording_state")
+            {
+                // Passed the policy: View is granted. A repeat of the same value is not an event (no duplicate audit record).
+                var on = root.TryGetProperty("on", out var recordingOn) && recordingOn.ValueKind == JsonValueKind.True;
+                if (peer.Recording == on) return null;
+                peer.Recording = on;
+                return () => ViewerRecordingChanged?.Invoke(this, peer);
             }
 
             if (messageType == "clipboard_subscribe")

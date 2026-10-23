@@ -33,6 +33,13 @@ public sealed class PeerContext
     /// <summary>True while the viewer of this connection asked for the host's clipboard.</summary>
     public volatile bool ClipboardSubscribed;
 
+    /// <summary>
+    /// True while the viewer of this connection says it records the session ("recording_state"). Purely informational:
+    /// a viewer decodes the video itself, so the host can neither detect nor prevent recording. It only lets an honest
+    /// viewer tell the person at the computer. Per peer so a replaced connection can never leave the flag behind.
+    /// </summary>
+    public volatile bool Recording;
+
     /// <summary>Test seam: treat the channel as open (a real RTCDataChannel cannot be opened without a network).</summary>
     internal bool ChannelOpenForTests;
 
@@ -126,6 +133,7 @@ public sealed class PeerContext
             _dead = true;
             _verified = false;
             ClipboardSubscribed = false;
+            Recording = false;
         }
     }
 
@@ -136,6 +144,7 @@ public sealed class PeerContext
         {
             _verified = false;
             ClipboardSubscribed = false;
+            Recording = false;
         }
     }
 }

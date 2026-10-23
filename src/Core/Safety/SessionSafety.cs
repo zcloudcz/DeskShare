@@ -21,6 +21,8 @@ internal sealed class SessionSafety : IDisposable
     private IDisposable? _banner;
     private PeerContext? _active; // the verified viewer we count as "the session"
     private string _sessionId = "";
+    private bool _recording; // last recording state reported to the audit log and the banner (guarded by _recordingLock)
+    private readonly object _recordingLock = new();
 
     /// <param name="controlPrompt">Asks the person at the computer for control (attended app). Without one a requested control is always denied.</param>
     /// <param name="admission">Unattended agent: asks before a viewer may connect. Null admits every verified viewer.</param>
@@ -51,6 +53,7 @@ internal sealed class SessionSafety : IDisposable
 
         dataChannel.ViewerVerified += (_, peer) => OnViewerStarted(peer);
         dataChannel.ViewerEnded += (_, peer) => OnViewerEnded(peer);
+        dataChannel.ViewerRecordingChanged += (_, peer) => OnRecordingChanged(peer);
         dataChannel.ClipboardMessageReceived += (_, message) => _audit.Write(AuditEvents.ClipboardTransfer(toHost: true, message.SizeBytes));
         dataChannel.ClipboardSent += size => _audit.Write(AuditEvents.ClipboardTransfer(toHost: false, size));
         if (dataChannel.PrivacyScreen is { } privacy)
@@ -71,7 +74,8 @@ internal sealed class SessionSafety : IDisposable
         {
             var banner = new SessionBanner(StopControl, EndSession);
             _banner = banner;
-            _model.Changed += banner.Update;
+            // The check is repeated inside the lambda because the analyzer does not carry the one above into it.
+            _model.Changed += state => { if (OperatingSystem.IsWindows()) banner.Update(state, _model.Recording); };
         }
         else
         {
@@ -107,8 +111,30 @@ internal sealed class SessionSafety : IDisposable
         // Both the channel and the connection can report the end of the same session: count it once.
         if (Interlocked.CompareExchange(ref _active, null, peer) != peer)
             return;
+        // The recording flag is per peer (PeerContext.Recording is cleared when it is retired); log the stop before the end.
+        SyncRecording(false);
         _audit.Write(AuditEvents.SessionEnded(_sessionId));
         _model.ViewerEnded();
+    }
+
+    private void OnRecordingChanged(PeerContext peer)
+    {
+        // Only the verified viewer we count as the session may change the banner.
+        if (!ReferenceEquals(_active, peer)) return;
+        SyncRecording(peer.Recording);
+    }
+
+    // Idempotent: writes an audit record and updates the banner only when the state really changed, so two quick
+    // messages whose effects ran out of order still end in the viewer's last word.
+    private void SyncRecording(bool recording)
+    {
+        lock (_recordingLock)
+        {
+            if (_recording == recording) return;
+            _recording = recording;
+        }
+        _audit.Write(AuditEvents.Recording(recording));
+        _model.RecordingChanged(recording);
     }
 
     private void OnControlStateChanged(InputAuthorizationState state)

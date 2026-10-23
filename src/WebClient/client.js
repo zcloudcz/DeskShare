@@ -43,6 +43,8 @@ const sendClipboardBtn = document.getElementById('sendClipboardBtn');
 const copyHostClipboardBtn = document.getElementById('copyHostClipboardBtn');
 const sendFileBtn = document.getElementById('sendFileBtn');
 const privacyBtn = document.getElementById('privacyBtn');
+const recordBtn = document.getElementById('recordBtn');
+const recIndicator = document.getElementById('recIndicator');
 const displayPicker = document.getElementById('displayPicker');
 const displaySelect = document.getElementById('displaySelect');
 const fileInput = document.getElementById('fileInput');
@@ -192,6 +194,7 @@ function showVideo(session) {
     placeholder.style.display = 'none';
     remoteVideo.style.display = 'block';
     fullscreenBtn.disabled = false;
+    recordBtn.hidden = false; // only a verified session shows video, so recording is offered only then
     updateStatus('Receiving video stream', 'success');
 }
 
@@ -486,6 +489,8 @@ async function handleOffer(message) {
 
         // A new offer replaces the connection: detach and close the old one first, so none of its late events or
         // callbacks can act on the new one.
+        stopRecording(); // the old peer's recording ends here (and is still offered as a file)
+        recordBtn.hidden = true;
         if (remoteControl) { remoteControl.disable(); remoteControl = null; }
         if (dataChannel) {
             dataChannel.onopen = dataChannel.onclose = dataChannel.onmessage = null;
@@ -723,6 +728,8 @@ function cleanup() {
     // Stop statistics and ping monitoring
     stopStatsMonitoring();
     stopPingMonitoring();
+    stopRecording(); // before the session is dropped, so the host still hears "recording off"
+    recordBtn.hidden = true;
     sessions.begin(null); // no live session any more: nothing can be sent, no check or transfer can finish
 
     if (remoteControl) {
@@ -882,6 +889,89 @@ function updateControlButton() {
     if (ctrlAltDelBtn) ctrlAltDelBtn.disabled = !(remoteControl && remoteControl.enabled && remoteControl.authorized);
     updatePrivacyButton();
     updateDisplayPicker();
+}
+
+// ---- Session recording (video only, in the browser; the file is offered as a download when it stops) ----
+// The host is told ("recording_state") so its banner can say "(recording)". That is honesty towards the person at the host,
+// not protection: a viewer decodes the video itself, so recording cannot be prevented.
+let recording = null; // { recorder, chunks, session, serverId, startedAt, timer }
+
+function pickRecordingMime() {
+    const wanted = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8'];
+    return wanted.find((m) => MediaRecorder.isTypeSupported(m)) || ''; // '' = the browser's default
+}
+
+function recordingFileName(serverId, now) {
+    const p = (n) => String(n).padStart(2, '0');
+    const stamp = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}-${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
+    return `deskshare-${serverId}-${stamp}.webm`;
+}
+
+function toggleRecording() {
+    if (recording) { stopRecording(); return; }
+    const stream = remoteVideo.srcObject;
+    const session = sessions.current;
+    if (!stream || !session || !session.verified || typeof MediaRecorder === 'undefined') {
+        updateStatus('Recording is not available in this browser or connection', 'error');
+        return;
+    }
+    // Tell the host first: if that does not work (connection gone), do not record behind its back.
+    if (!sessions.send(session, { type: 'recording_state', on: true })) {
+        updateStatus('Could not tell the host about the recording; not recording', 'error');
+        return;
+    }
+    // Video tracks only: this app never plays or records audio.
+    const videoOnly = new MediaStream(stream.getVideoTracks());
+    const mimeType = pickRecordingMime();
+    const recorder = new MediaRecorder(videoOnly, mimeType ? { mimeType } : undefined);
+    const rec = { recorder, chunks: [], session, serverId: (e2eKey && e2eKey.serverId) || 'unknown', startedAt: Date.now(), timer: null };
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) rec.chunks.push(e.data); };
+    // onstop also fires when the tracks end by themselves (disconnect): the file is offered in every case.
+    recorder.onstop = () => { if (recording === rec) stopRecording(); else finishRecording(rec); };
+    recorder.start(1000);
+    recording = rec;
+    rec.timer = setInterval(updateRecordingIndicator, 500);
+    updateRecordingIndicator();
+}
+
+function updateRecordingIndicator() {
+    if (!recording) {
+        recIndicator.hidden = true;
+        recordBtn.textContent = 'Record';
+        return;
+    }
+    const s = Math.floor((Date.now() - recording.startedAt) / 1000);
+    recIndicator.textContent = `● REC ${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+    recIndicator.hidden = false;
+    recordBtn.textContent = 'Stop recording';
+}
+
+// Safe to call anytime (disconnect, peer replacement): does nothing when not recording.
+function stopRecording() {
+    const rec = recording;
+    if (!rec) return;
+    recording = null; // first: a second call must not run this twice
+    clearInterval(rec.timer);
+    updateRecordingIndicator();
+    // Tell the host (a no-op when the session is already gone: the host clears the flag itself then).
+    sessions.send(rec.session, { type: 'recording_state', on: false });
+    if (rec.recorder.state !== 'inactive') rec.recorder.stop(); // onstop -> finishRecording
+    else finishRecording(rec);
+}
+
+function finishRecording(rec) {
+    if (rec.finished) return;
+    rec.finished = true;
+    if (rec.chunks.length === 0) return;
+    const url = URL.createObjectURL(new Blob(rec.chunks, { type: 'video/webm' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = recordingFileName(rec.serverId, new Date(rec.startedAt));
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    updateStatus(`Recording saved as ${a.download}`, 'success');
 }
 
 // ---- Privacy screen (the host's local monitor shows black; offered only when the host allowed it and control is active) ----
