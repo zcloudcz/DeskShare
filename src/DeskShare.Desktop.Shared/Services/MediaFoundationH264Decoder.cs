@@ -103,6 +103,23 @@ internal sealed class MediaFoundationH264Decoder : IH264FrameDecoder
         }
     }
 
+    /// <summary>
+    /// Test seam: kills the running GPU decoder the way a lost device does, without touching the driver or the system.
+    /// The DXGI device manager is pointed at a different D3D11 device, so the device the decoder works with is gone for it.
+    /// On its own that makes the MFT go silent (it keeps accepting input and never outputs, which the sink cannot tell
+    /// from "waiting for more input"). A removed device normally makes calls fail, so the output type is dropped as well:
+    /// the next frame then fails with a real Media Foundation error (MF_E_TRANSFORM_TYPE_NOT_SET) that the sink must handle.
+    /// </summary>
+    internal void SimulateDeviceLoss()
+    {
+        if (_mft == null || _deviceManager == null) throw new InvalidOperationException("Only a running GPU decoder has a device to lose.");
+        D3D11.D3D11CreateDevice(null, Vortice.Direct3D.DriverType.Hardware,
+            DeviceCreationFlags.VideoSupport | DeviceCreationFlags.BgraSupport, null, out var replacement).CheckError();
+        using (replacement) // the manager keeps its own reference
+            _deviceManager.ResetDevice(replacement);
+        _mft.SetOutputType(0, null, 0);
+    }
+
     private void Configure(bool hardware)
     {
         using (var attrs = _mft!.Attributes)

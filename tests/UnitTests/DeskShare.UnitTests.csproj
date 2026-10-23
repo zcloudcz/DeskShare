@@ -23,6 +23,11 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <!-- Recorded H.264/VP8 access units for the Media Foundation decoder tests (format: see MfFixtures) -->
+  <ItemGroup>
+    <None Include="TestData\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\src\Core\DeskShare.Core.csproj" />
     <ProjectReference Include="..\..\src\DeskShare.Desktop.Shared\DeskShare.Desktop.Shared.csproj" />

@@ -65,6 +65,9 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         _h264 = firstDecoder;
     }
 
+    /// <summary>The decoder in use right now (tests assert the fallback step; also handy in logs).</summary>
+    internal H264Path CurrentPath => _path;
+
 #pragma warning disable CS0067 // part of IVideoSink, never raised by this sink (only the "faster" variant is used)
     public event VideoSinkSampleDecodedDelegate? OnVideoSinkDecodedSample;
 #pragma warning restore CS0067
