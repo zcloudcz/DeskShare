@@ -253,16 +253,16 @@ public sealed class MediaFoundationFallbackTests
             Assert.Equal(H264Path.MediaFoundationSoftware, sink.CurrentPath);
             Assert.Equal(new byte[] { 1, 2, 3, 4 }, software.Seen);   // replayed from the keyframe, queued frames not lost or doubled
             Assert.False(hung.Disposed);                              // abandoned, never disposed from another thread
-            Assert.Equal(4, pictures.Count);                          // the newest replayed picture (the keyframe) and the live frames 2, 3, 4
+            Assert.Equal(2, pictures.Count);                          // the recovery replay shows only its newest picture, plus the live frame 4
             Send(4, Delta(5));
             Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
-            Assert.Equal(5, pictures.Count);                          // pictures continue
+            Assert.Equal(3, pictures.Count);                          // pictures continue
             Assert.True(slowest < TimeSpan.FromMilliseconds(100), $"GotVideoFrame blocked for {slowest.TotalMilliseconds:F0} ms");
         }
         finally { hung.Release.Set(); }
 
         Thread.Sleep(200);                                            // the woken abandoned thread must stay silent
-        lock (pictures) Assert.Equal(5, pictures.Count);
+        lock (pictures) Assert.Equal(3, pictures.Count);
     }
 
     [Fact]
@@ -398,5 +398,93 @@ public sealed class MediaFoundationFallbackTests
             Assert.Equal(before + 1, pictures.Count);     // pictures continue without a new keyframe
         }
         finally { hung.Release.Set(); }
+    }
+
+    // Throws an ordinary exception, but only when released: the test releases it after the sink has abandoned the thread,
+    // which is the order that used to let the exception escape the decoder thread and crash the process.
+    private sealed class ThrowWhenReleasedDecoder : IH264FrameDecoder
+    {
+        public readonly ManualResetEventSlim Release = new();
+        public readonly ManualResetEventSlim Entered = new();
+        public int Decode(byte[] annexB, Action<byte[], int, int> onFrame)
+        {
+            Entered.Set();
+            Release.Wait();
+            throw new InvalidOperationException("decoder died while being abandoned");
+        }
+        public void Dispose() { }
+    }
+
+    [Fact]
+    public void ExceptionThrownAfterTheThreadWasAbandoned_DoesNotEscapeTheDecoderThread()
+    {
+        var unhandled = new List<object>();
+        UnhandledExceptionEventHandler hook = (_, e) => { lock (unhandled) unhandled.Add(e.ExceptionObject); };
+        AppDomain.CurrentDomain.UnhandledException += hook;
+        var first = new ThrowWhenReleasedDecoder();
+        var software = new FakeDecoder(_ => true);
+        var pictures = new List<int>();
+        using var sink = MakeWithHangLimit(p => p == H264Path.MediaFoundationGpu ? first : software, TimeSpan.FromMilliseconds(150), pictures);
+        try
+        {
+            sink.GotVideoFrame(Ep, 0, Key(1), H264);
+            Assert.True(first.Entered.Wait(5000));
+            Thread.Sleep(300);
+            sink.GotVideoFrame(Ep, 1, Delta(2), H264);              // abandons the thread that sits in Decode
+            Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
+
+            first.Release.Set();                                    // now it throws, after the abandon flag is set
+            Thread.Sleep(300);
+
+            lock (unhandled) Assert.Empty(unhandled);               // before the fix the process died here
+            Feed(sink, Ep, 2, Delta(3), H264);
+            Assert.Equal(new byte[] { 1, 2, 3 }, software.Seen);    // and the new thread carries on
+        }
+        finally { AppDomain.CurrentDomain.UnhandledException -= hook; first.Release.Set(); }
+    }
+
+    [Fact]
+    public void SecondHangInTheMiddleOfARecoveryReplay_StillGivesTheNextDecoderTheWholeGop()
+    {
+        const int gopLength = 300;
+        var gpu = new HangAfterDecoder(gopLength);                // hangs on frame 300
+        var software = new HangAfterDecoder(150);                 // hangs half way through the 300-frame recovery replay
+        var ffmpeg = Substitute.For<IVideoSink>();
+        var seen = new List<byte>();
+        ffmpeg.When(f => f.GotVideoFrame(Arg.Any<IPEndPoint>(), Arg.Any<uint>(), Arg.Any<byte[]>(), Arg.Any<VideoFormat>()))
+            .Do(call => seen.Add(call.ArgAt<byte[]>(2)[5]));
+        var sink = new MediaFoundationVideoSink(NullLogger.Instance, p => p == H264Path.MediaFoundationGpu ? gpu : software, () => ffmpeg, H264Path.MediaFoundationGpu)
+        { HangLimit = TimeSpan.FromMilliseconds(200) };
+        var sent = new List<byte>();
+        void Send(int i)
+        {
+            var tag = (byte)(i == 0 ? 1 : 2 + i % 200);
+            sent.Add(tag);
+            sink.GotVideoFrame(Ep, (uint)i, i == 0 ? Key(tag) : Delta(tag), H264);
+        }
+        using (sink)
+        try
+        {
+            for (var i = 0; i < gopLength; i++)
+            {
+                Send(i);
+                Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
+            }
+            Send(gopLength);                                      // hangs the first decoder
+            Assert.True(gpu.Entered.Wait(5000));
+            Thread.Sleep(400);
+            Send(gopLength + 1);                                  // abandon 1: software starts replaying and hangs at its 151st frame
+            Assert.True(software.Entered.Wait(5000));
+            Send(gopLength + 2);                                  // queued behind the second hang
+            Thread.Sleep(400);
+            Send(gopLength + 3);                                  // abandon 2: capped, straight to FFmpeg
+            Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
+            Send(gopLength + 4);                                  // live frame after the recovery
+            Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
+
+            Assert.Equal(H264Path.FFmpeg, sink.CurrentPath);
+            Assert.Equal(sent, seen);                             // the whole GOP in order, then the live frames, each once
+        }
+        finally { gpu.Release.Set(); software.Release.Set(); }
     }
 }

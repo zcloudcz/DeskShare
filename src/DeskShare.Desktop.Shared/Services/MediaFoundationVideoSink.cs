@@ -89,7 +89,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
     private sealed class WorkerAbandonedException : Exception { }
 
     // Replay is set only on the one recovery item that Abandon hands to a new worker: a snapshot of the whole GOP. It sits
-    // outside the capacity rules on purpose (a GOP can be hundreds of frames, the queue holds 90) and is fed before live frames.
+    // outside the capacity rules on purpose (a GOP can be hundreds of frames, the queue holds 90) and is fed first.
     private readonly record struct Item(IPEndPoint Ep, uint Ts, byte[] Data, VideoFormat Format,
         (IPEndPoint Ep, uint Ts, byte[] Data, VideoFormat Format)[]? Replay = null);
 
@@ -109,8 +109,10 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         }
     }
 
-    // Every H.264 access unit since the last keyframe. The viewer cannot ask the host for a new keyframe (there is no
-    // feedback channel), and a new decoder needs one to start, so on a switch we replay these instead.
+    // Every H.264 access unit RECEIVED since the last keyframe, written by the receive thread only (under _gate), so it is
+    // always complete whatever the decoder threads are doing. The viewer cannot ask the host for a new keyframe (there is
+    // no feedback channel), and a new decoder needs one to start, so on a switch we replay these instead. A replay takes
+    // a snapshot and removes the queued H.264 frames (the snapshot already contains them), so nothing is decoded twice.
     private readonly List<(IPEndPoint Ep, uint Ts, byte[] Data, VideoFormat Format)> _gop = new();
     private long _gopBytes;
     private bool _gopOverflow; // too long without a keyframe: replay is not possible, the new decoder waits for the next one
@@ -137,6 +139,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
     private void Run(Worker w)
     {
         t_worker = w;
+        // Nothing may escape this method: on a raw thread an unhandled exception would take the whole process down.
         try
         {
             while (true)
@@ -153,6 +156,13 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
                 {
                     Process(item);
                 }
+                catch (Exception ex)
+                {
+                    // An abandoned thread that wakes up late fails in arbitrary ways (and may do so before it learns it is
+                    // abandoned): it leaves silently. A healthy one logs and takes the next frame.
+                    if (w.Abandoned) return;
+                    _logger.LogError(ex, "Video decode failed for {Codec} frame of {Size} bytes", item.Format.Codec, item.Data.Length);
+                }
                 finally
                 {
                     lock (w.Gate) { w.Busy = false; System.Threading.Monitor.PulseAll(w.Gate); }
@@ -160,23 +170,31 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
                 if (w.Abandoned) return;
             }
         }
+        catch (Exception ex)
+        {
+            if (!w.Abandoned) _logger.LogError(ex, "Video decoder thread stopped by an unexpected error");
+        }
         finally
         {
             // Only a thread that left normally cleans up, and it does so itself: nobody else may touch a decoder that can be mid-call.
             if (!w.Abandoned)
             {
-                _h264?.Dispose();
-                _vp8?.Dispose();
-                (_ffmpeg as IDisposable)?.Dispose();
+                try
+                {
+                    _h264?.Dispose();
+                    _vp8?.Dispose();
+                    (_ffmpeg as IDisposable)?.Dispose();
+                }
+                catch (Exception ex) { _logger.LogWarning("Disposing the decoders failed: {Message}", ex.Message); }
                 lock (_gate) _gop.Clear();
             }
         }
     }
-
     // Runs a native decoder call under the hang clock. After a call that returns on an abandoned thread, nothing may be touched.
     private T Timed<T>(VideoCodecsEnum codec, Func<T> call)
     {
         var w = t_worker!;
+        if (w.Abandoned) throw new WorkerAbandonedException(); // do not start a native call (or touch shared state) once abandoned
         w.Codec = codec;
         Volatile.Write(ref w.DecodeStartedAt, Stopwatch.GetTimestamp());
         try { return call(); }
@@ -279,6 +297,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
             // Hang detection piggybacks on the frames arriving anyway (no timer thread). A static screen sends nothing,
             // but then there is no moving picture to lose; the next frame notices the hang.
             if (_worker.IsStuck(HangLimit)) Abandon(_worker);
+            if (format.Codec == VideoCodecsEnum.H264) RememberLocked(remoteEndPoint, timestamp, frame, format);
             Enqueue(_worker, new Item(remoteEndPoint, timestamp, frame, format));
         }
     }
@@ -328,46 +347,60 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         else _vp8OnFfmpeg = true;
         if (cappedOut) { _path = H264Path.FFmpeg; _vp8OnFfmpeg = true; }
 
+        // Everything the hung thread had queued is inside the GOP snapshot, except VP8 frames (no replay for those).
+        // The new worker gets the snapshot as its first item; if it hangs too, the next Abandon takes a fresh snapshot.
+        var h264 = stuck.Codec == VideoCodecsEnum.H264;
         Item[] leftovers;
-        lock (stuck.Gate) { leftovers = stuck.Queue.ToArray(); stuck.Queue.Clear(); }
+        lock (stuck.Gate)
+        {
+            leftovers = stuck.Queue.Where(i => !h264 || i.Format.Codec != VideoCodecsEnum.H264).ToArray();
+            stuck.Queue.Clear();
+        }
         _worker = StartWorker();
-
-        // Replay the frames since the last keyframe into the next Media Foundation decoder as ONE item that goes first,
-        // then the frames that were queued behind the hang. For FFmpeg the first queued frame makes DecodeH264 replay by itself.
-        if (stuck.Codec == VideoCodecsEnum.H264 && _path != H264Path.FFmpeg && _gop.Count > 0)
+        if (h264 && _gop.Count > 0)
             lock (_worker.Gate) _worker.Queue.Enqueue(new Item(null!, 0, Array.Empty<byte>(), default, _gop.ToArray()));
         foreach (var item in leftovers) Enqueue(_worker, item);
     }
 
-    // Feeds a GOP snapshot to the freshly started decoder through the normal path (failures, watchdog and step-down apply).
-    // Only the newest picture is shown, like in StepDown. If the decoder steps down in the middle, StepDown replays what was
-    // fed so far and this loop carries on with the rest, so no frame is lost or doubled.
-    private void ReplayRecovery((IPEndPoint Ep, uint Ts, byte[] Data, VideoFormat Format)[] frames)
+    // Takes the GOP snapshot for a replay and drops the H.264 frames still queued for this worker: the snapshot contains them.
+    private (IPEndPoint Ep, uint Ts, byte[] Data, VideoFormat Format)[] TakeSnapshot()
     {
-        for (var i = 0; i < frames.Length; i++)
+        var w = t_worker!;
+        lock (_gate)
         {
-            _suppressEvents = i < frames.Length - 1;
-            DecodeH264(frames[i].Ep, frames[i].Ts, frames[i].Data, frames[i].Format);
+            lock (w.Gate)
+            {
+                var keep = w.Queue.Where(i => i.Format.Codec != VideoCodecsEnum.H264).ToArray();
+                w.Queue.Clear();
+                foreach (var item in keep) w.Queue.Enqueue(item);
+            }
+            return _gop.ToArray();
         }
     }
 
+    // Feeds one replayed frame to the current decoder (Media Foundation or FFmpeg) without touching the GOP.
+    private void FeedReplay((IPEndPoint Ep, uint Ts, byte[] Data, VideoFormat Format) frame)
+    {
+        if (_path == H264Path.FFmpeg)
+        {
+            EnsureFfmpeg();
+            _ffmpeg!.GotVideoFrame(frame.Ep, frame.Ts, frame.Data, frame.Format);
+            return;
+        }
+        _h264 ??= Timed(VideoCodecsEnum.H264, () => _createH264(_path));
+        FeedH264(frame.Data); // a replay into a decoder that is silent as well steps down again
+    }
     // Runs on the decoder thread.
     private void Process(Item item)
     {
         try
         {
             if (item.Replay != null)
-                ReplayRecovery(item.Replay);
+                Replay(FeedReplay, item.Replay);
             else if (item.Format.Codec == VideoCodecsEnum.H264)
                 DecodeH264(item.Ep, item.Ts, item.Data, item.Format);
             else if (item.Format.Codec == VideoCodecsEnum.VP8)
                 DecodeVp8(item.Ep, item.Ts, item.Data, item.Format);
-        }
-        catch (WorkerAbandonedException) { }
-        catch (Exception ex) when (!IsStale)
-        {
-            // Last line of defence: whatever goes wrong in here must never kill the decoder thread.
-            _logger.LogError(ex, "Video decode failed for {Codec} frame of {Size} bytes", item.Format.Codec, item.Data.Length);
         }
         finally
         {
@@ -382,17 +415,15 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
             if (_ffmpeg == null)
             {
                 // Creating the FFmpeg endpoint failed when we switched to it: retry, then catch up from the last keyframe
-                // (this frame included). Throws again if it still fails; the caller logs it and the next frame retries.
-                Remember(ep, ts, frame, format);
+                // (this frame included, it is already in the GOP). Throws again if it still fails; the caller logs it and the next frame retries.
                 EnsureFfmpeg();
-                Replay(f => _ffmpeg!.GotVideoFrame(f.Ep, f.Ts, f.Data, f.Format));
+                Replay(FeedReplay);
                 return;
             }
             _ffmpeg.GotVideoFrame(ep, ts, frame, format);
             return;
         }
 
-        Remember(ep, ts, frame, format);
         try
         {
             _h264 ??= Timed(VideoCodecsEnum.H264, () => _createH264(_path));
@@ -405,7 +436,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
             _h264Failures = _h264 == null || ex is DecoderStalledException ? FailuresBeforeFallback : _h264Failures + 1;
             _logger.LogWarning("Media Foundation H.264 ({Path}) failed ({Count}/{Max}): {Message}", _path, _h264Failures, FailuresBeforeFallback, ex.Message);
             if (_h264Failures >= FailuresBeforeFallback)
-                StepDown(); // replays the current frame too: it is the newest one remembered
+                StepDown(); // replays the current frame too: the receive thread put it into the GOP already
             // Below the limit the frame is dropped; the next one may work.
         }
     }
@@ -425,33 +456,30 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
     // Moves to the next decoder and feeds it everything since the last keyframe so the picture continues without a new keyframe.
     private void StepDown()
     {
-        _h264?.Dispose();
-        _h264 = null;
-        _h264Failures = 0;
-        _h264SawIdr = false;
-        _h264SilentUnits = 0;
-        _path++;
+        IH264FrameDecoder? old;
+        lock (_gate) // atomic with Abandon: a thread that was abandoned in the meantime must not touch the new worker's state
+        {
+            if (IsStale) return;
+            old = _h264;
+            _h264 = null;
+            _h264Failures = 0;
+            _h264SawIdr = false;
+            _h264SilentUnits = 0;
+            _path++;
+        }
+        old?.Dispose();
         _logger.LogWarning("Switching H.264 decoding to {Path}", _path);
 
-        if (_path == H264Path.FFmpeg)
-        {
-            EnsureFfmpeg();
-            Replay(frame => _ffmpeg!.GotVideoFrame(frame.Ep, frame.Ts, frame.Data, frame.Format));
-            return;
-        }
-        Replay(frame =>
-        {
-            _h264 ??= Timed(VideoCodecsEnum.H264, () => _createH264(_path));
-            FeedH264(frame.Data); // a replay into a decoder that is silent as well steps down again
-        });
+        if (_path == H264Path.FFmpeg) EnsureFfmpeg();
+        Replay(FeedReplay);
     }
 
-    private void Replay(Action<(IPEndPoint Ep, uint Ts, byte[] Data, VideoFormat Format)> decode)
+    private void Replay(Action<(IPEndPoint Ep, uint Ts, byte[] Data, VideoFormat Format)> decode,
+        (IPEndPoint Ep, uint Ts, byte[] Data, VideoFormat Format)[]? frames = null)
     {
         if (_gopOverflow)
             _logger.LogWarning("No replay possible (too long since the last keyframe): the picture resumes at the next keyframe");
-        (IPEndPoint Ep, uint Ts, byte[] Data, VideoFormat Format)[] frames;
-        lock (_gate) frames = _gop.ToArray();
+        frames ??= TakeSnapshot();
         _suppressEvents = true;
         try
         {
@@ -466,19 +494,13 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
             // The next decoder is broken as well: keep stepping down (ends at FFmpeg, which is not guarded here on purpose).
             _suppressEvents = false;
             _logger.LogWarning("Media Foundation H.264 ({Path}) failed during replay: {Message}", _path, ex.Message);
-            StepDown();
+            StepDown(); // takes a fresh snapshot, a superset of this one
         }
         finally
         {
             _suppressEvents = false;
         }
     }
-
-    private void Remember(IPEndPoint ep, uint ts, byte[] frame, VideoFormat format)
-    {
-        lock (_gate) RememberLocked(ep, ts, frame, format);
-    }
-
     private void RememberLocked(IPEndPoint ep, uint ts, byte[] frame, VideoFormat format)
     {
         if (ContainsIdr(frame))
