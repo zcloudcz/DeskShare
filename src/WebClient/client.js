@@ -1667,8 +1667,11 @@ document.addEventListener('fullscreenchange', () => {
     }
 });
 
-// When served by the SignalingServer itself (not opened from disk), default to that host.
+// When served by the SignalingServer itself (not opened from disk), use that host and hide the field: users of the
+// hosted viewer never need another server, the field only matters for a local copy opened from disk (development).
 if (location.protocol.startsWith('http')) {
     const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
-    document.getElementById('signalingUrl').value = `${wsScheme}://${location.host}/signal`;
+    const signalingInput = document.getElementById('signalingUrl');
+    signalingInput.value = `${wsScheme}://${location.host}/signal`;
+    signalingInput.closest('.control-group').style.display = 'none'; // not .hidden: mobile.css sets display: flex
 }
