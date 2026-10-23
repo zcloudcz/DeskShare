@@ -103,6 +103,14 @@ else
     Log.Information("TURN server is DISABLED - Only P2P connections will be available");
 }
 
+// Optional ZCLOUD accounts ("My devices"). Off by default: then nothing below registers or maps anything for it.
+var accountsEnabled = AccountEndpoints.IsEnabled(builder.Configuration);
+if (accountsEnabled)
+{
+    AccountEndpoints.AddAccounts(builder);
+    Log.Information("Accounts (ZCLOUD Login) are ENABLED");
+}
+
 // ============================================================
 // CORS — restrict methods and headers in production
 // ============================================================
@@ -125,7 +133,7 @@ builder.Services.AddCors(options =>
         {
             Log.Information("CORS: Restricting to {Count} allowed origin(s)", allowedOrigins.Length);
             policy.WithOrigins(allowedOrigins)
-                  .WithMethods("GET", "POST")
+                  .WithMethods("GET", "POST", "DELETE") // DELETE: /me/devices/{serverId} (accounts)
                   .WithHeaders("Content-Type", "Authorization", "X-Requested-With")
                   .AllowCredentials();
         }
@@ -219,6 +227,8 @@ if (!app.Environment.IsDevelopment())
 }
 
 // Security headers — applied to every response
+// With accounts on, the web viewer's MSAL.js must reach the sign-in hosts (token requests are fetch calls).
+var accountsConnectSrc = accountsEnabled ? " " + AccountEndpoints.CspConnectSources(app.Configuration) : "";
 app.Use(async (context, next) =>
 {
     var headers = context.Response.Headers;
@@ -233,12 +243,18 @@ app.Use(async (context, next) =>
     }
 
     // CSP — allow self and WebSocket connections
-    headers["Content-Security-Policy"] = "default-src 'self'; connect-src 'self' wss: ws:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline';";
+    headers["Content-Security-Policy"] = $"default-src 'self'; connect-src 'self' wss: ws:{accountsConnectSrc}; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline';";
 
     await next();
 });
 
 app.UseCors();
+if (accountsEnabled)
+{
+    // Before the rate limiter: the "accounts" limit is partitioned per signed-in account.
+    app.UseAuthentication();
+    app.UseAuthorization();
+}
 app.UseRateLimiter();
 
 // Serve WebClient static files from /webclient path
@@ -736,6 +752,9 @@ app.MapPost("/resume", async (HttpContext context, IServerSessionStorage session
         return Results.Problem("Failed to process resume request");
     }
 }).RequireRateLimiting("authenticate");
+
+if (accountsEnabled)
+    AccountEndpoints.MapAccounts(app);
 
 // ============================================================
 // HEALTH & STATISTICS ENDPOINTS
