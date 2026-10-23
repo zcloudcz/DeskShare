@@ -87,7 +87,13 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
     private int _vp8Failures;
     private bool _vp8OnFfmpeg;
     private IVideoSink? _ffmpeg;
-    private bool _suppressEvents; // true while old frames are replayed into a new decoder: only the last picture is shown
+    // True while old frames are replayed into a new decoder: only the last picture is shown. Kept per worker so an
+    // abandoned thread that wakes up mid-replay can never switch it off for the replacement thread.
+    private static bool SuppressEvents
+    {
+        get => t_worker?.SuppressEvents == true;
+        set { if (t_worker != null) t_worker.SuppressEvents = value; }
+    }
     private bool _disposed;
     private Worker _worker;
     private int _abandoned;
@@ -111,6 +117,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         public readonly Queue<Item> Queue = new();
         public bool Busy, Stop;
         public volatile bool Abandoned;
+        public bool SuppressEvents;             // see the SuppressEvents property; this worker's thread only
         public long DecodeStartedAt;            // Stopwatch ticks while inside a decode/creation call, 0 when idle, Claimed once abandoned
         public VideoCodecsEnum Codec;           // what that call decodes
         public const long Claimed = -1;
@@ -487,7 +494,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         }
         finally
         {
-            if (!IsStale) _suppressEvents = false;
+            if (!IsStale) SuppressEvents = false;
         }
     }
 
@@ -591,25 +598,25 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         // A decoder switch inside this replay (VP8 falling back to FFmpeg) starts its own, newer replay; this one must
         // then stop, or the rest of its frames would reach the new decoder twice.
         var generation = ++_replayGeneration;
-        _suppressEvents = true;
+        SuppressEvents = true;
         try
         {
             for (var i = 0; i < frames.Length && generation == _replayGeneration; i++)
             {
-                _suppressEvents = i < frames.Length - 1; // show only the newest picture, not a burst of old ones
+                SuppressEvents = i < frames.Length - 1; // show only the newest picture, not a burst of old ones
                 decode(frames[i]);
             }
         }
         catch (Exception ex) when (frames.Length > 0 && frames[0].Format.Codec == VideoCodecsEnum.H264 && _path != H264Path.FFmpeg && !IsStale)
         {
             // The next decoder is broken as well: keep stepping down (ends at FFmpeg, which is not guarded here on purpose).
-            _suppressEvents = false;
+            SuppressEvents = false;
             _logger.LogWarning("Media Foundation H.264 ({Path}) failed during replay: {Message}", _path, ex.Message);
             StepDown(); // takes a fresh snapshot, a superset of this one
         }
         finally
         {
-            _suppressEvents = false;
+            SuppressEvents = false;
         }
     }
     private void RememberLocked(IPEndPoint ep, uint ts, byte[] frame, VideoFormat format)
@@ -677,7 +684,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         _ffmpeg = _createFfmpeg();
         _ffmpeg.OnVideoSinkDecodedSampleFaster += image =>
         {
-            if (!_suppressEvents && !_disposed) OnVideoSinkDecodedSampleFaster?.Invoke(image);
+            if (!SuppressEvents && !IsStale && !_disposed) OnVideoSinkDecodedSampleFaster?.Invoke(image);
         };
     }
 
@@ -685,7 +692,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
     private void Raise(byte[] bgra, int width, int height)
     {
         if (IsStale) throw new WorkerAbandonedException(); // a hung decoder woke up late: its pictures are old news
-        if (_suppressEvents || _disposed) return;
+        if (SuppressEvents || _disposed) return;
         var handle = GCHandle.Alloc(bgra, GCHandleType.Pinned);
         try
         {
