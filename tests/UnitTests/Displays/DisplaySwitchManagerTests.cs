@@ -1,0 +1,111 @@
+using DeskShare.Core.Auth;
+using DeskShare.Core.Displays;
+using DeskShare.Core.Interfaces;
+using DeskShare.Core.WebRTC;
+using NSubstitute;
+using Serilog;
+
+namespace DeskShare.UnitTests.Displays;
+
+/// <summary>"switch_display" on the sender's data channel: only a session with Control reaches the switch.</summary>
+public sealed class DisplaySwitchManagerTests
+{
+    private static readonly DisplayInfo[] TwoDisplays =
+    {
+        new(0, "Display 1 - 2880x1800 (primary)", 2880, 1800, true),
+        new(1, "Display 2 - 1920x1080", 1920, 1080, false, Left: 2880, Top: 0, OutputIndex: 1),
+    };
+
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(true, 1)]
+    public async Task Manager_SwitchesOnlyWithControl(bool controlEnabled, int expectedCalls)
+    {
+        var controller = Substitute.For<IInputController>();
+        controller.IsEnabled.Returns(controlEnabled);
+        var manager = new DataChannelManager(Substitute.For<ILogger>(), controller);
+        var calls = new TaskCompletionSource<DisplayInfo>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var count = 0;
+        manager.DisplaySwitcher = new DisplaySwitchService(TwoDisplays, 0, d => { Interlocked.Increment(ref count); calls.TrySetResult(d); return Task.FromResult(true); });
+
+        manager.ProcessInputMessage("""{"type":"switch_display","index":1}""");
+
+        if (expectedCalls > 0)
+            Assert.Equal(1, (await calls.Task.WaitAsync(TimeSpan.FromSeconds(5))).Index);
+        else
+            await Task.Delay(100); // give a wrongly started switch the chance to show up
+        Assert.Equal(expectedCalls, count);
+    }
+
+    [Fact]
+    public async Task Manager_IgnoresAnInvalidIndex()
+    {
+        var controller = Substitute.For<IInputController>();
+        controller.IsEnabled.Returns(true);
+        var manager = new DataChannelManager(Substitute.For<ILogger>(), controller);
+        var count = 0;
+        manager.DisplaySwitcher = new DisplaySwitchService(TwoDisplays, 0, _ => { Interlocked.Increment(ref count); return Task.FromResult(true); });
+
+        manager.ProcessInputMessage("""{"type":"switch_display","index":7}""");
+        manager.ProcessInputMessage("""{"type":"switch_display","index":"1"}""");
+        manager.ProcessInputMessage("""{"type":"switch_display"}""");
+        await Task.Delay(100);
+
+        Assert.Equal(0, count);
+    }
+
+    [Fact]
+    public async Task Manager_CancelsASwitchWhenControlIsRevokedWhileItRuns()
+    {
+        var controller = Substitute.For<IInputController>();
+        controller.IsEnabled.Returns(true);
+        var manager = new DataChannelManager(Substitute.For<ILogger>(), controller);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var proceed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowedAtCommit = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = new DisplaySwitchService(TwoDisplays, 0, async (_, stillAllowed) =>
+        {
+            entered.SetResult();
+            await proceed.Task; // the new capturer is "starting"
+            allowedAtCommit.SetResult(stillAllowed());
+            return stillAllowed();
+        });
+        manager.DisplaySwitcher = service;
+
+        manager.ProcessInputMessage("""{"type":"switch_display","index":1}""");
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        // The host revokes control (or the user toggles it off and on) before the switch is committed.
+        controller.AuthorizationStateChanged += Raise.Event<EventHandler<InputAuthorizationState>>(controller, InputAuthorizationState.Revoked);
+        proceed.SetResult();
+
+        Assert.False(await allowedAtCommit.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        await Task.Delay(50);
+        Assert.Equal(0, service.Current); // the switch did not count
+    }
+
+    [Fact]
+    public async Task Manager_CancelsASwitchWhenItsPeerIsReplacedWhileItRuns()
+    {
+        var controller = Substitute.For<IInputController>();
+        controller.IsEnabled.Returns(true);
+        var manager = new DataChannelManager(Substitute.For<ILogger>(), controller);
+        var peer = new PeerContext();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var proceed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowedAtCommit = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        manager.DisplaySwitcher = new DisplaySwitchService(TwoDisplays, 0, async (_, stillAllowed) =>
+        {
+            entered.SetResult();
+            await proceed.Task;
+            allowedAtCommit.SetResult(stillAllowed());
+            return false;
+        });
+
+        manager.ProcessInputMessage(peer, """{"type":"switch_display","index":1}""");
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        peer.Retire(); // another viewer connection took over
+        proceed.SetResult();
+
+        Assert.False(await allowedAtCommit.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+}

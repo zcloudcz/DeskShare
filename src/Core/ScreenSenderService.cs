@@ -2,6 +2,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using DeskShare.Core.WebRTC;
 using DeskShare.Core.Conversion;
+using DeskShare.Core.Displays;
 using DeskShare.Core.Pipeline;
 using DeskShare.Core.Video;
 using DeskShare.Core.Interfaces;
@@ -216,6 +217,10 @@ public class ScreenSenderService : IHostedService, IDisposable
 
             _logger.LogInformation("Screen resolution: {Width}x{Height}", width, height);
 
+            // The configured output is the default; a viewer with remote control may switch to another one.
+            var displays = DisplayCatalog.Enumerate(width, height);
+            var currentDisplay = DisplayCatalog.FindConfigured(displays, _configuration.AdapterIndex, _configuration.OutputIndex);
+
             // The session (and its encoders) must be created with the size we actually send, not the screen size.
             var (outputWidth, outputHeight) = OutputSize.Compute(width, height, _configuration.MaxOutputWidth);
             _logger.LogInformation("Output resolution: {Width}x{Height} (MaxOutputWidth={Max})", outputWidth, outputHeight, _configuration.MaxOutputWidth);
@@ -283,6 +288,22 @@ public class ScreenSenderService : IHostedService, IDisposable
                 }
                 ApplyIceServers(_webrtcSessionWithInput.VideoSource);
                 _webrtcSessionWithInput.EnableE2EBinding(_e2eKeys);
+
+                inputController.SetCapturedDisplay(InputRectFor(displays[currentDisplay]));
+                _webrtcSessionWithInput.DataChannel.DisplaySwitcher = new DisplaySwitchService(displays, currentDisplay, async (display, stillAllowed) =>
+                {
+                    if (_pipeline == null)
+                        return false;
+                    var next = PlatformServiceFactory.CreateScreenCapturer(display.AdapterIndex, display.OutputIndex, _configuration.TargetFps);
+                    // Pointer input is mapped to the new display only once the viewer is actually receiving its picture,
+                    // otherwise clicks would hit the new monitor while the viewer still sees the old one.
+                    var switched = await _pipeline.SwitchCapturerAsync(next, stillAllowed, () =>
+                    {
+                        inputController.SetCapturedDisplay(InputRectFor(display));
+                        _logger.LogInformation("Now sharing {Display}", display.Name);
+                    });
+                    return switched;
+                });
 
                 // Subscribe to events
                 _webrtcSessionWithInput.ConnectionStateChanged += (sender, state) =>
@@ -378,6 +399,10 @@ public class ScreenSenderService : IHostedService, IDisposable
             IsRunning = false;
         }
     }
+
+    // The primary display is what SendInput targets by default; only another display needs an explicit rectangle.
+    private static ScreenRect? InputRectFor(DisplayInfo display) =>
+        display.Primary ? null : new ScreenRect(display.Left, display.Top, display.Width, display.Height);
 
     /// <summary>
     /// Generates a new passkey and updates expiration time.

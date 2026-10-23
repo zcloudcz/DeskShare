@@ -148,6 +148,79 @@ public class ClientManager : IDisposable
         HostAllowsPrivacyScreenChanged?.Invoke(this, allowed);
     }
 
+    private bool _hostAuthorizedControl;
+
+    /// <summary>Displays the host offered in its "displays" message; empty until it arrives.</summary>
+    public IReadOnlyList<DeskShare.Core.Displays.DisplayInfo> Displays { get; private set; } = Array.Empty<DeskShare.Core.Displays.DisplayInfo>();
+
+    /// <summary>Index (into <see cref="Displays"/>) of the display the host shares now.</summary>
+    public int CurrentDisplay { get; private set; }
+
+    /// <summary>Whether to offer a display picker: the host has several displays and authorized control (the host refuses a switch otherwise).</summary>
+    public bool CanSwitchDisplay => _hostAuthorizedControl && Displays.Count > 1;
+
+    /// <summary>Fired when <see cref="Displays"/>, <see cref="CurrentDisplay"/> or <see cref="CanSwitchDisplay"/> changes.</summary>
+    public event EventHandler? DisplaysChanged;
+
+    /// <summary>Asks the host to share another display. The answer arrives as a new "displays" message (<see cref="DisplaysChanged"/>).</summary>
+    public void SwitchDisplay(int index)
+    {
+        // Only to the current peer's own channel, and only while it is verified (see PeerContext.TrySend).
+        var json = "{\"type\":\"switch_display\",\"index\":" + index + "}";
+        _peer.TrySend(channel => channel.send(json), requireVerified: true);
+    }
+
+    // Same rules as the "host allows ..." flags: changed under _hostStateGate, refused for a retired peer, event raised after the gate is released.
+    private void UpdateDisplays(PeerContext? peer, bool? controlAuthorized = null, IReadOnlyList<DeskShare.Core.Displays.DisplayInfo>? displays = null, int current = 0)
+    {
+        lock (_hostStateGate)
+        {
+            if (peer != null && peer.IsRetired)
+            {
+                return;
+            }
+
+            var changed = false;
+            if (controlAuthorized is { } control && control != _hostAuthorizedControl)
+            {
+                _hostAuthorizedControl = control;
+                changed = true;
+            }
+            if (displays != null)
+            {
+                (Displays, CurrentDisplay) = (displays, current);
+                changed = true;
+            }
+            if (!changed)
+            {
+                return;
+            }
+        }
+
+        DisplaysChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private static IReadOnlyList<DeskShare.Core.Displays.DisplayInfo> ParseDisplays(JsonElement root)
+    {
+        var list = new List<DeskShare.Core.Displays.DisplayInfo>();
+        if (root.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in items.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.Object
+                    && item.TryGetProperty("index", out var index) && index.TryGetInt32(out var i)
+                    && item.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String)
+                {
+                    list.Add(new DeskShare.Core.Displays.DisplayInfo(i, name.GetString()!,
+                        item.TryGetProperty("width", out var w) && w.TryGetInt32(out var width) ? width : 0,
+                        item.TryGetProperty("height", out var h) && h.TryGetInt32(out var height) ? height : 0,
+                        item.TryGetProperty("primary", out var pr) && pr.ValueKind == JsonValueKind.True));
+                }
+            }
+        }
+        return list;
+    }
+
     private FileUploader? _fileUploader;
 
     /// <summary>
@@ -356,6 +429,7 @@ public class ClientManager : IDisposable
         SetHostAllowsClipboard(false);
         SetHostAllowsFiles(false);
         SetHostAllowsPrivacyScreen(false);
+        UpdateDisplays(null, false, Array.Empty<DeskShare.Core.Displays.DisplayInfo>());
         _bindSent = false;
 
         // Handle ICE candidates
@@ -489,6 +563,7 @@ public class ClientManager : IDisposable
             SetHostAllowsClipboard(false, peer);
             SetHostAllowsFiles(false, peer);
             SetHostAllowsPrivacyScreen(false, peer);
+            UpdateDisplays(peer, false, Array.Empty<DeskShare.Core.Displays.DisplayInfo>());
         };
         _dataChannel.onerror += (error) =>
         {
@@ -548,6 +623,12 @@ public class ClientManager : IDisposable
                     SetHostAllowsPrivacyScreen(
                         doc.RootElement.TryGetProperty("privacy", out var privacy) && privacy.ValueKind == JsonValueKind.True
                         && doc.RootElement.TryGetProperty("authorized", out var authorized) && authorized.ValueKind == JsonValueKind.True, peer);
+                    UpdateDisplays(peer, doc.RootElement.TryGetProperty("authorized", out var control) && control.ValueKind == JsonValueKind.True);
+                }
+                else if (messageType == "displays")
+                {
+                    UpdateDisplays(peer, null, ParseDisplays(doc.RootElement),
+                        doc.RootElement.TryGetProperty("current", out var current) && current.TryGetInt32(out var c) ? c : 0);
                 }
                 else if (messageType == "privacy_screen_state" && !peer.IsRetired)
                 {
