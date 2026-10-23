@@ -103,12 +103,21 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         public readonly Queue<Item> Queue = new();
         public bool Busy, Stop;
         public volatile bool Abandoned;
-        public long DecodeStartedAt;            // Stopwatch ticks while inside a decode/creation call, else 0
+        public long DecodeStartedAt;            // Stopwatch ticks while inside a decode/creation call, 0 when idle, Claimed once abandoned
         public VideoCodecsEnum Codec;           // what that call decodes
-        public bool IsStuck(TimeSpan limit)
+        public const long Claimed = -1;
+
+        /// <summary>
+        /// Takes over a call that has run longer than <paramref name="limit"/>. Atomic with the end of the call (see Timed):
+        /// exactly one side wins the CompareExchange on the same start value, so either the call finished normally and the
+        /// worker carries on, or the watchdog owns it and the worker can never publish anything from it. Without this, a
+        /// call ending just after the watchdog read the old timestamp could still write decoder state for the new worker.
+        /// </summary>
+        public bool TryClaimStuck(TimeSpan limit)
         {
             var started = Volatile.Read(ref DecodeStartedAt);
-            return started != 0 && Stopwatch.GetElapsedTime(started) > limit;
+            if (started <= 0 || Stopwatch.GetElapsedTime(started) <= limit) return false;
+            return Interlocked.CompareExchange(ref DecodeStartedAt, Claimed, started) == started;
         }
     }
 
@@ -142,7 +151,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         try
         {
             lock (_gate)
-                if (!_disposed && _worker.IsStuck(HangLimit)) Abandon(_worker);
+                if (!_disposed && _worker.TryClaimStuck(HangLimit)) Abandon(_worker);
         }
         catch (Exception ex)
         {
@@ -219,11 +228,13 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         var w = t_worker!;
         if (w.Abandoned) throw new WorkerAbandonedException(); // do not start a native call (or touch shared state) once abandoned
         w.Codec = codec;
-        Volatile.Write(ref w.DecodeStartedAt, Stopwatch.GetTimestamp());
+        var start = Math.Max(1, Stopwatch.GetTimestamp());
+        Volatile.Write(ref w.DecodeStartedAt, start);
         try { return call(); }
         finally
         {
-            Volatile.Write(ref w.DecodeStartedAt, 0);
+            // Lost the race to the watchdog (it claimed this call): the result belongs to nobody, leave without using it.
+            if (Interlocked.CompareExchange(ref w.DecodeStartedAt, 0, start) != start) throw new WorkerAbandonedException();
             if (w.Abandoned) throw new WorkerAbandonedException();
         }
     }
@@ -318,7 +329,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         {
             if (_disposed) return;
             // Checked here too (not only by the timer), so a hang is handled before this frame is queued behind it.
-            if (_worker.IsStuck(HangLimit)) Abandon(_worker);
+            if (_worker.TryClaimStuck(HangLimit)) Abandon(_worker);
             if (format.Codec == VideoCodecsEnum.H264) RememberLocked(remoteEndPoint, timestamp, frame, format);
             Enqueue(_worker, new Item(remoteEndPoint, timestamp, frame, format));
         }
