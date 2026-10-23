@@ -82,7 +82,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
     private int _h264Failures;
     private bool _h264SawIdr;      // silence only counts once the decoder got a keyframe: before it, no picture is expected
     private int _h264SilentUnits;  // access units fed since the last picture came out
-    private long _h264SilentSince; // Stopwatch ticks of the first of those units (0 = none); read by the hang timer
+    private long _h264SilentSince; // Stopwatch ticks of the first of those units (0 = none); read by the watchdog thread
     private IH264FrameDecoder? _vp8; // a VpxDecoder (same Decode shape), replaceable in tests via CreateVp8
     private int _vp8Failures;
     private bool _vp8OnFfmpeg;
@@ -154,13 +154,16 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         _path = start;
         _h264 = firstDecoder;
         _worker = StartWorker();
-        // Hang checks also run on a timer: after the last change of a static screen no further frame arrives, so a
+        // Hang checks also run periodically: after the last change of a static screen no further frame arrives, so a
         // decoder stuck on that frame would otherwise never be noticed and the viewer would keep showing old content.
-        _hangTimer = new Timer(_ => CheckForHang(), null, HangCheckInterval, HangCheckInterval);
+        // Its own background thread rather than a thread-pool timer: when the pool is starved (seen on a busy CI runner)
+        // timer callbacks are delayed for seconds, exactly when a watchdog is needed.
+        new Thread(() => { while (!_stopWatchdog.Wait(HangCheckInterval)) CheckForHang(); })
+        { IsBackground = true, Name = "Video decoder watchdog" }.Start();
     }
 
     private static readonly TimeSpan HangCheckInterval = TimeSpan.FromMilliseconds(250);
-    private readonly Timer _hangTimer;
+    private readonly ManualResetEventSlim _stopWatchdog = new();
 
     private void CheckForHang()
     {
@@ -176,7 +179,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         }
         catch (Exception ex)
         {
-            // A timer callback must never throw (it would crash the process).
+            // Must never throw: an exception on the watchdog thread would crash the process.
             _logger.LogError(ex, "Decoder hang check failed");
         }
     }
@@ -349,7 +352,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         lock (_gate)
         {
             if (_disposed) return;
-            // Checked here too (not only by the timer), so a hang is handled before this frame is queued behind it.
+            // Checked here too (not only by the watchdog), so a hang is handled before this frame is queued behind it.
             if (_worker.TryClaimStuck(HangLimit)) Abandon(_worker);
             if (format.Codec is VideoCodecsEnum.H264 or VideoCodecsEnum.VP8) RememberLocked(remoteEndPoint, timestamp, frame, format);
             Enqueue(_worker, new Item(remoteEndPoint, timestamp, frame, format));
@@ -557,7 +560,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         return since != 0 && Stopwatch.GetElapsedTime(since) > SilenceBeforeStall;
     }
 
-    // Runs on the decoder thread when the timer saw a silence that no further frame will end (static screen).
+    // Runs on the decoder thread when the watchdog saw a silence that no further frame will end (static screen).
     private void CheckSilence()
     {
         if (_path == H264Path.FFmpeg || _h264 == null || !SilentTooLong()) return;
@@ -732,7 +735,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
             _disposed = true;
             w = _worker;
         }
-        _hangTimer.Dispose();
+        _stopWatchdog.Set(); // the watchdog thread leaves within one check interval
         // Never waits: the decoder thread frees the decoders itself when it leaves (see Run). If it is hung it stays hung
         // and leaks, but Dispose still returns at once (it may run on the UI thread).
         lock (w.Gate) { w.Stop = true; System.Threading.Monitor.PulseAll(w.Gate); }
