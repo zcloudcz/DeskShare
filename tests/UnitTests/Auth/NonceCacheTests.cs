@@ -328,11 +328,16 @@ public class NonceCacheTests
         var statsBefore = cache.GetStatistics();
         Assert.Equal(0, statsBefore.TotalCleanupRuns);
 
-        // Act - wait for automatic cleanup to run
-        await Task.Delay(200);
+        // Act - wait for automatic cleanup to run. Polled, not a fixed sleep: a busy CI runner can delay timer callbacks
+        // far beyond the 30 ms interval (a fixed 200 ms wait failed there).
+        var statsAfter = cache.GetStatistics();
+        for (var waited = 0; waited < 5000 && (statsAfter.TotalCleanupRuns == 0 || statsAfter.TotalNonces != 0); waited += 20)
+        {
+            await Task.Delay(20);
+            statsAfter = cache.GetStatistics();
+        }
 
         // Assert - cleanup should have run at least once
-        var statsAfter = cache.GetStatistics();
         Assert.True(statsAfter.TotalCleanupRuns > 0, "Automatic cleanup should have run");
         Assert.Equal(0, statsAfter.TotalNonces); // Old nonce should be removed
     }
