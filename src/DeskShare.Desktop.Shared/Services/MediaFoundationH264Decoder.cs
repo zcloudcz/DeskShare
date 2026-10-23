@@ -126,6 +126,9 @@ internal sealed class MediaFoundationH264Decoder : IH264FrameDecoder
         if (failLoudly) _mft.SetOutputType(0, null, 0);
     }
 
+    /// <summary>Test seam: takes the D3D manager away from the running decoder. The MFT then hangs inside ProcessOutput (native, uninterruptible) on the next frame.</summary>
+    internal void DropD3DManager() => _mft!.ProcessMessage(TMessageType.MessageSetD3DManager, UIntPtr.Zero);
+
     private void Configure(bool hardware)
     {
         using (var attrs = _mft!.Attributes)

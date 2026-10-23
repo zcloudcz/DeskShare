@@ -314,4 +314,49 @@ public sealed class MediaFoundationFixtureTests(ITestOutputHelper output)
         Assert.True(pictures.Count > before + 15, "pictures must continue after the step down");
         MediaFoundationDecoderTests.AssertColours(pictures[^1].Data, 1920, 1080);
     }
+
+    /// <summary>
+    /// The real native hang: with the D3D manager taken away from a running GPU decoder the MFT spins inside ProcessOutput
+    /// and never returns. The watchdog must abandon that decoder and the picture must go on in software. The abandoned
+    /// thread keeps spinning until the test process exits (a native call cannot be stopped), which is the leak the sink logs.
+    /// </summary>
+    [MfGpuFixtureFact]
+    public void RealNativeProcessOutputHang_IsAbandoned_AndThePictureContinuesOnSoftware()
+    {
+        var created = new List<(H264Path Path, TrackedDecoder Decoder)>();
+        using var sink = new MediaFoundationVideoSink(new TestLogger(output),
+            path =>
+            {
+                var tracked = new TrackedDecoder(new MediaFoundationH264Decoder(hardware: path == H264Path.MediaFoundationGpu));
+                created.Add((path, tracked));
+                return tracked;
+            },
+            () => throw new InvalidOperationException("FFmpeg must not be needed"),
+            H264Path.MediaFoundationGpu) { HangLimit = TimeSpan.FromSeconds(1) };
+        var pictures = new List<(int W, int H, byte[] Data)>();
+        CollectPictures(sink, pictures);
+
+        var stream = MfFixtures.Read(MfFixtures.H264Hd);
+        for (var i = 0; i < 10; i++)
+            sink.GotVideoFrame(Ep, 0, stream[i], H264);
+        Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
+        var before = pictures.Count;
+        Assert.NotEqual(0, before);
+
+        created[0].Decoder.Inner.DropD3DManager();
+        // Frames keep arriving at about 20 fps, as on a live stream; the first one after the drop hangs the decoder thread
+        // and a later one (more than HangLimit afterwards) notices it.
+        for (var i = 0; i < 60; i++)
+        {
+            sink.GotVideoFrame(Ep, 0, stream[10 + i % (stream.Count - 10)], H264);
+            Thread.Sleep(50);
+        }
+        Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
+
+        output.WriteLine($"path: {sink.CurrentPath}, pictures: {before} before the drop, {pictures.Count} in total");
+        Assert.Equal(H264Path.MediaFoundationSoftware, sink.CurrentPath);
+        Assert.False(created[0].Decoder.Disposed); // abandoned, not disposed behind a thread that is inside it
+        Assert.True(pictures.Count > before + 30, "pictures must continue on software");
+        MediaFoundationDecoderTests.AssertColours(pictures[^1].Data, 1920, 1080);
+    }
 }

@@ -88,7 +88,10 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
 
     private sealed class WorkerAbandonedException : Exception { }
 
-    private readonly record struct Item(IPEndPoint Ep, uint Ts, byte[] Data, VideoFormat Format, bool Silent);
+    // Replay is set only on the one recovery item that Abandon hands to a new worker: a snapshot of the whole GOP. It sits
+    // outside the capacity rules on purpose (a GOP can be hundreds of frames, the queue holds 90) and is fed before live frames.
+    private readonly record struct Item(IPEndPoint Ep, uint Ts, byte[] Data, VideoFormat Format,
+        (IPEndPoint Ep, uint Ts, byte[] Data, VideoFormat Format)[]? Replay = null);
 
     /// <summary>One decoder thread with its own queue.</summary>
     private sealed class Worker
@@ -276,7 +279,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
             // Hang detection piggybacks on the frames arriving anyway (no timer thread). A static screen sends nothing,
             // but then there is no moving picture to lose; the next frame notices the hang.
             if (_worker.IsStuck(HangLimit)) Abandon(_worker);
-            Enqueue(_worker, new Item(remoteEndPoint, timestamp, frame, format, false));
+            Enqueue(_worker, new Item(remoteEndPoint, timestamp, frame, format));
         }
     }
 
@@ -329,21 +332,33 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         lock (stuck.Gate) { leftovers = stuck.Queue.ToArray(); stuck.Queue.Clear(); }
         _worker = StartWorker();
 
-        // Replay the frames since the last keyframe into the next Media Foundation decoder (silently: only the newest
-        // picture is shown). For FFmpeg the first queued frame makes DecodeH264 replay by itself.
-        if (stuck.Codec == VideoCodecsEnum.H264 && _path != H264Path.FFmpeg)
-            for (var i = 0; i < _gop.Count; i++)
-                Enqueue(_worker, new Item(_gop[i].Ep, _gop[i].Ts, _gop[i].Data, _gop[i].Format, Silent: i < _gop.Count - 1 || leftovers.Length > 0));
+        // Replay the frames since the last keyframe into the next Media Foundation decoder as ONE item that goes first,
+        // then the frames that were queued behind the hang. For FFmpeg the first queued frame makes DecodeH264 replay by itself.
+        if (stuck.Codec == VideoCodecsEnum.H264 && _path != H264Path.FFmpeg && _gop.Count > 0)
+            lock (_worker.Gate) _worker.Queue.Enqueue(new Item(null!, 0, Array.Empty<byte>(), default, _gop.ToArray()));
         foreach (var item in leftovers) Enqueue(_worker, item);
+    }
+
+    // Feeds a GOP snapshot to the freshly started decoder through the normal path (failures, watchdog and step-down apply).
+    // Only the newest picture is shown, like in StepDown. If the decoder steps down in the middle, StepDown replays what was
+    // fed so far and this loop carries on with the rest, so no frame is lost or doubled.
+    private void ReplayRecovery((IPEndPoint Ep, uint Ts, byte[] Data, VideoFormat Format)[] frames)
+    {
+        for (var i = 0; i < frames.Length; i++)
+        {
+            _suppressEvents = i < frames.Length - 1;
+            DecodeH264(frames[i].Ep, frames[i].Ts, frames[i].Data, frames[i].Format);
+        }
     }
 
     // Runs on the decoder thread.
     private void Process(Item item)
     {
-        _suppressEvents = item.Silent;
         try
         {
-            if (item.Format.Codec == VideoCodecsEnum.H264)
+            if (item.Replay != null)
+                ReplayRecovery(item.Replay);
+            else if (item.Format.Codec == VideoCodecsEnum.H264)
                 DecodeH264(item.Ep, item.Ts, item.Data, item.Format);
             else if (item.Format.Codec == VideoCodecsEnum.VP8)
                 DecodeVp8(item.Ep, item.Ts, item.Data, item.Format);

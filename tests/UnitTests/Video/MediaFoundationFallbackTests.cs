@@ -253,16 +253,16 @@ public sealed class MediaFoundationFallbackTests
             Assert.Equal(H264Path.MediaFoundationSoftware, sink.CurrentPath);
             Assert.Equal(new byte[] { 1, 2, 3, 4 }, software.Seen);   // replayed from the keyframe, queued frames not lost or doubled
             Assert.False(hung.Disposed);                              // abandoned, never disposed from another thread
-            Assert.Equal(3, pictures.Count);                          // frames 2, 3, 4 (queued behind the hang) show; the replayed keyframe is silent
+            Assert.Equal(4, pictures.Count);                          // the newest replayed picture (the keyframe) and the live frames 2, 3, 4
             Send(4, Delta(5));
             Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
-            Assert.Equal(4, pictures.Count);                          // pictures continue
+            Assert.Equal(5, pictures.Count);                          // pictures continue
             Assert.True(slowest < TimeSpan.FromMilliseconds(100), $"GotVideoFrame blocked for {slowest.TotalMilliseconds:F0} ms");
         }
         finally { hung.Release.Set(); }
 
         Thread.Sleep(200);                                            // the woken abandoned thread must stay silent
-        lock (pictures) Assert.Equal(4, pictures.Count);
+        lock (pictures) Assert.Equal(5, pictures.Count);
     }
 
     [Fact]
@@ -343,5 +343,60 @@ public sealed class MediaFoundationFallbackTests
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while (!decoder.Disposed && DateTime.UtcNow < deadline) Thread.Sleep(10);
         Assert.True(decoder.Disposed);
+    }
+
+    // Decodes the first <ok> access units normally, then blocks forever (a hang in the middle of a long GOP).
+    private sealed class HangAfterDecoder(int ok) : IH264FrameDecoder
+    {
+        public readonly ManualResetEventSlim Release = new();
+        public readonly ManualResetEventSlim Entered = new();
+        private int _calls;
+        public int Decode(byte[] annexB, Action<byte[], int, int> onFrame)
+        {
+            if (++_calls > ok) { Entered.Set(); Release.Wait(); }
+            onFrame(new byte[16], 2, 2);
+            return 1;
+        }
+        public void Dispose() { }
+    }
+
+    [Fact]
+    public void HangDeepInALongGop_ReplaysTheWholeGopInOrder_NotJustWhatFitsTheQueue()
+    {
+        const int gopLength = 300;   // far more than the queue capacity (90): hosts send keyframes rarely
+        var hung = new HangAfterDecoder(gopLength);
+        var software = new FakeDecoder(_ => true);
+        var pictures = new List<int>();
+        using var sink = MakeWithHangLimit(p => p == H264Path.MediaFoundationGpu ? hung : software, TimeSpan.FromMilliseconds(200), pictures);
+        var sent = new List<byte>();
+        void Send(int i)
+        {
+            var tag = (byte)(i == 0 ? 1 : 2 + i % 200);    // 1 = the keyframe; the rest cycle so that order is checkable
+            sent.Add(tag);
+            sink.GotVideoFrame(Ep, (uint)i, i == 0 ? Key(tag) : Delta(tag), H264);
+        }
+        try
+        {
+            for (var i = 0; i < gopLength; i++)
+            {
+                Send(i);
+                Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
+            }
+            Send(gopLength);                              // this one hangs the decoder
+            Assert.True(hung.Entered.Wait(5000));
+            Send(gopLength + 1);
+            Send(gopLength + 2);
+            Thread.Sleep(400);
+            Send(gopLength + 3);                          // notices the hang
+            Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
+
+            Assert.Equal(H264Path.MediaFoundationSoftware, sink.CurrentPath);
+            Assert.Equal(sent, software.Seen);            // whole GOP from the keyframe, then the queued and live frames, in order
+            var before = pictures.Count;
+            Send(gopLength + 4);
+            Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
+            Assert.Equal(before + 1, pictures.Count);     // pictures continue without a new keyframe
+        }
+        finally { hung.Release.Set(); }
     }
 }
