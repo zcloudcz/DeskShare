@@ -15,9 +15,15 @@ RUN echo 'Server = https://archive.archlinux.org/repos/2026/10/21/$repo/os/$arch
 # pipewire, wireplumber           - the video stream; wireplumber links the sender's stream to the portal's node
 # gst-plugin-pipewire, gst-plugins-base - what PipeWireScreenCapturer loads (pipewiresrc, videoconvert, appsink)
 # libxcb, alsa-lib                - FFmpeg (VP8 encode/decode) links against them even when x11grab is unused
-RUN pacman -Syyuu --noconfirm --needed \
-        dotnet-sdk-8.0 aspnet-runtime-8.0 sway swaybg xdg-desktop-portal xdg-desktop-portal-wlr pipewire wireplumber \
-        gst-plugin-pipewire gst-plugins-base dbus libxcb alsa-lib curl xz ca-certificates \
+# The Arch archive is sometimes very slow from CI runners: no low-speed abort and up to 4 attempts, so a slow
+# mirror minute does not fail the whole job.
+RUN for attempt in 1 2 3 4; do \
+        pacman -Syyuu --noconfirm --needed --disable-download-timeout \
+            dotnet-sdk-8.0 aspnet-runtime-8.0 sway swaybg xdg-desktop-portal xdg-desktop-portal-wlr pipewire wireplumber \
+            gst-plugin-pipewire gst-plugins-base dbus libxcb alsa-lib curl xz ca-certificates \
+        && break; \
+        [ "$attempt" = 4 ] && exit 1; echo "pacman failed, retrying ($attempt)"; sleep 30; \
+    done \
     && pacman -Scc --noconfirm \
     # Arch gives sway cap_sys_nice; a container without that capability then refuses to exec it.
     && setcap -r /usr/bin/sway \
