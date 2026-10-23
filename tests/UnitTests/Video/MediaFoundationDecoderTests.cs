@@ -17,7 +17,7 @@ namespace DeskShare.UnitTests.Video;
 /// </summary>
 public sealed class MediaFoundationDecoderTests(ITestOutputHelper output)
 {
-    private static string? FindFfmpegFolder()
+    internal static string? FindFfmpegFolder()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir != null; dir = dir.Parent)
         {
@@ -55,7 +55,7 @@ public sealed class MediaFoundationDecoderTests(ITestOutputHelper output)
     private const int Tolerance = 16; // same tolerance as the FFmpeg decode test
 
     /// <summary>Four colour blocks (2x2), as I420.</summary>
-    private static byte[] ColourBlocks(int w, int h)
+    internal static byte[] ColourBlocks(int w, int h)
     {
         var i420 = new byte[w * h * 3 / 2];
         for (var y = 0; y < h; y++)
@@ -97,7 +97,7 @@ public sealed class MediaFoundationDecoderTests(ITestOutputHelper output)
         return samples;
     }
 
-    private static void AssertColours(byte[] bgra, int w, int h)
+    internal static void AssertColours(byte[] bgra, int w, int h)
     {
         for (var block = 0; block < 4; block++)
         {
@@ -189,12 +189,14 @@ public sealed class MediaFoundationDecoderTests(ITestOutputHelper output)
         if (encoder == null) return;
         var stream = Encode(encoder, 640, 480, 6, _ => ColourBlocks(640, 480));
 
-        using var sink = new VideoSink(NullLogger<VideoSink>.Instance, MfSink());
+        var mf = MfSink();
+        using var sink = new VideoSink(NullLogger<VideoSink>.Instance, mf);
         VideoFrameReceivedEventArgs? received = null;
         sink.FrameReceived += (_, e) => received = e;
         var format = new VideoFormat(VideoCodecsEnum.H264, 102);
         foreach (var au in stream)
             sink.GotVideoFrame(new IPEndPoint(IPAddress.Loopback, 1), 0, au, format);
+        Assert.True(mf.WaitIdle(TimeSpan.FromSeconds(10))); // decoding is asynchronous
 
         Assert.NotNull(received);
         Assert.Equal((640, 480), (received!.Width, received.Height));
@@ -210,10 +212,12 @@ public sealed class MediaFoundationDecoderTests(ITestOutputHelper output)
         using (var vpx = new SIPSorceryMedia.Encoders.VpxVideoEncoder())
             vp8 = vpx.EncodeVideo(w, h, ColourBlocks(w, h), VideoPixelFormatsEnum.I420, VideoCodecsEnum.VP8);
 
-        using var sink = new VideoSink(NullLogger<VideoSink>.Instance, MfSink());
+        var mf = MfSink();
+        using var sink = new VideoSink(NullLogger<VideoSink>.Instance, mf);
         VideoFrameReceivedEventArgs? received = null;
         sink.FrameReceived += (_, e) => received = e;
         sink.GotVideoFrame(new IPEndPoint(IPAddress.Loopback, 1), 0, vp8, new VideoFormat(VideoCodecsEnum.VP8, 96));
+        Assert.True(mf.WaitIdle(TimeSpan.FromSeconds(10))); // decoding is asynchronous
 
         Assert.NotNull(received);
         Assert.Equal((w, h), (received!.Width, received.Height));
@@ -274,6 +278,45 @@ public sealed class MediaFoundationDecoderTests(ITestOutputHelper output)
         var mean = (double)sum / mf.Length;
         output.WriteLine($"mean abs difference MF vs FFmpeg: {mean:F2} levels per channel");
         Assert.True(mean < 2.5, $"mean abs difference {mean:F2}");
+    }
+
+    /// <summary>
+    /// Regenerates the recorded streams in tests/UnitTests/TestData (see <see cref="MfFixtures"/> for the format).
+    /// Opt-in because it needs the GPU encoder and the FFmpeg DLLs: DESKSHARE_GEN_FIXTURES=1 dotnet test tests/UnitTests -c Release --filter GenerateFixtures
+    /// </summary>
+    [GenFixturesFact]
+    public void GenerateFixtures()
+    {
+        var dir = MfFixtures.SourceDirectory();
+
+        // One encoder per stream: Encode() leaves its sample handler attached, so a reused encoder would also append to the earlier list.
+        using var hdEncoder = NewEncoder();
+        Assert.NotNull(hdEncoder); // an opt-in generator must fail loudly, not write nothing
+        var hd = Encode(hdEncoder, 1920, 1080, 30, _ => ColourBlocks(1920, 1080));
+        Assert.True(MediaFoundationVideoSink.ContainsIdr(hd[0]), "the first access unit must be the IDR");
+        MfFixtures.Write(Path.Combine(dir, MfFixtures.H264Hd), hd);
+
+        using var sdEncoder = NewEncoder();
+        var sd = Encode(sdEncoder!, 640, 480, 8, _ => ColourBlocks(640, 480));
+        MfFixtures.Write(Path.Combine(dir, MfFixtures.H264Sd), sd);
+
+        // VpxVideoEncoder makes the first frame a keyframe and the rest inter frames.
+        var vp8 = new List<byte[]>();
+        using (var vpx = new SIPSorceryMedia.Encoders.VpxVideoEncoder())
+            for (var i = 0; i < 5; i++)
+                vp8.Add(vpx.EncodeVideo(320, 192, ColourBlocks(320, 192), VideoPixelFormatsEnum.I420, VideoCodecsEnum.VP8));
+        MfFixtures.Write(Path.Combine(dir, MfFixtures.Vp8), vp8);
+
+        output.WriteLine($"H.264 1080p {hd.Count} AU, 480p {sd.Count} AU, VP8 {vp8.Count} frames written to {dir}");
+    }
+
+    private sealed class GenFixturesFactAttribute : FactAttribute
+    {
+        public GenFixturesFactAttribute()
+        {
+            if (Environment.GetEnvironmentVariable("DESKSHARE_GEN_FIXTURES") != "1")
+                Skip = "Set DESKSHARE_GEN_FIXTURES=1 to regenerate the recorded test streams (needs the GPU encoder and FFmpeg DLLs).";
+        }
     }
 
     [BenchFact]
@@ -339,8 +382,12 @@ public sealed class MediaFoundationDecoderTests(ITestOutputHelper output)
         else
         {
             VideoSink sink;
+            MediaFoundationVideoSink? mfSink = null; // decodes on its own thread: the benchmark must wait for each frame
             if (name.StartsWith("MF"))
-                sink = new VideoSink(NullLogger<VideoSink>.Instance, MfSink(name.StartsWith("MF GPU") ? null : "MediaFoundationSoftware"));
+                {
+                mfSink = MfSink(name.StartsWith("MF GPU") ? null : "MediaFoundationSoftware");
+                sink = new VideoSink(NullLogger<VideoSink>.Instance, mfSink);
+            }
             else
             {
                 FFmpegInit.Initialise(FfmpegLogLevelEnum.AV_LOG_WARNING, FindFfmpegFolder());
@@ -351,7 +398,7 @@ public sealed class MediaFoundationDecoderTests(ITestOutputHelper output)
             }
             sink.FrameReceived += (_, _) => outFrames++;
             owner = sink;
-            decode = au => sink.GotVideoFrame(ep, 0, au, format);
+            decode = au => { sink.GotVideoFrame(ep, 0, au, format); mfSink?.WaitIdle(TimeSpan.FromSeconds(10)); };
         }
 
         using (owner)

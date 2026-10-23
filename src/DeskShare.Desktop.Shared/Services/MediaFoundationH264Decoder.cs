@@ -7,7 +7,7 @@ using Vortice.MediaFoundation;
 
 namespace DeskShare.Desktop.Shared.Services;
 
-/// <summary>An H.264 decoder the sink can swap for another one at runtime (and tests can replace with a fake).</summary>
+/// <summary>A frame decoder (H.264, or VP8 via VpxDecoder) the sink can swap at runtime (and tests can replace with a fake).</summary>
 internal interface IH264FrameDecoder : IDisposable
 {
     /// <summary>Feeds one Annex B access unit; calls <paramref name="onFrame"/> with (bgra, width, height) per picture. Throws when the decoder is broken.</summary>
@@ -39,6 +39,11 @@ internal sealed class MediaFoundationH264Decoder : IH264FrameDecoder
     private const int MfETransformNeedMoreInput = unchecked((int)0xC00D6D72);
     private const int MfETransformStreamChange = unchecked((int)0xC00D6D61);
     private const int MfENotAccepting = unchecked((int)0xC00D36B5);
+
+    // Output type renegotiations allowed within one Decode call. A real stream needs one (first SPS) or two (a resolution
+    // change in the same access unit); more means the decoder keeps asking for a new format and would spin forever.
+    private const int MaxStreamChangesPerDecode = 4;
+    private const int MaxOutputTypesToTry = 64;
 
     // Media Foundation must be started once per process before any MF call; it is cheap to leave running.
     private static readonly Lazy<bool> Started = new(() =>
@@ -102,6 +107,27 @@ internal sealed class MediaFoundationH264Decoder : IH264FrameDecoder
             throw;
         }
     }
+
+    /// <summary>
+    /// Test seam: kills the running GPU decoder the way a lost device does, without touching the driver or the system.
+    /// The DXGI device manager is pointed at a different D3D11 device, so the device the decoder works with is gone for it.
+    /// On its own that makes the MFT go silent (it keeps accepting input and never outputs, which the sink cannot tell
+    /// from "waiting for more input"). A removed device normally makes calls fail, so the output type is dropped as well:
+    /// the next frame then fails with a real Media Foundation error (MF_E_TRANSFORM_TYPE_NOT_SET) that the sink must handle.
+    /// Pass <paramref name="failLoudly"/> = false for the silent variant only (the sink's stall watchdog has to catch it).
+    /// </summary>
+    internal void SimulateDeviceLoss(bool failLoudly = true)
+    {
+        if (_mft == null || _deviceManager == null) throw new InvalidOperationException("Only a running GPU decoder has a device to lose.");
+        D3D11.D3D11CreateDevice(null, Vortice.Direct3D.DriverType.Hardware,
+            DeviceCreationFlags.VideoSupport | DeviceCreationFlags.BgraSupport, null, out var replacement).CheckError();
+        using (replacement) // the manager keeps its own reference
+            _deviceManager.ResetDevice(replacement);
+        if (failLoudly) _mft.SetOutputType(0, null, 0);
+    }
+
+    /// <summary>Test seam: takes the D3D manager away from the running decoder. The MFT then hangs inside ProcessOutput (native, uninterruptible) on the next frame.</summary>
+    internal void DropD3DManager() => _mft!.ProcessMessage(TMessageType.MessageSetD3DManager, UIntPtr.Zero);
 
     private void Configure(bool hardware)
     {
@@ -172,6 +198,8 @@ internal sealed class MediaFoundationH264Decoder : IH264FrameDecoder
     {
         var mft = _mft!;
         var frames = 0;
+        var streamChanges = 0;
+        var emptyOutputs = 0;
         while (true)
         {
             if (!_outputTypeSet && !TryNegotiateOutputType())
@@ -196,6 +224,9 @@ internal sealed class MediaFoundationH264Decoder : IH264FrameDecoder
                 if (rc.Code == MfETransformStreamChange)
                 {
                     // New SPS (first frame, or the host changed resolution): ask for the new output format.
+                    // Bounded: throwing lets the sink count a failure and step down instead of hanging the receive thread.
+                    if (++streamChanges > MaxStreamChangesPerDecode)
+                        throw new InvalidOperationException("The H.264 decoder keeps requesting a new output format.");
                     _outputTypeSet = false;
                     continue;
                 }
@@ -204,7 +235,13 @@ internal sealed class MediaFoundationH264Decoder : IH264FrameDecoder
                 // Our own sample comes back in output.Sample too: it is released once, in the finally below,
                 // so only a sample the decoder allocated itself is released here (a double Release crashes the process).
                 var result = output.Sample;
-                if (result != null)
+                if (result == null)
+                {
+                    // "Success" without a picture. One is harmless, but a decoder that answers like this forever would keep this loop spinning in managed code, so it is bounded like the format changes.
+                    if (++emptyOutputs > MaxStreamChangesPerDecode)
+                        throw new InvalidOperationException("The H.264 decoder keeps returning empty output.");
+                }
+                else
                 {
                     try
                     {
@@ -233,6 +270,9 @@ internal sealed class MediaFoundationH264Decoder : IH264FrameDecoder
         var mft = _mft!;
         for (var i = 0; ; i++)
         {
+            // A decoder lists a handful of output types. Never ending without NV12 would be a broken decoder: fail, do not loop.
+            if (i >= MaxOutputTypesToTry)
+                throw new InvalidOperationException("The H.264 decoder offers no NV12 output type.");
             IMFMediaType type;
             try
             {

@@ -534,6 +534,9 @@ public class ClientManager : IDisposable
         // Windows decodes with its built-in Media Foundation codecs (Video:Decoder, default Auto); TryCreate returns null
         // when FFmpeg is chosen or Media Foundation is unavailable. The IsWindows check keeps Media Foundation types
         // from being touched on Linux/macOS.
+        // A reconnect builds a new sink: free the previous one first (its decoder thread, timer, queues and native
+        // decoders would otherwise stay alive for the rest of the process, once per reconnect).
+        _videoSink?.Dispose();
         var mfSink = OperatingSystem.IsWindows() ? MediaFoundationVideoSink.TryCreate(_configuration, _videoSinkLogger) : null;
         _videoSink = mfSink != null ? new VideoSink(_videoSinkLogger, mfSink) : new VideoSink(_videoSinkLogger);
         _videoSink.FrameReceived += (sender, args) =>

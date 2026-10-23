@@ -10,7 +10,7 @@ namespace DeskShare.Desktop.Shared.Services;
 ///
 /// Not thread safe; the sink calls it under its lock.
 /// </summary>
-internal sealed unsafe class VpxDecoder : IDisposable
+internal sealed unsafe class VpxDecoder : IH264FrameDecoder // same Decode shape, so the sink handles both alike
 {
     // VPX_DECODER_ABI_VERSION of the shipped vpxmd.dll (libvpx v1.9.0): 3 + (4 + VPX_IMAGE_ABI_VERSION 5) = 12.
     // vpx_codec_dec_init_ver refuses a different value with VPX_CODEC_ABI_MISMATCH, so a wrong constant fails loudly.
