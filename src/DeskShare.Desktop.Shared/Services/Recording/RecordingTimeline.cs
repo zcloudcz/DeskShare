@@ -57,14 +57,17 @@ public sealed class FrameRateNormalizer
     /// <summary>
     /// At the end of the recording: copies of the last frame so the video lasts until <paramref name="timestampMs"/>
     /// (capped like a gap, see <see cref="MaxGapSeconds"/>). <c>FirstSlot</c> is the presentation slot of the first copy.
+    /// When the tail was capped, <c>EndSlot</c> is the last slot of the recording: one more copy goes there, so a recording
+    /// that ends with a long still screen keeps its real length instead of stopping a few seconds after the last change.
     /// </summary>
-    public (int Count, long FirstSlot) Finish(long timestampMs)
+    public (int Count, long FirstSlot, long? EndSlot) Finish(long timestampMs)
     {
-        if (_originMs < 0) return (0, 0);
+        if (_originMs < 0) return (0, 0, null);
         var first = _nextSlot;
         var gap = Math.Max(0, SlotOf(timestampMs) - _nextSlot);
         _nextSlot += gap;
-        return ((int)Math.Min(gap, MaxGapCopies), first);
+        var count = (int)Math.Min(gap, MaxGapCopies);
+        return (count, first, gap > count ? first + gap - 1 : null);
     }
 
     private long SlotOf(long timestampMs) => Math.Max(0, timestampMs - _originMs) * _fps / 1000;

@@ -62,7 +62,7 @@ public sealed class SessionRecorderTests
         var n = new FrameRateNormalizer(10);
         n.Plan(0);
 
-        Assert.Equal((9, 1L), n.Finish(1000)); // slot 10 is the end; slots 1..9 still empty
+        Assert.Equal((9, 1L, (long?)null), n.Finish(1000)); // slot 10 is the end; slots 1..9 still empty
         Assert.Equal(0, n.Finish(500).Count); // a time in the past adds nothing
         Assert.Equal(0, new FrameRateNormalizer(10).Finish(1000).Count); // no frame was ever written
     }
@@ -87,7 +87,8 @@ public sealed class SessionRecorderTests
         var n = new FrameRateNormalizer(15);
         n.Plan(0);
 
-        Assert.Equal((30, 1L), n.Finish(3_600_000));
+        // 2 s of copies, then one copy at the last slot so the file still lasts an hour.
+        Assert.Equal((30, 1L, (long?)(3_600 * 15 - 1)), n.Finish(3_600_000));
     }
 
     // ---- File names: never truncate ----

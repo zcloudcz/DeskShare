@@ -166,8 +166,9 @@ public sealed class SessionRecorder : IDisposable
         if (writer == null) return;
         try
         {
-            var (count, firstSlot) = normalizer.Finish(untilMs);
+            var (count, firstSlot, endSlot) = normalizer.Finish(untilMs);
             for (var i = 0; i < count; i++) writer.RepeatLast(firstSlot + i);
+            if (endSlot is { } end) writer.RepeatLast(end); // the true end of a long still tail
             writer.Finish();
         }
         catch
