@@ -581,4 +581,40 @@ public sealed class MediaFoundationFallbackTests
             sink.Dispose();
         }
     }
+
+    [Fact]
+    public void DecoderGoingSilent_AndThenNoMoreFrames_IsStillReplacedWithinBoundedTime()
+    {
+        // Works for the keyframe and one delta, then accepts input but gives no pictures (device swapped under it).
+        var goesSilent = new SilentAfterDecoder(2);
+        var software = new FakeDecoder(_ => true);
+        var pictures = new List<int>();
+        var sink = MakeWithHangLimit(p => p == H264Path.MediaFoundationGpu ? goesSilent : software, TimeSpan.FromSeconds(2), pictures);
+        try
+        {
+            sink.GotVideoFrame(Ep, 0, Key(1), H264);
+            sink.GotVideoFrame(Ep, 1, Delta(2), H264);
+            sink.GotVideoFrame(Ep, 2, Delta(3), H264);   // the last changes of a static screen: silent from here on
+            sink.GotVideoFrame(Ep, 3, Delta(4), H264);
+            var deadline = Stopwatch.StartNew();
+            while (software.Seen.Count == 0 && deadline.ElapsedMilliseconds < 6000) Thread.Sleep(50);
+
+            Assert.Equal(new byte[] { 1, 2, 3, 4 }, software.Seen);   // the whole GOP, no new frame was needed
+            Assert.InRange(deadline.ElapsedMilliseconds, 0, 4000);
+            Assert.Equal(H264Path.MediaFoundationSoftware, sink.CurrentPath);
+        }
+        finally { sink.Dispose(); }
+    }
+
+    private sealed class SilentAfterDecoder(int pictures) : IH264FrameDecoder
+    {
+        private int _n;
+        public int Decode(byte[] annexB, Action<byte[], int, int> onFrame)
+        {
+            if (++_n > pictures) return 0;
+            onFrame(new byte[16], 2, 2);
+            return 1;
+        }
+        public void Dispose() { }
+    }
 }

@@ -41,6 +41,10 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
     // start or a dropped burst, short enough that the viewer does not sit on a frozen picture.
     internal const int SilentUnitsBeforeStall = 45;
 
+    // The same stall measured in time, for a screen that changes rarely: after the last changes no further frame comes,
+    // so counting units alone would wait forever. Same 1.5 s as 45 units at 30 fps.
+    internal static readonly TimeSpan SilenceBeforeStall = TimeSpan.FromSeconds(1.5);
+
     // A single decode (or decoder creation) call longer than this is a hang. A 1080p software decode takes ~10-30 ms and
     // creating a GPU decoder on a cold driver up to about a second, so 2 s is far above anything normal and still
     // short enough for the viewer to recover before the user gives up on a frozen picture.
@@ -75,6 +79,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
     private int _h264Failures;
     private bool _h264SawIdr;      // silence only counts once the decoder got a keyframe: before it, no picture is expected
     private int _h264SilentUnits;  // access units fed since the last picture came out
+    private long _h264SilentSince; // Stopwatch ticks of the first of those units (0 = none); read by the hang timer
     private VpxDecoder? _vp8;
     private int _vp8Failures;
     private bool _vp8OnFfmpeg;
@@ -94,7 +99,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
     // Replay is set only on the one recovery item that Abandon hands to a new worker: a snapshot of the whole GOP. It sits
     // outside the capacity rules on purpose (a GOP can be hundreds of frames, the queue holds 90) and is fed first.
     private readonly record struct Item(IPEndPoint Ep, uint Ts, byte[] Data, VideoFormat Format,
-        (IPEndPoint Ep, uint Ts, byte[] Data, VideoFormat Format)[]? Replay = null);
+        (IPEndPoint Ep, uint Ts, byte[] Data, VideoFormat Format)[]? Replay = null, bool StallCheck = false);
 
     /// <summary>One decoder thread with its own queue.</summary>
     private sealed class Worker
@@ -151,7 +156,12 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         try
         {
             lock (_gate)
-                if (!_disposed && _worker.TryClaimStuck(HangLimit)) Abandon(_worker);
+            {
+                if (_disposed) return;
+                if (_worker.TryClaimStuck(HangLimit)) Abandon(_worker);
+                // A decoder that took input but shows nothing, and no frame is coming to notice it: ask its thread to check.
+                else if (SilentTooLong()) Enqueue(_worker, new Item(null!, 0, Array.Empty<byte>(), default, StallCheck: true));
+            }
         }
         catch (Exception ex)
         {
@@ -372,6 +382,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         _h264Failures = 0;
         _h264SawIdr = false;
         _h264SilentUnits = 0;
+        Volatile.Write(ref _h264SilentSince, 0);
         var cappedOut = _abandoned >= MaxAbandonedDecoders;
         if (stuck.Codec == VideoCodecsEnum.H264)
         {
@@ -434,7 +445,9 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
     {
         try
         {
-            if (item.Replay != null)
+            if (item.StallCheck)
+                CheckSilence();
+            else if (item.Replay != null)
                 Replay(FeedReplay, item.Replay);
             else if (item.Format.Codec == VideoCodecsEnum.H264)
                 DecodeH264(item.Ep, item.Ts, item.Data, item.Format);
@@ -488,8 +501,30 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         var decoder = _h264!;
         var pictures = Timed(VideoCodecsEnum.H264, () => decoder.Decode(frame, Raise));
         _h264SawIdr |= ContainsIdr(frame);
-        if (pictures > 0) _h264SilentUnits = 0;
-        else if (_h264SawIdr && ++_h264SilentUnits >= SilentUnitsBeforeStall) throw new DecoderStalledException();
+        if (pictures > 0)
+        {
+            _h264SilentUnits = 0;
+            Volatile.Write(ref _h264SilentSince, 0);
+        }
+        else if (_h264SawIdr)
+        {
+            if (++_h264SilentUnits == 1) Volatile.Write(ref _h264SilentSince, Stopwatch.GetTimestamp());
+            if (_h264SilentUnits >= SilentUnitsBeforeStall || SilentTooLong()) throw new DecoderStalledException();
+        }
+    }
+
+    private bool SilentTooLong()
+    {
+        var since = Volatile.Read(ref _h264SilentSince);
+        return since != 0 && Stopwatch.GetElapsedTime(since) > SilenceBeforeStall;
+    }
+
+    // Runs on the decoder thread when the timer saw a silence that no further frame will end (static screen).
+    private void CheckSilence()
+    {
+        if (_path == H264Path.FFmpeg || _h264 == null || !SilentTooLong()) return;
+        _logger.LogWarning("Media Foundation H.264 ({Path}) gave no picture for {Seconds} s after input; switching", _path, SilenceBeforeStall.TotalSeconds);
+        StepDown();
     }
 
     // Moves to the next decoder and feeds it everything since the last keyframe so the picture continues without a new keyframe.
@@ -504,6 +539,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
             _h264Failures = 0;
             _h264SawIdr = false;
             _h264SilentUnits = 0;
+            Volatile.Write(ref _h264SilentSince, 0);
             _path++;
         }
         // Disposing a broken decoder runs native calls too (MFT messages, COM/D3D release) and can hang like a decode,
