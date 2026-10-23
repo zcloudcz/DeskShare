@@ -563,6 +563,30 @@ public class ScreenSenderService : IHostedService, IDisposable
         }
     }
 
+    // Logged once, not on every 45 s re-registration.
+    private bool _permanentKeyWarned;
+
+    /// <summary>
+    /// Keys of the permanent password, or null when none is configured. Read on every registration (a tiny file), so
+    /// a Server ID change after a collision is noticed: the keys are bound to the old ID and stop being offered.
+    /// Its e2e key joins the key ring for good, so a viewer that typed the password passes the binding check.
+    /// </summary>
+    private (string AuthKey, byte[] E2EKey)? LoadPermanentKeys()
+    {
+        var path = _configuration.PermanentPasswordKeyFile;
+        if (string.IsNullOrEmpty(path)) return null;
+
+        var keys = PermanentKeyFile.Load(path, ServerId);
+        if (keys is { } k)
+            _e2eKeys.AddPermanent(k.E2EKey);
+        else if (File.Exists(path) && !_permanentKeyWarned)
+        {
+            _permanentKeyWarned = true;
+            _logger.LogWarning("Permanent password file is unreadable or was set for another Server ID; set the password again | ServerId: {ServerId}", ServerId);
+        }
+        return keys;
+    }
+
     /// <summary>
     /// Registers this server with the SignalingServer so clients can discover and authenticate.
     /// </summary>
@@ -617,6 +641,7 @@ public class ScreenSenderService : IHostedService, IDisposable
                 // ServerId is part of the salt and can change on a 403.
                 var keys = E2EBinding.DeriveKeys(_currentPasskey, ServerId);
                 _e2eKeys.Add(keys.E2EKey, _passkeyValidTo);
+                var permanent = LoadPermanentKeys();
 
                 var registration = new ServerRegistrationMessage
                 {
@@ -625,7 +650,8 @@ public class ScreenSenderService : IHostedService, IDisposable
                     ValidTo = _passkeyValidTo,
                     RemoteControlEnabled = _configuration.EnableRemoteControl,
                     TrustClientPermanent = _configuration.TrustClientPermanent,
-                    OwnerSecret = GetOwnerSecret()
+                    OwnerSecret = GetOwnerSecret(),
+                    PermanentAuthKey = permanent?.AuthKey
                 };
 
                 response = await _httpClient.PostAsJsonAsync(registerUrl, registration);
@@ -844,6 +870,12 @@ public class ScreenSenderConfiguration
     /// Default is false for security reasons - must be explicitly enabled by user.
     /// </summary>
     public bool TrustClientPermanent { get; set; } = false;
+
+    /// <summary>
+    /// Path of a <see cref="PermanentKeyFile"/>. When it holds keys for this Server ID, viewers may also connect with
+    /// the permanent password instead of the current passkey. Empty = passkey only.
+    /// </summary>
+    public string PermanentPasswordKeyFile { get; set; } = string.Empty;
 
     /// <summary>
     /// Ensures the configuration has a valid Server ID.

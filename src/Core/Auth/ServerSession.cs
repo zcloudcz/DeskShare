@@ -89,6 +89,12 @@ public sealed class ServerSession
     public required bool TrustClientPermanent { get; set; }
 
     /// <summary>
+    /// authKey of the host's permanent password (see <see cref="ServerRegistrationMessage.PermanentAuthKey"/>), or null.
+    /// A viewer may present either this or the current passkey's authKey.
+    /// </summary>
+    public string? PermanentAuthKey { get; set; }
+
+    /// <summary>
     /// Current status of the session.
     /// </summary>
     public SessionStatus Status { get; set; } = SessionStatus.Registered;

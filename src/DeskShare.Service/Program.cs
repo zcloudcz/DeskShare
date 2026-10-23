@@ -17,12 +17,16 @@ switch (mode)
         return Installer.Install(AppContext.BaseDirectory);
     case "uninstall":
         return Installer.Uninstall();
+    case PasswordSetup.SetVerb:
+        return PasswordCommand.Set(args);
+    case PasswordSetup.ClearVerb:
+        return PasswordCommand.Clear();
     case "--console":
         return RunConsole(args);
     case "":
         if (Environment.UserInteractive)
         {
-            Console.WriteLine("Usage: DeskShare.Service install | update | uninstall | --console [--agent <exe>] [--config <json>]");
+            Console.WriteLine("Usage: DeskShare.Service install | update | uninstall | set-password [--pipe <name> --owner-pid <pid>] | clear-password | --console [--agent <exe>] [--config <json>]");
             return 0;
         }
         ServiceBase.Run(new SupervisorService());

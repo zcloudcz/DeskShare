@@ -13,6 +13,11 @@
                 <Button x:Name="UpdateButton" Content="Update service" Classes="modernButton" Click="OnEnable" IsVisible="False"/>
                 <Button x:Name="DisableButton" Content="Disable unattended access" Classes="modernButton" Click="OnDisable" IsVisible="False"/>
             </StackPanel>
+            <!-- Permanent password: lets a viewer connect with Server ID + password instead of the rotating passkey. -->
+            <StackPanel x:Name="PasswordPanel" Orientation="Horizontal" Spacing="10" Margin="0,10,0,0" IsVisible="False">
+                <Button x:Name="SetPasswordButton" Content="Set password..." Classes="modernButton" Click="OnSetPassword"/>
+                <Button x:Name="ClearPasswordButton" Content="Remove password" Classes="modernButton" Click="OnClearPassword"/>
+            </StackPanel>
         </StackPanel>
     </Border>
 </UserControl>

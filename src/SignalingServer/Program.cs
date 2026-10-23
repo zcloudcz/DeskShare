@@ -571,10 +571,20 @@ app.MapPost("/register", async (HttpContext context, IServerSessionStorage sessi
                 statusCode: StatusCodes.Status403Forbidden);
         }
 
+        // Permanent password: only from a sender that proved ownership with a secret (a legacy sender without one may
+        // be allowed in Development, but must not install a long-lived credential), and only in the exact authKey
+        // shape (43 base64url characters) so nothing else can end up as a credential.
+        if (string.IsNullOrEmpty(registration.OwnerSecret))
+            registration.PermanentAuthKey = null;
+        else if (registration.PermanentAuthKey is { } permanentKey &&
+                 (permanentKey.Length != 43 || !permanentKey.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_')))
+            return Results.BadRequest(new { Error = "Invalid PermanentAuthKey" });
+
         var response = await sessionStorage.RegisterServerAsync(registration);
 
         if (response.Success)
         {
+            cm.SetPermanentPasswordRegistered(registration.ServerId, registration.PermanentAuthKey != null);
             // The sender connects to /signal right after registering. Without a token it would need
             // AllowLegacyConnections, which is off by default, so hand it one here.
             response.WebSocketToken = cm.IssueServerWebSocketToken(registration.ServerId, registration.OwnerSecret);
@@ -618,6 +628,13 @@ app.MapPost("/authenticate", async (HttpContext context, IServerSessionStorage s
             return Results.BadRequest(new { Error = "Invalid ClientId" });
         }
 
+        // While a ServerId is locked after failed attempts (see ConnectionManager.RecordPasswordAttempt), only the
+        // current passkey is checked: the permanent key is not compared at all, so the lockout gives an attacker no
+        // further password guesses, but someone who reads the passkey off the screen can still get in. Guessing the
+        // rotating passkey is hopeless, so it needs no lockout.
+        var passwordLocked = cm.IsPasswordLockedOut(authRequest.ServerId);
+        authRequest.PasskeyOnly = passwordLocked;
+
         // Captured before the passkey check: the tokens below are bound to the owner whose passkey was verified,
         // even if the ServerId changes hands in between.
         var owner = cm.CaptureOwner(authRequest.ServerId);
@@ -630,6 +647,16 @@ app.MapPost("/authenticate", async (HttpContext context, IServerSessionStorage s
             Log.Warning("Authentication rejected, ServerId changed owner during the check | ServerId: {ServerId}", authRequest.ServerId);
             return Results.Unauthorized();
         }
+
+        if (!response.Success && passwordLocked)
+        {
+            // Not counted: the permanent key was not even compared. 429 lets the viewer say "try again later".
+            cm.RecordAuthFailure();
+            Log.Warning("Authentication rejected, ServerId is locked after failed attempts | ServerId: {ServerId}", authRequest.ServerId);
+            return Results.StatusCode(StatusCodes.Status429TooManyRequests);
+        }
+
+        cm.RecordPasswordAttempt(authRequest.ServerId, response.Success);
 
         if (response.Success)
         {

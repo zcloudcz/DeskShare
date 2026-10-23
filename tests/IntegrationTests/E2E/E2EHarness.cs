@@ -45,7 +45,7 @@ public sealed class SenderProcess : IDisposable
     private volatile string? _serverId;
     private volatile string? _passkey;
 
-    private SenderProcess(bool remoteControl, string? display, bool clipboard, string? receiveFolder)
+    private SenderProcess(bool remoteControl, string? display, bool clipboard, string? receiveFolder, string? serverId, string? permanentKeyFile)
     {
         ReceiveFolder = receiveFolder;
         var psi = new ProcessStartInfo("dotnet")
@@ -62,6 +62,9 @@ public sealed class SenderProcess : IDisposable
         psi.ArgumentList.Add($"--Security:EnableFileReceive={(receiveFolder != null ? "true" : "false")}");
         // Without a folder the feature is off; the folder is only passed when it is on.
         if (receiveFolder != null) psi.ArgumentList.Add($"--Security:FileReceiveFolder={receiveFolder}");
+        // A permanent password's keys are bound to the Server ID, so a test that sets one also fixes the ID.
+        if (serverId != null) psi.ArgumentList.Add($"--Signaling:ServerId={serverId}");
+        if (permanentKeyFile != null) psi.ArgumentList.Add($"--Security:PermanentPasswordKeyFile={permanentKeyFile}");
 
         _process = new Process { StartInfo = psi };
         _process.OutputDataReceived += (_, e) => OnLine(e.Data);
@@ -91,9 +94,10 @@ public sealed class SenderProcess : IDisposable
     public string Output { get { lock (_output) return string.Join('\n', _output); } }
 
     /// <summary>Starts the sender and waits until it has registered and is streaming.</summary>
-    public static async Task<SenderProcess> StartAsync(bool remoteControl, string? display = null, bool clipboard = false, string? receiveFolder = null)
+    public static async Task<SenderProcess> StartAsync(bool remoteControl, string? display = null, bool clipboard = false, string? receiveFolder = null,
+        string? serverId = null, string? permanentKeyFile = null)
     {
-        var sender = new SenderProcess(remoteControl, display, clipboard, receiveFolder);
+        var sender = new SenderProcess(remoteControl, display, clipboard, receiveFolder, serverId, permanentKeyFile);
         try
         {
             // The service starts in the background (the console "Streaming." line comes too early), so wait for its own
@@ -136,8 +140,8 @@ public static class Viewer
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         var timestamp = DateTime.UtcNow;
         var nonce = Guid.NewGuid().ToString();
-        // Like the real viewers: the server gets authKey (derived from the passkey), never the passkey itself.
-        var authKey = E2EBinding.DeriveKeys(passkey, serverId).AuthKey;
+        // Like the real viewers: the server gets authKey (derived from the passkey or permanent password), never the secret itself.
+        var authKey = E2EBinding.DeriveFromUserInput(passkey, serverId).AuthKey;
         var response = await http.PostAsJsonAsync($"{SignalingUrl.ToHttpBase(SenderProcess.SignalingWsUrl)}/authenticate",
             new ClientAuthenticationMessage
             {
@@ -158,12 +162,15 @@ public static class Viewer
 
     /// <param name="e2eKeyOverride">Test seam: the end-to-end key the viewer binds with. Null = the real one derived from
     /// the sender's passkey; a different key simulates a viewer (or man in the middle) that does not know the passkey.</param>
-    public static async Task<ClientManager> ConnectAsync(SenderProcess sender, EventHandler<VideoFrameReceivedEventArgs>? onFrame = null, IClipboardManager? clipboard = null, byte[]? e2eKeyOverride = null)
+    /// <param name="credential">What the viewer types: null = the sender's current passkey, or a permanent password.</param>
+    /// <param name="clientId">Null = a fresh one; pass one to reuse a session that client already authenticated.</param>
+    public static async Task<ClientManager> ConnectAsync(SenderProcess sender, EventHandler<VideoFrameReceivedEventArgs>? onFrame = null, IClipboardManager? clipboard = null, byte[]? e2eKeyOverride = null,
+        string? credential = null, string? clientId = null)
     {
         lock (Log) Log.Clear();
         var loggers = LoggerFactory.Create(b => b.SetMinimumLevel(LogLevel.Information).AddProvider(new ListLoggerProvider(Log)));
-        var clientId = ServerIdGenerator.GenerateClientId();
-        var passkey = sender.Passkey;
+        clientId ??= ServerIdGenerator.GenerateClientId();
+        var passkey = credential ?? sender.Passkey;
         var (_, auth) = await AuthenticateAsync(sender.ServerId, passkey, clientId);
         Assert.True(auth?.Success, $"authenticate failed (passkey used: {passkey})\n{sender.Output}");
 
@@ -176,7 +183,7 @@ public static class Viewer
 
         await client.ConnectAsync(sender.ServerId, null, SenderProcess.SignalingWsUrl,
             auth!.WebSocketToken, clientId, auth.IceServers, auth.ResumeToken,
-            e2eKeyOverride ?? E2EBinding.DeriveKeys(passkey, sender.ServerId).E2EKey);
+            e2eKeyOverride ?? E2EBinding.DeriveFromUserInput(passkey, sender.ServerId).E2EKey);
         return client;
     }
 

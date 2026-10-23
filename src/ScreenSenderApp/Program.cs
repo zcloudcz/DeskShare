@@ -45,7 +45,8 @@ try
         PrivacyScreenBlocksInput = configuration.GetValue("Security:PrivacyScreenBlocksInput", false),
         FileReceiveFolder = configuration["Security:FileReceiveFolder"] ?? string.Empty,
         FileReceiveMaxBytes = configuration.GetValue("Security:FileReceiveMaxBytes", DeskShare.Core.WebRTC.FileReceiver.DefaultMaxBytes),
-        TrustClientPermanent = configuration.GetValue("Security:TrustClientPermanent", false)
+        TrustClientPermanent = configuration.GetValue("Security:TrustClientPermanent", false),
+        PermanentPasswordKeyFile = configuration["Security:PermanentPasswordKeyFile"] ?? string.Empty
     };
     var logger = new SerilogLoggerFactory(Log.Logger).CreateLogger<ScreenSenderService>();
     ScreenSenderService service;
@@ -60,6 +61,9 @@ try
         var idPath = Path.Combine(dataDir, "server-id");
         if (string.IsNullOrEmpty(config.ServerId))
             config.ServerId = ServerIdGenerator.GetOrCreateServerId(idPath);
+        // Unattended: the permanent password keys sit next to the config (written by "DeskShare.Service set-password").
+        if (string.IsNullOrEmpty(config.PermanentPasswordKeyFile))
+            config.PermanentPasswordKeyFile = Path.Combine(dataDir, DeskShare.Core.Auth.PermanentKeyFile.FileName);
         service = new ScreenSenderService(logger, config, idPath, new DeskShare.Core.Auth.ServerOwnerSecretStore(Path.Combine(dataDir, "server-owner.key")));
     }
     using var serviceLifetime = service;
