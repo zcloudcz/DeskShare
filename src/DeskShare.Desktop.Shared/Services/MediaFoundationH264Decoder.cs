@@ -7,6 +7,14 @@ using Vortice.MediaFoundation;
 
 namespace DeskShare.Desktop.Shared.Services;
 
+/// <summary>An H.264 decoder the sink can swap for another one at runtime (and tests can replace with a fake).</summary>
+internal interface IH264FrameDecoder : IDisposable
+{
+    /// <summary>Feeds one Annex B access unit; calls <paramref name="onFrame"/> with (bgra, width, height) per picture. Throws when the decoder is broken.</summary>
+    int Decode(byte[] annexB, Action<byte[], int, int> onFrame);
+}
+
+
 /// <summary>
 /// H.264 (Annex B) to BGRA decoder on top of the Windows built-in Media Foundation decoder MFT, so the viewer does
 /// not need FFmpeg for H.264. PROTOTYPE: opt-in only (see <see cref="MediaFoundationVideoSink"/>).
@@ -17,7 +25,7 @@ namespace DeskShare.Desktop.Shared.Services;
 ///
 /// Not thread safe: call <see cref="Decode"/> from one thread at a time (the sink serialises with a lock).
 /// </summary>
-internal sealed class MediaFoundationH264Decoder : IDisposable
+internal sealed class MediaFoundationH264Decoder : IH264FrameDecoder
 {
     // CLSID_CMSH264DecoderMFT: the software H.264 decoder that ships with Windows (mfh264dec.dll).
     private static readonly Guid ClsidMsH264Decoder = new("62CE7E72-4C71-4D20-B15D-452831A87D9D");
@@ -311,38 +319,68 @@ internal static unsafe class Nv12ToBgra
         }
     }
 
+    /// <summary>Planar I420 (libvpx output) to BGRA with the same maths. Each plane has its own stride; chroma is half size.</summary>
+    public static void ConvertI420(byte* yPlane, int yStride, byte* uPlane, int uStride, byte* vPlane, int vStride, int width, int height, byte[] bgra)
+    {
+        fixed (byte* dst = bgra)
+        {
+            for (var row = 0; row < height; row++)
+                ConvertRowI420(yPlane + (long)row * yStride, uPlane + (long)(row / 2) * uStride, vPlane + (long)(row / 2) * vStride, width, (uint*)(dst + (long)row * width * 4));
+        }
+    }
+
+    // 8 pixels: widen bytes to 32-bit lanes so the fixed-point products cannot overflow.
+    private static Vector256<int> Pack(Vector256<int> y, Vector256<int> u, Vector256<int> v)
+    {
+        var c128 = Vector256.Create(128);
+        var luma = (y - Vector256.Create(16)) * Vector256.Create(298) + c128;
+        u -= c128;
+        v -= c128;
+        var zero = Vector256<int>.Zero; var max = Vector256.Create(255);
+        var b = Vector256.Min(Vector256.Max(Vector256.ShiftRightArithmetic(luma + Vector256.Create(516) * u, 8), zero), max);
+        var g = Vector256.Min(Vector256.Max(Vector256.ShiftRightArithmetic(luma - Vector256.Create(100) * u - Vector256.Create(208) * v, 8), zero), max);
+        var r = Vector256.Min(Vector256.Max(Vector256.ShiftRightArithmetic(luma + Vector256.Create(409) * v, 8), zero), max);
+        return b | Vector256.ShiftLeft(g, 8) | Vector256.ShiftLeft(r, 16) | Vector256.Create(unchecked((int)0xFF000000));
+    }
+
+    private static uint Pixel(int y, int u, int v)
+    {
+        var c = (y - 16) * 298 + 128;
+        var d = u - 128;
+        var e = v - 128;
+        return Clamp((c + 516 * d) >> 8) | (uint)Clamp((c - 100 * d - 208 * e) >> 8) << 8 | (uint)Clamp((c + 409 * e) >> 8) << 16 | 0xFF000000;
+    }
+
     private static void ConvertRow(byte* y, byte* uv, int width, uint* o)
     {
         var x = 0;
         if (Avx2.IsSupported)
         {
-            // 8 pixels per step: widen bytes to 32-bit lanes so the fixed-point products cannot overflow.
-            var c16 = Vector256.Create(16); var c128 = Vector256.Create(128);
-            var k298 = Vector256.Create(298); var k516 = Vector256.Create(516); var k100 = Vector256.Create(100);
-            var k208 = Vector256.Create(208); var k409 = Vector256.Create(409);
-            var zero = Vector256<int>.Zero; var max = Vector256.Create(255);
             var evenIdx = Vector256.Create(0, 0, 2, 2, 4, 4, 6, 6); // [u0 v0 u1 v1 ..] -> u0 u0 u1 u1 ..
             var oddIdx = Vector256.Create(1, 1, 3, 3, 5, 5, 7, 7);  //                  -> v0 v0 v1 v1 ..
             for (; x + 8 <= width; x += 8)
             {
-                var luma = (Avx2.ConvertToVector256Int32(y + x) - c16) * k298 + c128;
                 var uvPairs = Avx2.ConvertToVector256Int32(uv + x);
-                var u = Avx2.PermuteVar8x32(uvPairs, evenIdx) - c128;
-                var v = Avx2.PermuteVar8x32(uvPairs, oddIdx) - c128;
-                var b = Vector256.Min(Vector256.Max(Vector256.ShiftRightArithmetic(luma + k516 * u, 8), zero), max);
-                var g = Vector256.Min(Vector256.Max(Vector256.ShiftRightArithmetic(luma - k100 * u - k208 * v, 8), zero), max);
-                var r = Vector256.Min(Vector256.Max(Vector256.ShiftRightArithmetic(luma + k409 * v, 8), zero), max);
-                var px = b | Vector256.ShiftLeft(g, 8) | Vector256.ShiftLeft(r, 16) | Vector256.Create(unchecked((int)0xFF000000));
-                px.Store((int*)(o + x));
+                Pack(Avx2.ConvertToVector256Int32(y + x), Avx2.PermuteVar8x32(uvPairs, evenIdx), Avx2.PermuteVar8x32(uvPairs, oddIdx)).Store((int*)(o + x));
             }
         }
         for (; x < width; x++) // scalar tail, and the whole row without AVX2
+            o[x] = Pixel(y[x], uv[x & ~1], uv[(x & ~1) + 1]);
+    }
+
+    private static void ConvertRowI420(byte* y, byte* u, byte* v, int width, uint* o)
+    {
+        var x = 0;
+        if (Avx2.IsSupported)
         {
-            var c = (y[x] - 16) * 298 + 128;
-            var d = uv[x & ~1] - 128;
-            var e = uv[(x & ~1) + 1] - 128;
-            o[x] = Clamp((c + 516 * d) >> 8) | (uint)Clamp((c - 100 * d - 208 * e) >> 8) << 8 | (uint)Clamp((c + 409 * e) >> 8) << 16 | 0xFF000000;
+            var dup = Vector256.Create(0, 0, 1, 1, 2, 2, 3, 3); // 4 chroma samples cover 8 pixels
+            // Loads 8 chroma bytes but uses 4, so stop 16 pixels early: the read can never pass the end of a chroma row.
+            for (; x + 16 <= width; x += 8)
+                Pack(Avx2.ConvertToVector256Int32(y + x), Avx2.PermuteVar8x32(Avx2.ConvertToVector256Int32(u + x / 2), dup),
+                    Avx2.PermuteVar8x32(Avx2.ConvertToVector256Int32(v + x / 2), dup)).Store((int*)(o + x));
         }
+        for (; x < width; x++)
+            o[x] = Pixel(y[x], u[x / 2], v[x / 2]);
     }
 
     private static byte Clamp(int v) => (byte)(v < 0 ? 0 : v > 255 ? 255 : v);

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using DeskShare.Core.Video;
 using DeskShare.Desktop.Shared.Services;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using SIPSorceryMedia.Abstractions;
 using SIPSorceryMedia.FFmpeg;
@@ -68,6 +69,15 @@ public sealed class MediaFoundationDecoderTests(ITestOutputHelper output)
                 i420[w * h * 5 / 4 + y * (w / 2) + x] = c.V;
             }
         return i420;
+    }
+
+    /// <summary>The real production selection (Video:Decoder, default Auto) with an in-memory config.</summary>
+    private static MediaFoundationVideoSink MfSink(string? decoder = null)
+    {
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(decoder == null ? new Dictionary<string, string?>() : new() { ["Video:Decoder"] = decoder }).Build();
+        return MediaFoundationVideoSink.TryCreate(config, NullLogger.Instance)!;
     }
 
     private static HardwareH264Encoder? NewEncoder()
@@ -179,7 +189,7 @@ public sealed class MediaFoundationDecoderTests(ITestOutputHelper output)
         if (encoder == null) return;
         var stream = Encode(encoder, 640, 480, 6, _ => ColourBlocks(640, 480));
 
-        using var sink = new VideoSink(NullLogger<VideoSink>.Instance, new MediaFoundationVideoSink(NullLogger.Instance));
+        using var sink = new VideoSink(NullLogger<VideoSink>.Instance, MfSink());
         VideoFrameReceivedEventArgs? received = null;
         sink.FrameReceived += (_, e) => received = e;
         var format = new VideoFormat(VideoCodecsEnum.H264, 102);
@@ -191,32 +201,45 @@ public sealed class MediaFoundationDecoderTests(ITestOutputHelper output)
         AssertColours(received.FrameData, 640, 480);
     }
 
-    /// <summary>
-    /// VP8 decodes and has the right size, but SIPSorcery's libvpx wrapper converts YUV to BGR itself with a full-range
-    /// formula (grey 128 stays 128, FFmpeg gives 130; saturated red comes out as 208/30/0 instead of 253/0/0), and there is
-    /// no way to get the I420 planes out of it. Known deviation of the prototype, see the report: the checks are deliberately loose.
-    /// </summary>
+    /// <summary>VP8 goes through libvpx's I420 planes and our BT.601 limited-range converter, like FFmpeg does: grey 128 gives about 130, red about 253/0/0.</summary>
     [WindowsMfFact]
-    public void MediaFoundationSink_DecodesVp8_ThroughLibvpx_WithKnownColourDeviation()
+    public void MediaFoundationSink_DecodesVp8_WithTheSameColoursAsFfmpeg()
     {
         const int w = 320, h = 192;
         byte[] vp8;
         using (var vpx = new SIPSorceryMedia.Encoders.VpxVideoEncoder())
             vp8 = vpx.EncodeVideo(w, h, ColourBlocks(w, h), VideoPixelFormatsEnum.I420, VideoCodecsEnum.VP8);
 
-        using var sink = new VideoSink(NullLogger<VideoSink>.Instance, new MediaFoundationVideoSink(NullLogger.Instance));
+        using var sink = new VideoSink(NullLogger<VideoSink>.Instance, MfSink());
         VideoFrameReceivedEventArgs? received = null;
         sink.FrameReceived += (_, e) => received = e;
         sink.GotVideoFrame(new IPEndPoint(IPAddress.Loopback, 1), 0, vp8, new VideoFormat(VideoCodecsEnum.VP8, 96));
 
         Assert.NotNull(received);
         Assert.Equal((w, h), (received!.Width, received.Height));
-        var grey = ((h * 3 / 4) * w + w * 3 / 4) * 4;
-        Assert.InRange(received.FrameData[grey], 120, 136);
-        var red = ((h / 4) * w + w / 4) * 4;
-        Assert.True(received.FrameData[red + 2] > 180 && received.FrameData[red] < 40, "block 0 must still be clearly red");
+        AssertColours(received.FrameData, w, h);
     }
 
+    [Fact]
+    public void I420Conversion_MatchesTheNv12Conversion()
+    {
+        // 18 px wide: one 16-pixel SIMD block plus a scalar tail; odd chroma values so a swapped U/V would show.
+        const int w = 18, h = 4;
+        var rnd = new Random(1);
+        var y = new byte[w * h]; var u = new byte[w / 2 * h / 2]; var v = new byte[u.Length];
+        rnd.NextBytes(y); rnd.NextBytes(u); rnd.NextBytes(v);
+        var nv12 = new byte[w * h * 3 / 2];
+        y.CopyTo(nv12, 0);
+        for (var i = 0; i < u.Length; i++) { nv12[w * h + 2 * i] = u[i]; nv12[w * h + 2 * i + 1] = v[i]; }
+
+        var fromNv12 = new byte[w * h * 4]; var fromI420 = new byte[w * h * 4];
+        unsafe
+        {
+            fixed (byte* pn = nv12) Nv12ToBgra.Convert((IntPtr)pn, w, h, w, h, fromNv12);
+            fixed (byte* py = y, pu = u, pv = v) Nv12ToBgra.ConvertI420(py, w, pu, w / 2, pv, w / 2, w, h, fromI420);
+        }
+        Assert.Equal(fromNv12, fromI420);
+    }
     [WindowsMfFact]
     public void MediaFoundation_PicturesMatchTheFfmpegDecode()
     {
@@ -265,7 +288,7 @@ public sealed class MediaFoundationDecoderTests(ITestOutputHelper output)
 
         var rows = new List<string>();
         // Warm-up run first for each, then the measured run: JIT and driver start-up are not part of steady-state cost.
-        foreach (var name in new[] { "MF software (decoder only)", "MF GPU (decoder only)", "MF software via VideoSink", "FFmpeg via VideoSink (today)" })
+        foreach (var name in new[] { "MF software (decoder only)", "MF GPU (decoder only)", "MF software via VideoSink", "MF GPU via VideoSink (new default)", "FFmpeg via VideoSink (before)" })
         {
             for (var round = 0; round < 2; round++)
             {
@@ -317,7 +340,7 @@ public sealed class MediaFoundationDecoderTests(ITestOutputHelper output)
         {
             VideoSink sink;
             if (name.StartsWith("MF"))
-                sink = new VideoSink(NullLogger<VideoSink>.Instance, new MediaFoundationVideoSink(NullLogger.Instance));
+                sink = new VideoSink(NullLogger<VideoSink>.Instance, MfSink(name.StartsWith("MF GPU") ? null : "MediaFoundationSoftware"));
             else
             {
                 FFmpegInit.Initialise(FfmpegLogLevelEnum.AV_LOG_WARNING, FindFfmpegFolder());
