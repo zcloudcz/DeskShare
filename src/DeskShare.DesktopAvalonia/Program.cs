@@ -17,14 +17,19 @@ public class Program
     /// </summary>
     /// <param name="args">Command line arguments (e.g., --log to show log tab).</param>
     [STAThread]
-    public static void Main(string[] args)
+    public static int Main(string[] args)
     {
+        // MSI custom actions (elevated, no UI): write / remove the machine policy and exit.
+        if (PolicyCommand.IsPolicyVerb(args)) return PolicyCommand.Run(args);
+
         // Velopack must run first: on install/update/uninstall it creates shortcuts or exits early.
-        VelopackApp.Build().Run();
+        // Skipped for the per-machine MSI install, which is updated by deploying a newer MSI, never by Velopack.
+        if (!DeskShare.Unattended.MachinePolicy.IsMsiInstall(AppContext.BaseDirectory))
+            VelopackApp.Build().Run();
 
         // BuildAvaloniaApp() creates the Avalonia application with its configuration.
         // StartWithClassicDesktopLifetime() runs it as a standard desktop app with a main window.
-        BuildAvaloniaApp()
+        return BuildAvaloniaApp()
             .StartWithClassicDesktopLifetime(args);
     }
 

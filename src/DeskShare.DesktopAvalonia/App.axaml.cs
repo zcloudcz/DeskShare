@@ -75,7 +75,8 @@ public partial class App : Application
             // Load configuration from appsettings.json (same as WPF project)
             var configBuilder = new ConfigurationBuilder()
                 .SetBasePath(AppContext.BaseDirectory)
-                .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true);
+                .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
+                .AddInMemoryCollection(DeskShare.Unattended.MachinePolicy.Current.ToConfiguration()); // administrator policy (MSI) wins
 
             Configuration = configBuilder.Build();
 
@@ -147,6 +148,7 @@ public partial class App : Application
 
             var logger = ServiceProvider.GetRequiredService<ILogger<App>>();
             logger.LogInformation("DeskShare Avalonia application started");
+            if (DeskShare.Unattended.MachinePolicy.Current.Warning is { } policyWarning) logger.LogWarning("{Warning}", policyWarning);
             _ = UpdateService.CheckAndStageAsync(logger);
 
             // Create and show the main window (replaces WPF's StartupUri)

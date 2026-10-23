@@ -18,9 +18,11 @@ var configuration = new ConfigurationBuilder()
     .AddJsonFile("appsettings.json", optional: true)
     .AddJsonFile(configFile ?? "unused.json", optional: configFile is null)
     .AddCommandLine(args)
+    .AddInMemoryCollection(DeskShare.Unattended.MachinePolicy.Current.ToConfiguration()) // administrator policy (MSI) wins over everything above
     .Build();
 
 Log.Logger = new LoggerConfiguration().ReadFrom.Configuration(configuration).CreateLogger();
+if (DeskShare.Unattended.MachinePolicy.Current.Warning is { } policyWarning) Log.Warning(policyWarning);
 
 try
 {

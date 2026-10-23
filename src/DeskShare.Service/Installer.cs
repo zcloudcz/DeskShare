@@ -21,10 +21,12 @@ internal static class Installer
         FileLog.FileEnabled = false; // console only until %ProgramData%\DeskShare is proven ours (see PrepareDataDir)
         if (!IsAdmin()) return Fail("Administrator rights are required.");
         string? aside;
-        try { aside = PrepareDataDir(); }
+        string? policyAside;
+        try { aside = PrepareDataDir(); policyAside = QuarantineUntrustedPolicyDir(); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException) { return Fail(ex.Message, 3); }
         FileLog.FileEnabled = true;
         if (aside != null) FileLog.Write($"Existing {UnattendedPaths.DataDir} was not protected as expected, moved to {aside}; configuration reset to defaults.");
+        if (policyAside != null) FileLog.Write($"Existing machine policy folder was not admin-only, moved to {policyAside}; its settings are ignored.");
 
         sourceDir = Path.GetFullPath(sourceDir);
         var live = UnattendedPaths.InstallDir;
@@ -291,6 +293,21 @@ internal static class Installer
                   "Security": { "EnableRemoteControl": false, "TrustClientPermanent": false, "RequireConfirmationWhenUserLoggedOn": true }
                 }
                 """);
+        return aside;
+    }
+
+    /// <summary>
+    /// %ProgramData%\DeskShare.Policy is created by the MSI with an admin-only-write DACL. A standard user can pre-create it
+    /// when the service is installed WITHOUT the MSI, and the SYSTEM agent would then obey that policy; PolicyTrust already makes
+    /// the reader ignore it, and here it is also moved aside (like PrepareDataDir does) so a later MSI starts clean.
+    /// </summary>
+    private static string? QuarantineUntrustedPolicyDir()
+    {
+        var dir = Path.GetDirectoryName(MachinePolicy.DefaultPath)!;
+        if (!Directory.Exists(dir) || PolicyTrust.Problem(MachinePolicy.DefaultPath) == null) return null;
+        var aside = dir + ".untrusted-" + DateTime.Now.ToString("yyyyMMddHHmmss");
+        try { Directory.Move(dir, aside); }
+        catch (IOException ex) { throw new InvalidOperationException("Cannot move an untrusted " + dir + " aside (" + ex.Message + "); delete it manually and retry."); }
         return aside;
     }
 
