@@ -39,6 +39,14 @@ public interface IDeviceClaimStore
 
     /// <summary>Removes the claim. Callers pass only a Server ID they checked belongs to the account.</summary>
     Task DeleteAsync(string serverId);
+
+    /// <summary>
+    /// Records "seen online" for a claim the caller read earlier. Changes LastSeen only, and only while the stored
+    /// claim still has the same account and owner fingerprint as <paramref name="seen"/>: it never creates a claim or
+    /// changes its owner. (A plain save of the old record could undo a removal and a new owner's claim that happened
+    /// while the list request was waiting for the device status.) Losing the race just skips the update.
+    /// </summary>
+    Task TouchLastSeenAsync(DeviceClaim seen, DateTime lastSeenUtc);
 }
 
 /// <summary>Default backend: lost on restart, like the in-memory sessions.</summary>
@@ -65,6 +73,17 @@ public sealed class InMemoryDeviceClaimStore : IDeviceClaimStore
     public Task DeleteAsync(string serverId)
     {
         _claims.TryRemove(serverId, out _);
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc/>
+    public Task TouchLastSeenAsync(DeviceClaim seen, DateTime lastSeenUtc)
+    {
+        // Compare-and-swap: replaces the entry only if it still equals what the caller read (records compare by
+        // value), so a claim that was removed or re-claimed meanwhile is left alone and nothing is re-created.
+        if (_claims.TryGetValue(seen.ServerId, out var current) &&
+            current.AccountKey == seen.AccountKey && current.OwnerFingerprint == seen.OwnerFingerprint)
+            _claims.TryUpdate(seen.ServerId, current with { LastSeenUtc = lastSeenUtc }, current);
         return Task.CompletedTask;
     }
 }
@@ -113,6 +132,21 @@ public sealed class AzureTableDeviceClaimStore : IDeviceClaimStore
 
     /// <inheritdoc/>
     public Task DeleteAsync(string serverId) => _table.DeleteEntityAsync(Partition, serverId);
+
+    /// <inheritdoc/>
+    public async Task TouchLastSeenAsync(DeviceClaim seen, DateTime lastSeenUtc)
+    {
+        var response = await _table.GetEntityIfExistsAsync<DeviceClaimEntity>(Partition, seen.ServerId);
+        if (!response.HasValue) return; // removed meanwhile: do not re-create it
+        var current = response.Value!;
+        if (current.AccountKey != seen.AccountKey || current.OwnerFingerprint != seen.OwnerFingerprint) return;
+
+        // Merge of LastSeenUtc only, conditional on the ETag just read: if anything changed the row since, the
+        // service answers 412 and we skip (this is only a "last seen" hint). A missing row answers 404, never an insert.
+        var patch = new TableEntity(Partition, seen.ServerId) { [nameof(DeviceClaimEntity.LastSeenUtc)] = lastSeenUtc };
+        try { await _table.UpdateEntityAsync(patch, current.ETag, TableUpdateMode.Merge); }
+        catch (RequestFailedException ex) when (ex.Status is 412 or 404) { }
+    }
 
     private sealed class DeviceClaimEntity : ITableEntity
     {

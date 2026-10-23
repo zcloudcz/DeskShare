@@ -164,8 +164,10 @@ public static class AccountEndpoints
                 {
                     lastSeen = status!.LastActivity.ToUniversalTime();
                     // Remember it for when the device is off (and after a restart); throttled to save writes.
+                    // Conditional LastSeen-only update: this runs without the claim lock, after awaits, so the claim
+                    // may have been removed or taken over meanwhile and must not be written back (see TouchLastSeenAsync).
                     if (lastSeen - claim.LastSeenUtc > TimeSpan.FromMinutes(5))
-                        await store.SaveAsync(claim with { LastSeenUtc = lastSeen });
+                        await store.TouchLastSeenAsync(claim, lastSeen);
                 }
                 devices.Add(new { claim.ServerId, claim.Name, Online = online, LastSeen = lastSeen, claim.Unattended });
             }

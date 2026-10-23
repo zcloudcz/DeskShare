@@ -53,15 +53,21 @@ public sealed class AccountsServerFactory : WebApplicationFactory<Program>
         finally { foreach (var (k, v) in previous) Environment.SetEnvironmentVariable(k, v); }
     }
 
+    /// <summary>The claim store the server uses: the real in-memory one, with a pause point for race tests.</summary>
+    public GatedClaimStore Store { get; } = new(new InMemoryDeviceClaimStore());
+
     protected override void ConfigureWebHost(IWebHostBuilder builder) =>
         builder.ConfigureTestServices(services =>
+        {
+            services.AddSingleton<IDeviceClaimStore>(Store);
             services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, o =>
             {
                 var config = new OpenIdConnectConfiguration { Issuer = Issuer };
                 config.SigningKeys.Add(SigningKey);
                 o.ConfigurationManager = new StaticConfigurationManager<OpenIdConnectConfiguration>(config);
                 o.TokenValidationParameters.IssuerSigningKey = SigningKey;
-            }));
+            });
+        });
 
     public string Token(string oid, string audience = Audience, string scope = "access_as_user", DateTime? expires = null) =>
         new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
@@ -80,6 +86,39 @@ public sealed class AccountsServerFactory : WebApplicationFactory<Program>
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         return http;
     }
+}
+
+/// <summary>
+/// Decorator over a real claim store. When armed, the next ListAsync (GET /me/devices) returns its snapshot and then
+/// waits until the test releases it, so other requests can run in that exact gap.
+/// </summary>
+public sealed class GatedClaimStore(IDeviceClaimStore inner) : IDeviceClaimStore
+{
+    private TaskCompletionSource? _reached, _release;
+
+    /// <summary>Arms the gate; the returned tasks: "a list call is paused" and the release switch.</summary>
+    public (Task Reached, TaskCompletionSource Release) Arm()
+    {
+        _reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        return (_reached.Task, _release);
+    }
+
+    public async Task<IReadOnlyList<DeviceClaim>> ListAsync(string accountKey)
+    {
+        var snapshot = await inner.ListAsync(accountKey);
+        if (Interlocked.Exchange(ref _reached, null) is { } reached)
+        {
+            reached.SetResult();
+            await _release!.Task;
+        }
+        return snapshot;
+    }
+
+    public Task<DeviceClaim?> GetAsync(string serverId) => inner.GetAsync(serverId);
+    public Task SaveAsync(DeviceClaim claim) => inner.SaveAsync(claim);
+    public Task DeleteAsync(string serverId) => inner.DeleteAsync(serverId);
+    public Task TouchLastSeenAsync(DeviceClaim seen, DateTime lastSeenUtc) => inner.TouchLastSeenAsync(seen, lastSeenUtc);
 }
 
 [Collection(SignalingServerCollection.Name)]
@@ -265,6 +304,33 @@ public class AccountEndpointTests : IClassFixture<AccountsServerFactory>
     }
 
     [Fact]
+    public async Task ListThatWaitedDuringRemoveAndReclaim_DoesNotRestoreTheOldOwner()
+    {
+        // Account A's claim with an old LastSeen and the device online, so the list call wants to update LastSeen.
+        var a = NewOid();
+        var b = NewOid();
+        var serverId = NewServerId();
+        await RegisterAsync(serverId, "owner-secret-1");
+        var fingerprint = AccountEndpoints.Fingerprint(DeviceClaimProof.ClaimKey("owner-secret-1"));
+        var old = DateTime.UtcNow.AddHours(-1);
+        await _accounts.Store.SaveAsync(new DeviceClaim(serverId, a, "A's PC", false, fingerprint, old, old));
+
+        // A's list call reads its snapshot and pauses; meanwhile A removes the device and B claims it with a proof.
+        var (reached, release) = _accounts.Store.Arm();
+        var aHttp = _accounts.ClientFor(_accounts.Token(a));
+        var list = aHttp.GetAsync("/me/devices");
+        await reached.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(HttpStatusCode.NoContent, (await aHttp.DeleteAsync($"/me/devices/{serverId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await _accounts.ClientFor(_accounts.Token(b))
+            .PostAsJsonAsync("/me/devices/claim", ClaimBody(serverId, b, "owner-secret-1"))).StatusCode);
+        release.SetResult();
+        Assert.Equal(HttpStatusCode.OK, (await list.WaitAsync(TimeSpan.FromSeconds(10))).StatusCode);
+
+        // The stale snapshot must not have been written back: B still owns the device.
+        Assert.Equal(b, (await _accounts.Store.GetAsync(serverId))!.AccountKey);
+    }
+
+    [Fact]
     public async Task AnonymousFlow_IsUnchanged_WithAccountsOn()
     {
         var serverId = NewServerId();
@@ -285,9 +351,40 @@ public class AccountEndpointTests : IClassFixture<AccountsServerFactory>
     }
 }
 
-/// <summary>The Azure Table claim store round-trips (opt-in, like the other Azurite tests).</summary>
+/// <summary>The claim stores: Azure Table round-trip (opt-in, like the other Azurite tests) and TouchLastSeen rules.</summary>
 public class AzureTableDeviceClaimStoreTests
 {
+    // A stale "seen online" snapshot (read before a remove and another account's claim) must never re-create or
+    // re-assign the claim; a current one only moves LastSeen.
+    private static async Task TouchLastSeen_ChangesOnlyLastSeenOfTheSameClaim(IDeviceClaimStore store)
+    {
+        var serverId = "server-" + Random.Shared.Next(100_000_000, 1_000_000_000);
+        var t0 = new DateTime(2026, 10, 23, 12, 0, 0, DateTimeKind.Utc);
+        var snapshotA = new DeviceClaim(serverId, "acct-a", "A", false, "fp", t0, t0);
+        await store.SaveAsync(snapshotA);
+
+        await store.TouchLastSeenAsync(snapshotA, t0.AddHours(1));
+        Assert.Equal(snapshotA with { LastSeenUtc = t0.AddHours(1) }, await store.GetAsync(serverId));
+
+        await store.DeleteAsync(serverId);
+        await store.TouchLastSeenAsync(snapshotA, t0.AddHours(2));
+        Assert.Null(await store.GetAsync(serverId)); // not re-created
+
+        var claimB = new DeviceClaim(serverId, "acct-b", "B", false, "fp", t0, t0);
+        await store.SaveAsync(claimB);
+        await store.TouchLastSeenAsync(snapshotA, t0.AddHours(3));
+        Assert.Equal(claimB, await store.GetAsync(serverId)); // owner and LastSeen untouched
+        await store.DeleteAsync(serverId);
+    }
+
+    [Fact]
+    public Task InMemory_TouchLastSeen_ChangesOnlyLastSeenOfTheSameClaim() =>
+        TouchLastSeen_ChangesOnlyLastSeenOfTheSameClaim(new InMemoryDeviceClaimStore());
+
+    [AzuriteFact]
+    public Task Azure_TouchLastSeen_ChangesOnlyLastSeenOfTheSameClaim() =>
+        TouchLastSeen_ChangesOnlyLastSeenOfTheSameClaim(new AzureTableDeviceClaimStore(Environment.GetEnvironmentVariable("DESKSHARE_AZURITE")!));
+
     [AzuriteFact]
     public async Task Claim_RoundTrips_ListsPerAccount_AndDeletes()
     {
