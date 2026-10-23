@@ -345,20 +345,39 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         }
     }
 
+    // Called under _gate (it reads _gop).
     private void Enqueue(Worker w, Item item)
     {
         lock (w.Gate)
         {
+            if (item.Format.Codec == VideoCodecsEnum.H264 && item.Replay == null && ContainsIdr(item.Data) && w.Queue.Count > 0)
+            {
+                // An IDR resets the decoder: queued H.264 frames and catch-up replays before it would only be decoded in vain.
+                var keep = w.Queue.Where(i => i.Format.Codec != VideoCodecsEnum.H264 && i.Replay == null).ToArray();
+                w.Queue.Clear();
+                foreach (var other in keep) w.Queue.Enqueue(other);
+            }
             if (w.Queue.Count >= QueueCapacity)
             {
-                // Nothing before a keyframe is needed to show the picture again, so a keyframe empties the queue;
-                // any other frame is dropped (the picture may glitch until the next keyframe, the receive thread must not wait).
-                if (!IsKeyframe(item))
+                // Nothing before a keyframe is needed to show the picture again, so a keyframe empties the queue.
+                if (IsKeyframe(item)) w.Queue.Clear();
+                else if (item.Format.Codec == VideoCodecsEnum.H264 && !_gopOverflow && _gop.Count > 0)
                 {
+                    // A dropped H.264 delta would break the reference chain and, if it was the last change of a static
+                    // screen, would never be shown. Instead the queued H.264 frames become ONE catch-up item: the whole GOP
+                    // (it already contains this frame) decoded again from its keyframe, which resets the decoder.
+                    var keep = w.Queue.Where(i => i.Format.Codec != VideoCodecsEnum.H264 && i.Replay == null).ToArray();
+                    w.Queue.Clear();
+                    foreach (var other in keep) w.Queue.Enqueue(other);
+                    item = new Item(null!, 0, Array.Empty<byte>(), default, _gop.ToArray());
+                    if (++_dropped % 30 == 1) _logger.LogWarning("Video decoder queue full, catching up from the last keyframe ({Count} times so far)", _dropped);
+                }
+                else
+                {
+                    // VP8 (no replay), or too long since the keyframe to replay: dropped, the picture recovers at the next keyframe.
                     if (++_dropped % 30 == 1) _logger.LogWarning("Video decoder queue full, dropped {Count} frames so far", _dropped);
                     return;
                 }
-                w.Queue.Clear();
             }
             w.Queue.Enqueue(item);
             System.Threading.Monitor.PulseAll(w.Gate);

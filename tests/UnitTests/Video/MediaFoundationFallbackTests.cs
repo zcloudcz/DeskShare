@@ -295,7 +295,7 @@ public sealed class MediaFoundationFallbackTests
     }
 
     [Fact]
-    public void FullQueue_DropsDeltaFrames_ButAKeyframeEmptiesItAndIsKept()
+    public void FullQueue_NeverBlocks_AndAKeyframeReplacesEverythingQueuedBeforeIt()
     {
         var hung = new HangingDecoder();
         var pictures = new List<int>();
@@ -311,7 +311,7 @@ public sealed class MediaFoundationFallbackTests
         finally { hung.Release.Set(); }
 
         Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
-        Assert.Equal(2, hung.Calls);   // the in-flight keyframe and the new one; the 90 queued deltas before it were useless and are gone
+        Assert.Equal(2, hung.Calls);   // the in-flight keyframe and the new one; the deltas (and the catch-up) queued before it were useless and are gone
     }
 
     [Fact]
@@ -616,5 +616,57 @@ public sealed class MediaFoundationFallbackTests
             return 1;
         }
         public void Dispose() { }
+    }
+
+    // Blocks the first call until released (a slow moment, well below the hang limit), then decodes normally.
+    private sealed class SlowStartDecoder : IH264FrameDecoder
+    {
+        public readonly ManualResetEventSlim Release = new();
+        public readonly ManualResetEventSlim Entered = new();
+        public readonly List<byte> Seen = new();
+        public int Decode(byte[] annexB, Action<byte[], int, int> onFrame)
+        {
+            Entered.Set();
+            Release.Wait();
+            lock (Seen) Seen.Add(annexB[5]);
+            onFrame(new byte[16], 2, 2);
+            return 1;
+        }
+        public void Dispose() { }
+    }
+
+    [Fact]
+    public void QueueOverflow_DoesNotLoseTheLastDelta_TheDecoderCatchesUpFromTheKeyframe()
+    {
+        var slow = new SlowStartDecoder();
+        var pictures = new List<int>();
+        var sink = MakeWithHangLimit(_ => slow, TimeSpan.FromSeconds(30), pictures);
+        try
+        {
+            var sent = new List<byte> { 1 };
+            sink.GotVideoFrame(Ep, 0, Key(1), H264);
+            Assert.True(slow.Entered.Wait(5000));             // decoder busy on the keyframe
+            for (var i = 1; i <= 150; i++)                      // more than the queue holds (90)
+            {
+                var tag = (byte)(2 + i % 200);
+                sent.Add(tag);
+                sink.GotVideoFrame(Ep, (uint)i, Delta(tag), H264);
+            }
+            slow.Release.Set();                                 // the screen is static now: nothing else arrives
+            Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
+
+            lock (slow.Seen)
+            {
+                Assert.Equal(sent.Last(), slow.Seen.Last());    // the last change was decoded
+                // ... after a catch-up that fed the whole GOP in order from the keyframe (no broken reference chain).
+                var lastKey = slow.Seen.LastIndexOf(1);
+                Assert.Equal(sent, slow.Seen.Skip(lastKey).ToList());
+            }
+        }
+        finally
+        {
+            slow.Release.Set();
+            sink.Dispose();
+        }
     }
 }
