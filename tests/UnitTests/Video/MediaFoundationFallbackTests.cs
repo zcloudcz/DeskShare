@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using DeskShare.Desktop.Shared.Services;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -486,5 +487,47 @@ public sealed class MediaFoundationFallbackTests
             Assert.Equal(sent, seen);                             // the whole GOP in order, then the live frames, each once
         }
         finally { gpu.Release.Set(); software.Release.Set(); }
+    }
+
+    // Fails every decode, then hangs in Dispose (native cleanup after a GPU fault can block like a decode).
+    private sealed class FailsThenHangsOnDispose : IH264FrameDecoder
+    {
+        public readonly ManualResetEventSlim Release = new();
+        public readonly ManualResetEventSlim DisposeEntered = new();
+        public int Decode(byte[] annexB, Action<byte[], int, int> onFrame) => throw new InvalidOperationException("device lost");
+        public void Dispose() { DisposeEntered.Set(); Release.Wait(); }
+    }
+
+    [Fact]
+    public void DecoderWhoseDisposeHangs_DuringStepDown_IsAbandoned_AndAnotherDecoderTakesOver()
+    {
+        var broken = new FailsThenHangsOnDispose();
+        var software = new FakeDecoder(_ => true);
+        var ffmpeg = Substitute.For<IVideoSink>();
+        var sink = new MediaFoundationVideoSink(NullLogger.Instance, p => p == H264Path.MediaFoundationGpu ? broken : software,
+            () => ffmpeg, H264Path.MediaFoundationGpu) { HangLimit = TimeSpan.FromMilliseconds(150) };
+        try
+        {
+            sink.GotVideoFrame(Ep, 0, Key(1), H264);
+            sink.GotVideoFrame(Ep, 1, Delta(2), H264);
+            sink.GotVideoFrame(Ep, 2, Delta(3), H264);   // third failure: step down, Dispose hangs
+            Assert.True(broken.DisposeEntered.Wait(5000));
+            Thread.Sleep(300);
+            var sw = Stopwatch.StartNew();
+            sink.GotVideoFrame(Ep, 3, Delta(4), H264);   // notices the hung cleanup
+            Assert.True(sw.ElapsedMilliseconds < 100);   // the receive thread never waits for it
+            Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
+
+            Assert.NotEqual(H264Path.MediaFoundationGpu, sink.CurrentPath);
+            // The next decoder got the whole GOP from the keyframe (no freeze until the next keyframe).
+            var replayedToSoftware = software.Seen.Count > 0 && software.Seen[0] == 1;
+            var replayedToFfmpeg = ffmpeg.ReceivedCalls().Any();
+            Assert.True(replayedToSoftware || replayedToFfmpeg);
+        }
+        finally
+        {
+            broken.Release.Set();
+            sink.Dispose();
+        }
     }
 }

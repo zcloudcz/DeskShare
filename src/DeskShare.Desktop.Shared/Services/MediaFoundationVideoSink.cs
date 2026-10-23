@@ -467,7 +467,9 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
             _h264SilentUnits = 0;
             _path++;
         }
-        old?.Dispose();
+        // Disposing a broken decoder runs native calls too (MFT messages, COM/D3D release) and can hang like a decode,
+        // so it is timed the same way: a hang here is abandoned and the next decoder takes over.
+        if (old != null) Timed(VideoCodecsEnum.H264, () => { old.Dispose(); return 0; });
         _logger.LogWarning("Switching H.264 decoding to {Path}", _path);
 
         if (_path == H264Path.FFmpeg) EnsureFfmpeg();
