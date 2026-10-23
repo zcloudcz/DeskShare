@@ -723,4 +723,20 @@ public sealed class MediaFoundationFallbackTests
             sink.Dispose();
         }
     }
+
+    [Fact]
+    public void DisposingTheOuterVideoSink_StopsTheMediaFoundationSinkToo()
+    {
+        // ClientManager disposes the previous VideoSink on reconnect; that must reach the decoder thread and decoders.
+        var decoder = new FakeDecoder(_ => true);
+        var (mf, _) = Make(_ => decoder);
+        var outer = new VideoSink(Microsoft.Extensions.Logging.Abstractions.NullLogger<VideoSink>.Instance, mf);
+        Feed(mf, Ep, 0, Key(1), H264);
+
+        outer.Dispose();
+
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!decoder.Disposed && DateTime.UtcNow < deadline) Thread.Sleep(10);
+        Assert.True(decoder.Disposed);
+    }
 }
