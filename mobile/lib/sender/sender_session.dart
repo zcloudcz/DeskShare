@@ -287,7 +287,12 @@ class WebRtcSenderSession extends SenderSession {
   /// interleave (request A suspended in _closePeer while request B builds a new peer), so every message goes
   /// through one chain and is handled only after the previous one finished.
   Future<void> _signalQueue = Future.value();
-  void _enqueueSignal(SignalingMessage m) => _signalQueue = _signalQueue.then((_) => _onSignal(m));
+  void _enqueueSignal(SignalingMessage m) {
+    // Bound to the sharing session that received it: a message still queued when sharing is stopped and
+    // restarted must not run in the new session (it could close the new session's connection).
+    final gen = _startGen;
+    _signalQueue = _signalQueue.then((_) => gen == _startGen && !_stopping ? _onSignal(m) : Future<void>.value());
+  }
 
   /// Test hook: replaces the WebRTC part of a connection request.
   @visibleForTesting
