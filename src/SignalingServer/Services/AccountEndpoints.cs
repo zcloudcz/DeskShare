@@ -90,8 +90,14 @@ public static class AccountEndpoints
                     QueueLimit = 0
                 })));
 
+        // Accounts:Storage = Postgres keeps claims in PostgreSQL whatever Storage:Type says (sessions are unaffected).
+        if ((config["Accounts:Storage"] ?? "").Equals("Postgres", StringComparison.OrdinalIgnoreCase))
+        {
+            var connectionString = Required(config, "ConnectionStrings:DeskShare");
+            builder.Services.AddSingleton<IDeviceClaimStore>(_ => new PostgresDeviceClaimStore(connectionString));
+        }
         // Same switch as the session storage, so claims survive restarts wherever sessions do.
-        if (config.GetValue("Storage:Type", "InMemory")!.Equals("AzureTableStorage", StringComparison.OrdinalIgnoreCase))
+        else if (config.GetValue("Storage:Type", "InMemory")!.Equals("AzureTableStorage", StringComparison.OrdinalIgnoreCase))
         {
             var connectionString = Required(config, "Storage:AzureTableStorage:ConnectionString");
             builder.Services.AddSingleton<IDeviceClaimStore>(_ => new AzureTableDeviceClaimStore(connectionString));

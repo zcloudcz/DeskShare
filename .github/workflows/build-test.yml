@@ -51,6 +51,35 @@ jobs:
           path: TestResults/
           retention-days: 30
 
+  # PostgreSQL device-claim store against a real Postgres. Separate Linux job because service containers
+  # are not available on the Windows runner (there the Postgres tests skip).
+  postgres-store:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Run Postgres store tests
+        env:
+          DESKSHARE_TEST_POSTGRES: Host=localhost;Port=5432;Username=postgres;Password=test;Database=postgres
+        run: dotnet test tests/IntegrationTests --configuration Release --filter "FullyQualifiedName~PostgresDeviceClaimStore"
+
   # Linux end-to-end: real signaling server + headless sender on a virtual X display + .NET viewer,
   # all in Docker (see docker-compose.e2e.yml). Exit code comes from the test container.
   linux-e2e:
