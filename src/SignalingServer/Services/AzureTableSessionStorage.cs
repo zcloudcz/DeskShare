@@ -173,7 +173,8 @@ public class AzureTableSessionStorage : IServerSessionStorage
                 // A session without a stored passkey fails closed.
                 // The permanent password's authKey is accepted too; both compares always run ("|", not "||").
                 if (string.IsNullOrEmpty(authRequest.Passkey) ||
-                    !(HashMatches(session.Passkey, authRequest.Passkey) | HashMatches(session.PermanentAuthKey, authRequest.Passkey)))
+                    !(HashMatches(session.Passkey, authRequest.Passkey) |
+                      (!authRequest.PasskeyOnly && HashMatches(session.PermanentAuthKey, authRequest.Passkey))))
                 {
                     _logger.LogWarning(
                         "Authentication failed - invalid passkey: {ServerId}/{ClientId}",

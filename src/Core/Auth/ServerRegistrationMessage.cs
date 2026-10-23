@@ -187,6 +187,13 @@ public sealed class ClientAuthenticationMessage
     /// </code>
     /// </remarks>
     public string? Signature { get; set; }
+
+    /// <summary>
+    /// Server-side only, never read from the request body: set by the signaling server while the ServerId is locked
+    /// after failed permanent-password attempts. The storage then compares only the current passkey.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool PasskeyOnly { get; set; }
 }
 
 /// <summary>

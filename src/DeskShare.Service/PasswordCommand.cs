@@ -17,19 +17,40 @@ internal static class PasswordCommand
 {
     private static string KeyPath => Path.Combine(UnattendedPaths.DataDir, PermanentKeyFile.FileName);
 
-    /// <summary><c>set-password [--pipe &lt;name&gt;]</c>: the keys come over that pipe from the app, else over stdin/stdout.</summary>
+    // Bounds the whole exchange, so a stalled or hostile peer cannot keep an elevated process waiting forever.
+    private static readonly TimeSpan ExchangeTimeout = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// <c>set-password [--pipe &lt;name&gt; --owner-pid &lt;pid&gt;]</c>: the keys come over that pipe from the app
+    /// process with that id, else over stdin/stdout.
+    /// </summary>
     public static int Set(string[] args)
     {
-        var i = Array.IndexOf(args, "--pipe");
-        var pipeName = i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+        string? Arg(string name) { var i = Array.IndexOf(args, name); return i >= 0 && i + 1 < args.Length ? args[i + 1] : null; }
+        var pipeName = Arg("--pipe");
         if (pipeName is null)
             return Run(Console.In, Console.Out);
+        if (!int.TryParse(Arg("--owner-pid"), out var ownerPid))
+        {
+            FileLog.Write("ERROR: set-password: --pipe needs --owner-pid.");
+            return 2;
+        }
 
-        // The app (same user, not elevated) created the pipe so that only this user can open it. The name is random
-        // and was handed to us on the UAC command line, which is fine: it is not a secret, only a meeting point.
-        using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut);
+        // The name is random and was handed to us on the UAC command line: not a secret, only a meeting point.
+        // Identification level: the pipe server may ask who we are, but cannot act as this elevated process.
+        using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.None, TokenImpersonationLevel.Identification);
         try { pipe.Connect(10_000); }
         catch (System.TimeoutException) { FileLog.Write("ERROR: set-password: the app's pipe did not answer."); return 1; }
+
+        // Whoever serves a pipe of that name now is not necessarily the app (it may have closed its pipe and someone
+        // else created one). Talk only to the process that launched us (see PasswordSetup); nothing is sent before.
+        var serverPid = PipePeer.ServerProcessId(pipe);
+        if (serverPid != ownerPid)
+        {
+            FileLog.Write($"ERROR: set-password: the pipe is served by process {serverPid?.ToString() ?? "?"}, expected {ownerPid}; nothing sent.");
+            return 1;
+        }
+
         using var reader = new StreamReader(pipe, leaveOpen: true);
         using var writer = new StreamWriter(pipe, leaveOpen: true);
         return Run(reader, writer);
@@ -48,7 +69,11 @@ internal static class PasswordCommand
             return 1;
         }
 
-        var error = PasswordSetup.RunHelper(input, output, serverId!, (authKey, e2eKey) => PermanentKeyFile.Save(KeyPath, serverId!, authKey, e2eKey));
+        // Synchronous pipe reads cannot be cancelled, so the exchange runs on a worker and we stop waiting after the
+        // timeout; returning from Main then ends the process, the stuck read included.
+        var exchange = Task.Run(() => PasswordSetup.RunHelper(input, output, serverId!,
+            (authKey, e2eKey) => PermanentKeyFile.Save(KeyPath, serverId!, authKey, e2eKey)));
+        var error = exchange.Wait(ExchangeTimeout) ? exchange.Result : "timed out waiting for the app";
         if (error != null)
         {
             FileLog.Write("ERROR: set-password: " + error);

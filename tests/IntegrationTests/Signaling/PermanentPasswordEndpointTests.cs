@@ -92,7 +92,7 @@ public class PermanentPasswordEndpointTests
     }
 
     [Fact]
-    public async Task FiveFailures_LockTheServerId_EvenForTheRightCredential()
+    public async Task FiveFailures_LockThePermanentPassword_ButNotTheCurrentPasskey()
     {
         var http = _factory.CreateClient();
         var serverId = NewServerId();
@@ -101,7 +101,10 @@ public class PermanentPasswordEndpointTests
         for (var i = 0; i < 5; i++)
             Assert.Equal(HttpStatusCode.Unauthorized, await AuthenticateAsync(http, serverId, "Wrong-Auth_00000000000000000000000000000000"));
 
+        // Locked: even the right password is not compared any more...
         Assert.Equal(HttpStatusCode.TooManyRequests, await AuthenticateAsync(http, serverId, PermanentAuth));
-        Assert.Equal(HttpStatusCode.TooManyRequests, await AuthenticateAsync(http, serverId, PasskeyAuth));
+        Assert.Equal(HttpStatusCode.TooManyRequests, await AuthenticateAsync(http, serverId, "Wrong-Auth_00000000000000000000000000000000"));
+        // ...but whoever can read the current passkey on the host still gets in.
+        Assert.Equal(HttpStatusCode.OK, await AuthenticateAsync(http, serverId, PasskeyAuth));
     }
 }

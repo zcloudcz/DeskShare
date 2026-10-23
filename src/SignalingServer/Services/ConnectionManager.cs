@@ -41,7 +41,9 @@ public sealed class ConnectionManager : IDisposable
     // Failed-attempt lockout per ServerId, only for servers that registered a permanent password. The passkey rotates
     // every 45 s, so guessing it is hopeless; a permanent password does not, so an attacker spread over many IPs
     // (the per-IP rate limit does not stop that) could keep guessing. Accepted ceiling: by failing on purpose,
-    // anyone who knows a Server ID can lock its owner out for up to MaxPasswordLockout at a time.
+    // anyone who knows a Server ID can block the permanent password for up to MaxPasswordLockout at a time (the current
+    // passkey keeps working, see /authenticate). Worst case an attacker gets 5 guesses per 15 min, ~480 a day, against a
+    // 12+ character password behind 600k PBKDF2 rounds.
     // ponytail: a burst of parallel requests that all pass the "locked?" check before the 5th failure is recorded
     // gets through; the per-IP limit bounds that. Make check+record one atomic step if it ever matters.
     private readonly ConcurrentDictionary<string, PasswordLockout> _passwordLockouts = new();
@@ -52,7 +54,7 @@ public sealed class ConnectionManager : IDisposable
 
     private sealed class PasswordLockout
     {
-        public int Failures;            // consecutive, reset by a success
+        public int Failures;            // consecutive, reset by a success and by each lockout
         public TimeSpan LastLockout;     // doubles with every lockout, up to MaxPasswordLockout
         public DateTime LockedUntilUtc;
     }
@@ -495,8 +497,8 @@ public sealed class ConnectionManager : IDisposable
         else _passwordLockouts.TryRemove(serverId, out _);
     }
 
-    /// <summary>True while /authenticate must refuse every attempt for this ServerId (passkey included: we cannot
-    /// tell which one a viewer is trying without checking it, and checking is exactly what the lockout prevents).</summary>
+    /// <summary>True while /authenticate must not compare the permanent key for this ServerId (the current passkey
+    /// is still accepted).</summary>
     public bool IsPasswordLockedOut(string serverId, DateTime? now = null)
     {
         if (!_passwordLockouts.TryGetValue(serverId, out var l)) return false;
@@ -504,8 +506,9 @@ public sealed class ConnectionManager : IDisposable
     }
 
     /// <summary>
-    /// Counts an /authenticate result. The 5th consecutive failure locks for 1 min; every further failure after a
-    /// lockout locks again for twice as long (2, 4, 8, 15, 15 ... min). A success resets everything.
+    /// Counts an /authenticate result. 5 consecutive failures lock for 1 min. After a lockout the count starts again
+    /// (a fresh window of 5), but the next lockout lasts twice as long (2, 4, 8, 15, 15 ... min). A success resets
+    /// everything. Attempts rejected during a lockout are not passed here.
     /// </summary>
     public void RecordPasswordAttempt(string serverId, bool success, DateTime? now = null)
     {
@@ -521,6 +524,7 @@ public sealed class ConnectionManager : IDisposable
             }
 
             if (++l.Failures < PasswordLockoutThreshold) return;
+            l.Failures = 0;
             l.LastLockout = l.LastLockout == TimeSpan.Zero
                 ? FirstPasswordLockout
                 : TimeSpan.FromTicks(Math.Min(l.LastLockout.Ticks * 2, MaxPasswordLockout.Ticks));
@@ -763,7 +767,7 @@ public sealed class ConnectionManager : IDisposable
             // the response time does not tell an attacker which of the two a guess was checked against.
             var credentialMatches =
                 AuthenticationService.PasskeyMatches(session.Passkey, auth.Passkey) |
-                AuthenticationService.PasskeyMatches(session.PermanentAuthKey, auth.Passkey);
+                (!auth.PasskeyOnly && AuthenticationService.PasskeyMatches(session.PermanentAuthKey, auth.Passkey));
             // ValidTo still applies to the permanent path: the sender refreshes it every 45 s while alive, so it is
             // also our "the host is online" signal.
             if ((now ?? DateTime.UtcNow) >= session.ValidTo || !credentialMatches)

@@ -628,14 +628,12 @@ app.MapPost("/authenticate", async (HttpContext context, IServerSessionStorage s
             return Results.BadRequest(new { Error = "Invalid ClientId" });
         }
 
-        // Checked before the credential, so a locked-out ServerId gives an attacker no further guesses (see
-        // ConnectionManager.RecordPasswordAttempt). 429 lets the viewer say "try again later" instead of "wrong password".
-        if (cm.IsPasswordLockedOut(authRequest.ServerId))
-        {
-            cm.RecordAuthFailure();
-            Log.Warning("Authentication rejected, ServerId is locked after failed attempts | ServerId: {ServerId}", authRequest.ServerId);
-            return Results.StatusCode(StatusCodes.Status429TooManyRequests);
-        }
+        // While a ServerId is locked after failed attempts (see ConnectionManager.RecordPasswordAttempt), only the
+        // current passkey is checked: the permanent key is not compared at all, so the lockout gives an attacker no
+        // further password guesses, but someone who reads the passkey off the screen can still get in. Guessing the
+        // rotating passkey is hopeless, so it needs no lockout.
+        var passwordLocked = cm.IsPasswordLockedOut(authRequest.ServerId);
+        authRequest.PasskeyOnly = passwordLocked;
 
         // Captured before the passkey check: the tokens below are bound to the owner whose passkey was verified,
         // even if the ServerId changes hands in between.
@@ -648,6 +646,14 @@ app.MapPost("/authenticate", async (HttpContext context, IServerSessionStorage s
             cm.RecordAuthFailure();
             Log.Warning("Authentication rejected, ServerId changed owner during the check | ServerId: {ServerId}", authRequest.ServerId);
             return Results.Unauthorized();
+        }
+
+        if (!response.Success && passwordLocked)
+        {
+            // Not counted: the permanent key was not even compared. 429 lets the viewer say "try again later".
+            cm.RecordAuthFailure();
+            Log.Warning("Authentication rejected, ServerId is locked after failed attempts | ServerId: {ServerId}", authRequest.ServerId);
+            return Results.StatusCode(StatusCodes.Status429TooManyRequests);
         }
 
         cm.RecordPasswordAttempt(authRequest.ServerId, response.Success);

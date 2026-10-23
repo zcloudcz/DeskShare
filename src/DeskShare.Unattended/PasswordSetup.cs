@@ -1,4 +1,8 @@
+using System.IO.Pipes;
+using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using System.Text.RegularExpressions;
+using Microsoft.Win32.SafeHandles;
 
 namespace DeskShare.Unattended;
 
@@ -14,6 +18,11 @@ namespace DeskShare.Unattended;
 /// leaves the app; the helper only writes the keys into the protected key file.
 /// Transport: a named pipe that only the current user can open (UAC runs the helper with ShellExecute, which cannot
 /// redirect stdin), or plain stdin/stdout when an administrator runs the helper by hand.
+/// "Only the current user" is not enough on its own: any other program of that user could connect first (and get
+/// the keys), or create a pipe of that name once the app's is gone (and impersonate the elevated helper). So both
+/// ends check the process id of the other end before anything is sent: the app accepts only the helper process it
+/// started, the helper talks only to the app process whose id it got on its command line, and the helper connects
+/// with "identification" impersonation level, which lets a pipe server learn who it is but not act as it.
 /// One line each, UTF-8:
 /// <code>
 /// helper -> app:  ID server-123456789
@@ -60,21 +69,39 @@ public static class PasswordSetup
     /// <summary>App side. Returns the Server ID the password was set for (to show the user what to connect to).</summary>
     /// <param name="derive">Derives authKey and e2eKey for that Server ID (slow: PBKDF2).</param>
     /// <exception cref="InvalidOperationException">The helper sent something unexpected or reported an error.</exception>
-    public static async Task<string> RunAppAsync(TextReader input, TextWriter output, Func<string, Task<(string AuthKey, byte[] E2EKey)>> derive)
+    public static async Task<string> RunAppAsync(TextReader input, TextWriter output, Func<string, Task<(string AuthKey, byte[] E2EKey)>> derive,
+        CancellationToken cancellationToken = default)
     {
-        var first = await input.ReadLineAsync() ?? "";
+        var first = await input.ReadLineAsync(cancellationToken) ?? "";
         if (first.StartsWith("ERR ", StringComparison.Ordinal)) throw new InvalidOperationException(first[4..]);
         var serverId = first.StartsWith("ID ", StringComparison.Ordinal) ? first[3..] : "";
         if (!ServerIdRx.IsMatch(serverId)) throw new InvalidOperationException("The service helper did not send a valid Server ID.");
 
         var (authKey, e2eKey) = await derive(serverId);
-        await output.WriteLineAsync($"SET {authKey} {Convert.ToBase64String(e2eKey)}");
-        await output.FlushAsync();
+        await output.WriteLineAsync($"SET {authKey} {Convert.ToBase64String(e2eKey)}".AsMemory(), cancellationToken);
+        await output.FlushAsync(cancellationToken);
 
-        var reply = await input.ReadLineAsync();
+        var reply = await input.ReadLineAsync(cancellationToken);
         if (reply == "OK") return serverId;
         throw new InvalidOperationException(reply?.StartsWith("ERR ", StringComparison.Ordinal) == true
             ? reply[4..] : "The service helper did not confirm the password.");
+    }
+
+    /// <summary>
+    /// App side: waits until the helper process we launched is the one connected. Anyone else who connects first
+    /// (another program of the same user, while the UAC prompt is still open) is dropped before a byte is exchanged.
+    /// </summary>
+    /// <param name="clientProcessId">Process id of the connected client; <see cref="PipePeer.ClientProcessId"/> in
+    /// production, a fake in tests.</param>
+    public static async Task AcceptHelperAsync(NamedPipeServerStream pipe, int helperProcessId,
+        Func<NamedPipeServerStream, int?> clientProcessId, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            await pipe.WaitForConnectionAsync(cancellationToken);
+            if (clientProcessId(pipe) == helperProcessId) return;
+            pipe.Disconnect();
+        }
     }
 
     /// <summary>Sends "ERR reason" (also usable by the helper before the exchange starts, e.g. no Server ID yet).</summary>
@@ -90,4 +117,21 @@ public static class PasswordSetup
         try { bytes = Convert.FromBase64String(s); return true; }
         catch (FormatException) { bytes = null; return false; }
     }
+}
+
+/// <summary>Process id of the other end of a named pipe (Windows only), for the checks described in <see cref="PasswordSetup"/>.</summary>
+[SupportedOSPlatform("windows")]
+public static class PipePeer
+{
+    public static int? ClientProcessId(PipeStream pipe) =>
+        GetNamedPipeClientProcessId(pipe.SafePipeHandle, out var id) ? (int)id : null;
+
+    public static int? ServerProcessId(PipeStream pipe) =>
+        GetNamedPipeServerProcessId(pipe.SafePipeHandle, out var id) ? (int)id : null;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetNamedPipeClientProcessId(SafePipeHandle pipe, out uint clientProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out uint serverProcessId);
 }

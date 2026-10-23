@@ -85,6 +85,7 @@ public partial class UnattendedAccessPanel : UserControl
         WindowStyle = ProcessWindowStyle.Hidden
     };
 
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")] // the panel is only shown on Windows
     private async void OnSetPassword(object? sender, RoutedEventArgs e)
     {
         if (TopLevel.GetTopLevel(this) is not Window owner) return;
@@ -95,18 +96,20 @@ public partial class UnattendedAccessPanel : UserControl
         string note;
         try
         {
-            // Only this user can open the pipe; the elevated helper connects to it (see PasswordSetup for why a pipe).
+            // Random name, one instance, only this user can open it. The helper checks that this process serves it
+            // (--owner-pid), and we accept only the helper process we started (see PasswordSetup for the why).
             var pipeName = "DeskShare-set-password-" + Guid.NewGuid().ToString("N");
             await using var pipe = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
                 PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-            using var p = Process.Start(Elevated(InstalledExe, $"{PasswordSetup.SetVerb} --pipe {pipeName}"))
+            using var p = Process.Start(Elevated(InstalledExe, $"{PasswordSetup.SetVerb} --pipe {pipeName} --owner-pid {Environment.ProcessId}"))
                 ?? throw new InvalidOperationException("the service helper did not start");
 
             // The helper may fail before it connects (then it just exits), so wait for whichever comes first.
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-            var connect = pipe.WaitForConnectionAsync(cts.Token);
-            if (await Task.WhenAny(connect, p.WaitForExitAsync(cts.Token)) != connect || !pipe.IsConnected)
+            var accept = PasswordSetup.AcceptHelperAsync(pipe, p.Id, PipePeer.ClientProcessId, cts.Token);
+            if (await Task.WhenAny(accept, p.WaitForExitAsync(cts.Token)) != accept)
                 throw new InvalidOperationException("the service helper ended early, see %ProgramData%\\DeskShare\\logs\\service.log");
+            await accept; // rethrows a cancellation (timeout)
 
             using var reader = new StreamReader(pipe, leaveOpen: true);
             using var writer = new StreamWriter(pipe, leaveOpen: true);
@@ -115,7 +118,7 @@ public partial class UnattendedAccessPanel : UserControl
             {
                 var keys = E2EBinding.FromPermanentPassword(password, id);
                 return (keys.AuthKey, keys.E2EKey);
-            }));
+            }), cts.Token);
             await p.WaitForExitAsync(cts.Token);
             note = $"password set, connect with Server ID {ServerIdGenerator.FormatServerIdForDisplay(serverId)} and the password";
         }

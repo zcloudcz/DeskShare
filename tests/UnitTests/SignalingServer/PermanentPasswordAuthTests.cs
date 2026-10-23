@@ -63,7 +63,7 @@ public class PermanentPasswordAuthTests
     }
 
     [Fact]
-    public void Lockout_StartsAfterFiveFailures_DoublesUpTo15Minutes_AndResetsOnSuccess()
+    public void Lockout_StartsAfterFiveFailures_NeedsAFreshFiveEachTime_DoublesUpTo15Minutes_AndResetsOnSuccess()
     {
         using var m = CreateManager();
         m.SetPermanentPasswordRegistered(ServerId, true);
@@ -71,22 +71,47 @@ public class PermanentPasswordAuthTests
         for (var i = 0; i < ConnectionManager.PasswordLockoutThreshold - 1; i++)
             m.RecordPasswordAttempt(ServerId, success: false, T0);
         Assert.False(m.IsPasswordLockedOut(ServerId, T0)); // 4 failures: still open
+        m.RecordPasswordAttempt(ServerId, success: false, T0);
 
         var now = T0;
         var lockouts = new List<double>();
-        for (var i = 0; i < 6; i++)
+        for (var round = 0; round < 6; round++)
         {
-            m.RecordPasswordAttempt(ServerId, success: false, now);
+            if (round > 0)
+            {
+                // After a lockout, one failure is not enough to lock again: it takes a fresh window of 5.
+                for (var i = 0; i < ConnectionManager.PasswordLockoutThreshold - 1; i++)
+                    m.RecordPasswordAttempt(ServerId, success: false, now);
+                Assert.False(m.IsPasswordLockedOut(ServerId, now));
+                m.RecordPasswordAttempt(ServerId, success: false, now);
+            }
             var minutes = 0;
             while (m.IsPasswordLockedOut(ServerId, now.AddMinutes(minutes))) minutes++;
             lockouts.Add(minutes);
-            now = now.AddMinutes(minutes); // the next attempt comes right after the lockout
+            now = now.AddMinutes(minutes); // the next attempts come right after the lockout
         }
         Assert.Equal(new double[] { 1, 2, 4, 8, 15, 15 }, lockouts);
 
         m.RecordPasswordAttempt(ServerId, success: true, now);
-        m.RecordPasswordAttempt(ServerId, success: false, now);
-        Assert.False(m.IsPasswordLockedOut(ServerId, now)); // counting starts from zero again
+        for (var i = 0; i < ConnectionManager.PasswordLockoutThreshold; i++)
+            m.RecordPasswordAttempt(ServerId, success: false, now);
+        var after = 0;
+        while (m.IsPasswordLockedOut(ServerId, now.AddMinutes(after))) after++;
+        Assert.Equal(1, after); // a success also resets the doubling
+    }
+
+    [Fact]
+    public void PasskeyOnly_StillAcceptsThePasskey_ButNeverComparesThePermanentKey()
+    {
+        using var m = CreateManager();
+        Register(m, PermanentAuth);
+        bool Auth(string credential) => m.AuthenticateClient(new ClientAuthenticationMessage
+        {
+            ServerId = ServerId, ClientId = "client-1", Passkey = credential, PasskeyOnly = true
+        }).Success;
+
+        Assert.False(Auth(PermanentAuth));
+        Assert.True(Auth(PasskeyAuth));
     }
 
     [Fact]

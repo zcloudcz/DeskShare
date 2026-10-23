@@ -200,6 +200,52 @@ public class PermanentPasswordTests
     }
 
     [Fact]
+    public async Task AcceptHelper_DropsAnotherProcessThatConnectsFirst_AndWaitsForTheLaunchedHelper()
+    {
+        const int squatterPid = 111, helperPid = 222;
+        var name = "DeskShare-test-" + Guid.NewGuid().ToString("N");
+        await using var server = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+        // Seam for the real PipePeer.ClientProcessId: the first client "is" the squatter, the second the helper.
+        var connections = 0;
+        var accept = PasswordSetup.AcceptHelperAsync(server, helperPid,
+            _ => ++connections == 1 ? squatterPid : helperPid, new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+
+        using var squatter = new NamedPipeClientStream(".", name, PipeDirection.InOut);
+        await squatter.ConnectAsync(5000);
+        // The squatter is disconnected without receiving a byte (EOF, or the pipe already reports it broken).
+        var buffer = new byte[16];
+        int read;
+        try { read = await squatter.ReadAsync(buffer).AsTask().WaitAsync(TimeSpan.FromSeconds(5)); }
+        catch (IOException) { read = 0; }
+        Assert.Equal(0, read);
+        Assert.False(accept.IsCompleted);
+
+        using var helper = new NamedPipeClientStream(".", name, PipeDirection.InOut);
+        await helper.ConnectAsync(5000);
+        await accept.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(server.IsConnected);
+        Assert.Equal(2, connections);
+    }
+
+    [Fact]
+    public async Task PipePeer_ReportsTheProcessAtTheOtherEnd()
+    {
+        if (!OperatingSystem.IsWindows()) return; // GetNamedPipe*ProcessId is Windows only
+        var name = "DeskShare-test-" + Guid.NewGuid().ToString("N");
+        await using var server = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+        var accept = server.WaitForConnectionAsync();
+        using var client = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.None,
+            System.Security.Principal.TokenImpersonationLevel.Identification);
+        await client.ConnectAsync(5000);
+        await accept;
+
+        // Both ends are this test process here; in production they are the app and the helper.
+        Assert.Equal(Environment.ProcessId, PipePeer.ClientProcessId(server));
+        Assert.Equal(Environment.ProcessId, PipePeer.ServerProcessId(client));
+    }
+
+    [Fact]
     public async Task App_ReportsTheHelpersError()
     {
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => PasswordSetup.RunAppAsync(
