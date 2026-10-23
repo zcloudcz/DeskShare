@@ -252,7 +252,7 @@ class WebRtcSenderSession extends SenderSession {
       return;
     }
     _socket = socket;
-    _msgSub = socket.messages.listen(_onSignal);
+    _msgSub = socket.messages.listen(_enqueueSignal);
     unawaited(socket.closed.then((_) => _onSocketClosed(socket)));
   }
 
@@ -283,11 +283,32 @@ class WebRtcSenderSession extends SenderSession {
 
   void _send(SignalingMessage m) => _socket?.send(m);
 
+  /// Signaling handlers are async and `Stream.listen` does not wait for them. Peer replacement must never
+  /// interleave (request A suspended in _closePeer while request B builds a new peer), so every message goes
+  /// through one chain and is handled only after the previous one finished.
+  Future<void> _signalQueue = Future.value();
+  void _enqueueSignal(SignalingMessage m) => _signalQueue = _signalQueue.then((_) => _onSignal(m));
+
+  /// Test hook: replaces the WebRTC part of a connection request.
+  @visibleForTesting
+  Future<void> Function(String viewerId)? offerOverride;
+
+  @visibleForTesting
+  void debugSignal(SignalingMessage m) => _enqueueSignal(m);
+
+  /// Bumped by every peer teardown/replacement; an _offerTo that finds it changed after an await is stale.
+  int _peerGen = 0;
+
+  /// Peer connections whose close() has not finished yet. Their senders still hold the shared capture track,
+  /// so the track stays disabled until this is 0.
+  int _pendingCloses = 0;
+
   Future<void> _onSignal(SignalingMessage m) async {
+    if (_stopping) return;
     try {
       switch (m.type) {
         case SignalingType.connectionRequest:
-          if (m.senderId != null) await _offerTo(m.senderId!);
+          if (m.senderId != null) await (offerOverride ?? _offerTo)(m.senderId!);
         case SignalingType.answer:
           if (m.sdp != null && m.senderId == _viewerId) {
             await _pc?.setRemoteDescription(RTCSessionDescription(m.sdp, 'answer'));
@@ -312,10 +333,14 @@ class WebRtcSenderSession extends SenderSession {
   }
 
   Future<void> _offerTo(String viewerId) async {
-    await _closePeer(); // one viewer at a time, like the desktop sender
+    final closing = _closePeer(); // one viewer at a time, like the desktop sender
+    final gen = _peerGen; // _closePeer bumped it synchronously
+    bool stale() => gen != _peerGen || _stopping;
+    await closing; // the old connection is closed completely before the new one gets the track
+    if (stale()) return;
     _viewerId = viewerId;
     final peer = _peer = PeerBinding();
-    _setVideoEnabled(false); // no pixels until this viewer's binding verified
+    _syncVideo(); // no pixels until this viewer's binding verified
 
     final pc = await createPeerConnection({
       'iceServers': _iceServers.isEmpty
@@ -325,6 +350,10 @@ class WebRtcSenderSession extends SenderSession {
           : _iceServers.map((s) => s.toRtc()).toList(),
       'sdpSemantics': 'unified-plan',
     });
+    if (stale()) {
+      await pc.close();
+      return;
+    }
     _pc = pc;
 
     pc.onIceCandidate = (c) {
@@ -353,13 +382,16 @@ class WebRtcSenderSession extends SenderSession {
       }
     };
 
-    for (final track in _stream!.getTracks()) {
-      await pc.addTrack(track, _stream!);
+    final stream = _stream;
+    if (stream == null) return;
+    for (final track in stream.getTracks()) {
+      await pc.addTrack(track, stream);
+      if (stale()) return; // whoever replaced us closes _pc; this pc is no longer _pc
     }
 
     // Always created, even for a view-only host: the viewer's e2e_bind arrives over it (like ScreenSenderService).
     final dc = await pc.createDataChannel('input', RTCDataChannelInit()..ordered = true);
-    if (!identical(peer, _peer)) {
+    if (stale() || !identical(peer, _peer)) {
       await dc.close(); // replaced while the channel was being created
       return;
     }
@@ -402,11 +434,22 @@ class WebRtcSenderSession extends SenderSession {
   /// frames instead of the screen; flutter_webrtc supports this reliably on Android (adding the track after
   /// verification would need renegotiation). The tracks are shared by all connections, hence the reset in
   /// [_closePeer] and for every new offer.
-  void _setVideoEnabled(bool enabled) {
+  ///
+  /// The track is enabled only while the CURRENT peer is verified and no other peer connection is still closing
+  /// (the sender is single-viewer, so the current verified peer is then the only one that can see the screen).
+  bool get videoEnabled => (_peer?.isVerified ?? false) && _pendingCloses == 0;
+  bool _videoApplied = false;
+
+  void _syncVideo() {
+    final enabled = videoEnabled;
+    _videoApplied = enabled;
     for (final t in _stream?.getVideoTracks() ?? const <MediaStreamTrack>[]) {
       t.enabled = enabled;
     }
   }
+
+  @visibleForTesting
+  bool get videoEnabledApplied => _videoApplied;
 
   void _startBindTimer(PeerBinding peer) {
     _bindTimer?.cancel();
@@ -508,7 +551,7 @@ class WebRtcSenderSession extends SenderSession {
     if (!peer.tryVerify()) return;
     _bindTimer?.cancel();
     if (identical(peer, _peer)) {
-      _setVideoEnabled(true);
+      _syncVideo();
       _set(SenderState.sharing, 'Viewer connected');
     }
   }
@@ -551,7 +594,9 @@ class WebRtcSenderSession extends SenderSession {
   @visibleForTesting
   PeerBinding beginDebugPeer() {
     _peer?.retire();
-    return _peer = PeerBinding();
+    final peer = _peer = PeerBinding();
+    _syncVideo();
+    return peer;
   }
 
   @visibleForTesting
@@ -560,20 +605,39 @@ class WebRtcSenderSession extends SenderSession {
   @visibleForTesting
   bool get controlGranted => _controlGrantedForSession;
 
-  Future<void> _closePeer() async {
+  Future<void> _closePeer() {
     final dc = _dc;
     final pc = _pc;
     _dc = null;
     _pc = null;
     _viewerId = null;
     _viewer = false;
+    return _retirePeer(() async {
+      await dc?.close();
+      await pc?.close();
+    });
+  }
+
+  /// Everything synchronous (retire, bump generation, disable the track) happens before the first await, so
+  /// nothing can slip in between "replace" and "close"; [close] is the slow part.
+  Future<void> _retirePeer(Future<void> Function() close) async {
+    _peerGen++;
     _peer?.retire(); // a late verification of this connection can no longer succeed
     _peer = null;
     _bindTimer?.cancel();
-    _setVideoEnabled(false);
-    await dc?.close();
-    await pc?.close();
+    _pendingCloses++;
+    _syncVideo(); // disabled at once, before anything is awaited
+    try {
+      await close();
+    } finally {
+      _pendingCloses--;
+      _syncVideo(); // normally still disabled: the new peer is not verified yet
+    }
   }
+
+  /// Test hook: retire the current peer with a close() the test controls.
+  @visibleForTesting
+  Future<void> debugRetirePeer(Future<void> Function() close) => _retirePeer(close);
 
   Future<void> _shutdown() async {
     _startGen++;

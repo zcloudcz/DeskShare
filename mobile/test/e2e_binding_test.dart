@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:deskshare/core/e2e_binding.dart';
 import 'package:deskshare/sender/sender_session.dart';
 import 'package:deskshare/core/settings.dart';
+import 'package:deskshare/core/signaling_message.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -261,6 +263,53 @@ void main() {
       expect(sent, isEmpty);
       await doTap(s, fresh, fps);
       expect(device.performed, isEmpty);
+    });
+
+    test('overlapping connection requests are handled one after the other', () async {
+      final s = await sender(FakeDevice());
+      final events = <String>[];
+      final gateA = Completer<void>();
+      s.offerOverride = (id) async {
+        events.add('start $id');
+        if (id == 'A') await gateA.future; // A is suspended, e.g. in pc.close()
+        events.add('end $id');
+      };
+      const a = SignalingMessage(type: SignalingType.connectionRequest, senderId: 'A');
+      const b = SignalingMessage(type: SignalingType.connectionRequest, senderId: 'B');
+      s.debugSignal(a);
+      s.debugSignal(b);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(events, ['start A'], reason: 'B must not start while A is still replacing the peer');
+
+      gateA.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(events, ['start A', 'end A', 'start B', 'end B']);
+    });
+
+    test('the shared video track stays off for an unverified peer while the old connection is still closing', () async {
+      final s = await sender(FakeDevice());
+      final a = s.beginDebugPeer();
+      await s.debugOnText(a, bindJson, fps, send: (_) async {});
+      expect(s.videoEnabledApplied, isTrue, reason: 'verified current peer sees the screen');
+
+      final closeGate = Completer<void>();
+      final closing = s.debugRetirePeer(() => closeGate.future); // old pc.close() is slow
+      expect(s.videoEnabledApplied, isFalse, reason: 'disabled before the close is awaited');
+
+      final b = s.beginDebugPeer(); // the next request's peer, not verified
+      // A late bind of the replaced peer must not switch the track on for B.
+      await s.debugOnText(a, bindJson, fps, send: (_) async {});
+      expect(s.videoEnabledApplied, isFalse);
+      expect(b.isVerified, isFalse);
+
+      // Even B's own valid bind does not enable the track while A's connection is still closing.
+      await s.debugOnText(b, bindJson, fps, send: (_) async {});
+      expect(b.isVerified, isTrue);
+      expect(s.videoEnabledApplied, isFalse);
+
+      closeGate.complete();
+      await closing;
+      expect(s.videoEnabledApplied, isTrue, reason: 'B is verified and the only connection left');
     });
   });
 }
