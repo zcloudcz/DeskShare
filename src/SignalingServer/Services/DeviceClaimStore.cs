@@ -24,7 +24,7 @@ public sealed record DeviceClaim(
 
 /// <summary>
 /// Storage of device claims. Same split as the session storage: in memory by default, Azure Table when
-/// Storage:Type = AzureTableStorage, so claims survive a restart there.
+/// Storage:Type = AzureTableStorage, or PostgreSQL when Accounts:Storage = Postgres, so claims survive a restart there.
 /// </summary>
 public interface IDeviceClaimStore
 {

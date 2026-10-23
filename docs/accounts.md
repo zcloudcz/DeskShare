@@ -101,8 +101,21 @@ az webapp config appsettings set -g rg-agentwall -n deskshare-signaling -o none 
   Accounts__ClientIdDesktop=<desktop appId>
 ```
 
-Production uses `Storage:Type=InMemory` today (`appsettings.Production.json`): claims are then lost on every restart.
-For durable "My devices" set `Storage__Type=AzureTableStorage` and `Storage__AzureTableStorage__ConnectionString`
+Production uses `Storage:Type=InMemory` today (`appsettings.Production.json`): claims are then lost on every restart
+unless they are stored in PostgreSQL (below) or Azure Table.
+
+PostgreSQL (claims only, sessions stay in memory):
+
+```powershell
+az webapp config appsettings set -g rg-agentwall -n deskshare-signaling -o none --settings `
+  Accounts__Storage=Postgres `
+  "ConnectionStrings__DeskShare=Host=<host>;Port=5544;Database=deskshare;Username=<user>;Password=<password>;Ssl Mode=Require"
+```
+
+The table `device_claims` is created automatically on startup; the database user needs CREATE on its schema the
+first time.
+
+Alternatively, for durable "My devices" in Azure Table set `Storage__Type=AzureTableStorage` and `Storage__AzureTableStorage__ConnectionString`
 (this also moves sessions to the table backend, see `AzureTableSessionStorage`).
 
 Optional: `RateLimiting__Accounts__PermitLimit` / `__WindowSeconds` (default 30 per 60 s per account, per IP when anonymous).
