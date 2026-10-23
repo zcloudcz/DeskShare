@@ -537,7 +537,10 @@ public sealed class MediaFoundationFallbackTests
         var hung = new HangingDecoder();
         var software = new FakeDecoder(_ => true);
         var pictures = new List<int>();
-        var sink = MakeWithHangLimit(p => p == H264Path.MediaFoundationGpu ? hung : software, TimeSpan.FromMilliseconds(150), pictures);
+        var log = new ListLogger();
+        var sink = new MediaFoundationVideoSink(log, p => p == H264Path.MediaFoundationGpu ? hung : software, () => Substitute.For<IVideoSink>(),
+            H264Path.MediaFoundationGpu) { HangLimit = TimeSpan.FromMilliseconds(150) };
+        sink.OnVideoSinkDecodedSampleFaster += image => { lock (pictures) pictures.Add(image.Width); };
         try
         {
             sink.GotVideoFrame(Ep, 0, Key(1), H264);   // the last change of the screen; nothing follows
@@ -547,7 +550,8 @@ public sealed class MediaFoundationFallbackTests
             var deadline = Stopwatch.StartNew();
             while (software.Seen.Count == 0 && deadline.ElapsedMilliseconds < 5000) Thread.Sleep(20);
 
-            Assert.Equal(new byte[] { 1 }, software.Seen);
+            Assert.True(software.Seen.SequenceEqual(new byte[] { 1 }),
+                $"software decoder saw [{string.Join(",", software.Seen)}] after {deadline.ElapsedMilliseconds} ms; sink log:{Environment.NewLine}{log}");
             Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(5)));
             lock (pictures) Assert.Single(pictures);    // the update that had arrived is shown after all
         }
@@ -836,5 +840,19 @@ public sealed class MediaFoundationFallbackTests
             Assert.Equal(5, pictures);
         }
         finally { sink.Dispose(); }
+    }
+
+    // Keeps the sink's log lines so a failure on a CI runner explains itself.
+    private sealed class ListLogger : Microsoft.Extensions.Logging.ILogger
+    {
+        private readonly List<string> _lines = new();
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state,
+            Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            lock (_lines) _lines.Add($"{DateTime.Now:HH:mm:ss.fff} {logLevel}: {formatter(state, exception)}");
+        }
+        public override string ToString() { lock (_lines) return string.Join(Environment.NewLine, _lines); }
     }
 }
