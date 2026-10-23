@@ -11,7 +11,7 @@ namespace DeskShare.Desktop.Shared.Services.Recording;
 /// Not thread safe: one writer thread owns it. The frame number is the presentation time, so the caller must write exactly
 /// one frame per time slot (see <see cref="FrameRateNormalizer"/>); that is what makes the frame rate constant.
 /// </remarks>
-internal sealed unsafe class WebmSegmentWriter : IDisposable
+internal sealed unsafe class WebmSegmentWriter : ISegmentWriter
 {
     private readonly int _srcWidth, _srcHeight; // size of the frames handed in
     private readonly int _width, _height;       // encoded size: rounded DOWN to even (4:2:0 chroma needs it)
@@ -22,8 +22,7 @@ internal sealed unsafe class WebmSegmentWriter : IDisposable
     private AVFrame* _frame;
     private AVPacket* _packet;
     private SwsContext* _sws;
-    private long _pts;
-    private bool _headerWritten, _closed;
+    private bool _headerWritten, _finished;
 
     public string Path { get; }
 
@@ -95,7 +94,7 @@ internal sealed unsafe class WebmSegmentWriter : IDisposable
     }
 
     /// <summary>Converts one tightly packed BGRA frame (srcWidth * srcHeight * 4 bytes) and encodes it as the next slot.</summary>
-    public void WriteFrame(byte[] bgra)
+    public void WriteFrame(byte[] bgra, long pts)
     {
         if (bgra.Length < (long)_srcWidth * _srcHeight * 4)
             throw new ArgumentException("The pixel buffer is shorter than width x height x 4.", nameof(bgra));
@@ -107,15 +106,15 @@ internal sealed unsafe class WebmSegmentWriter : IDisposable
             var srcStride = new int_array4 { [0] = _srcWidth * 4 };
             ffmpeg.sws_scale(_sws, src, srcStride, 0, _height, _frame->data, _frame->linesize);
         }
-        Encode();
+        Encode(pts);
     }
 
     /// <summary>Encodes the previous picture again as the next slot (nothing new arrived in that time).</summary>
-    public void RepeatLast() => Encode();
+    public void RepeatLast(long pts) => Encode(pts);
 
-    private void Encode()
+    private void Encode(long pts)
     {
-        _frame->pts = _pts++;
+        _frame->pts = pts;
         Check(ffmpeg.avcodec_send_frame(_codec, _frame), "avcodec_send_frame");
         DrainPackets();
     }
@@ -133,22 +132,32 @@ internal sealed unsafe class WebmSegmentWriter : IDisposable
         }
     }
 
-    /// <summary>Flushes the encoder and writes the file trailer (without it a player cannot seek). Idempotent.</summary>
-    public void Close()
+    /// <summary>
+    /// Flushes the encoder, writes the file trailer (without it a player cannot seek) and closes the file. Throws when ANY of
+    /// these steps fails (full disk, ...): the caller must then not report the file as saved. The native resources are
+    /// released in every case, so no <see cref="Dispose"/> is needed afterwards.
+    /// </summary>
+    public void Finish()
     {
-        if (_closed) return;
-        _closed = true;
-        if (_codec == null || !_headerWritten) return;
-        ffmpeg.avcodec_send_frame(_codec, null); // null = end of stream
-        DrainPackets();
-        Check(ffmpeg.av_write_trailer(_format), "av_write_trailer");
+        if (_finished) return;
+        _finished = true;
+        try
+        {
+            if (_codec == null || !_headerWritten) throw new InvalidOperationException("The recording file was never started.");
+            Check(ffmpeg.avcodec_send_frame(_codec, null), "avcodec_send_frame(flush)"); // null = end of stream
+            DrainPackets();
+            Check(ffmpeg.av_write_trailer(_format), "av_write_trailer");
+            Check(ffmpeg.avio_closep(&_format->pb), "avio_closep"); // the data is flushed to disk here: errors show up here
+        }
+        finally
+        {
+            Dispose();
+        }
     }
 
+    /// <summary>Frees the native objects. Does NOT finish the file: use <see cref="Finish"/> for that (Dispose alone is for the error path).</summary>
     public void Dispose()
     {
-        try { Close(); }
-        catch (Exception) { /* freeing must still happen; the caller already got the error from Close if it called it */ }
-
         if (_sws != null) { ffmpeg.sws_freeContext(_sws); _sws = null; }
         fixed (AVPacket** p = &_packet) ffmpeg.av_packet_free(p);
         fixed (AVFrame** f = &_frame) ffmpeg.av_frame_free(f);

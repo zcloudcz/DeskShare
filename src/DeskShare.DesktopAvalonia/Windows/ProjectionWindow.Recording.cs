@@ -45,8 +45,7 @@ public partial class ProjectionWindow
             recorder.Failed += ex => Dispatcher.UIThread.Post(async () =>
             {
                 if (!ReferenceEquals(_recorder, recorder)) return;
-                await StopRecordingAsync();
-                ShowRecordingMessage("Recording stopped: " + ex.Message);
+                await StopRecordingAsync(); // reports the error (recorder.Error) instead of "Saved"
             });
             recorder.Start();
             _recorder = recorder;
@@ -90,13 +89,37 @@ public partial class ProjectionWindow
         _clientManager.SendRecordingState(false); // a no-op when the connection is already gone: the host clears the flag itself
 
         // Stop() waits for the encoder thread to write the rest of the queue and the file trailer: not on the UI thread.
-        var files = await Task.Run(recorder.Stop);
+        var files = await Task.Run(() => recorder.Stop());
+        var error = recorder.Error;
         recorder.Dispose();
+        if (error != null)
+        {
+            // Closing the file failed (disk full, ...): never say "Saved" for a file that may be broken.
+            ShowRecordingMessage("Recording could not be saved: " + error.Message);
+            return;
+        }
         if (files.Count == 0) return;
 
         _lastRecordingFolder = Path.GetDirectoryName(files[0]);
         ShowRecordingMessage(
             files.Count == 1 ? $"Saved to {files[0]}" : $"Saved {files.Count} files to {_lastRecordingFolder} (the screen size changed during the recording)");
+    }
+
+    /// <summary>
+    /// The window is closing: the UI thread must not wait for the encoder. The recorder is detached and finishes on a background
+    /// task (its own thread is a foreground thread, so the process also waits for the file to be closed); the wait is bounded.
+    /// </summary>
+    private void FinishRecordingInBackground()
+    {
+        var recorder = Interlocked.Exchange(ref _recorder, null);
+        if (recorder == null) return;
+        _recTimer?.Stop();
+        _ = Task.Run(() =>
+        {
+            try { recorder.Stop(TimeSpan.FromSeconds(10)); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Finishing the recording after the window closed failed"); }
+            // Not disposed: after a timeout the encoder thread may still use the queue; the GC frees it afterwards.
+        });
     }
 
     private void ShowRecordingMessage(string text)

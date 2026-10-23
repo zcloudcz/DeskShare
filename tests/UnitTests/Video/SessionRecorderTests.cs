@@ -14,7 +14,7 @@ public sealed class SessionRecorderTests
     {
         var n = new FrameRateNormalizer(10);
 
-        Assert.Equal(new FramePlan(true, 0), n.Plan(5000)); // the origin is the first frame, not time zero
+        Assert.Equal(new FramePlan(true, 0, 0, 0), n.Plan(5000)); // the origin is the first frame, not time zero
         Assert.Equal(1, n.WrittenSlots);
     }
 
@@ -26,7 +26,7 @@ public sealed class SessionRecorderTests
 
         Assert.False(n.Plan(30).Accept);
         Assert.False(n.Plan(99).Accept);
-        Assert.Equal(new FramePlan(true, 0), n.Plan(100));
+        Assert.Equal(new FramePlan(true, 0, 1, 1), n.Plan(100));
     }
 
     [Fact]
@@ -37,7 +37,7 @@ public sealed class SessionRecorderTests
 
         var plan = n.Plan(450); // slot 4: slots 1, 2, 3 are empty
 
-        Assert.Equal(new FramePlan(true, 3), plan);
+        Assert.Equal(new FramePlan(true, 3, 1, 4), plan);
         Assert.Equal(5, n.WrittenSlots);
     }
 
@@ -62,9 +62,127 @@ public sealed class SessionRecorderTests
         var n = new FrameRateNormalizer(10);
         n.Plan(0);
 
-        Assert.Equal(9, n.Finish(1000)); // slot 10 is the end; slots 1..9 still empty
-        Assert.Equal(0, n.Finish(500));  // a time in the past adds nothing
-        Assert.Equal(0, new FrameRateNormalizer(10).Finish(1000)); // no frame was ever written
+        Assert.Equal((9, 1L), n.Finish(1000)); // slot 10 is the end; slots 1..9 still empty
+        Assert.Equal(0, n.Finish(500).Count); // a time in the past adds nothing
+        Assert.Equal(0, new FrameRateNormalizer(10).Finish(1000).Count); // no frame was ever written
+    }
+
+    [Fact]
+    public void LongGap_IsCapped_AndTheNextFrameKeepsItsTrueTime()
+    {
+        var n = new FrameRateNormalizer(15);
+        n.Plan(0);
+
+        var plan = n.Plan(3_600_000); // an hour of a still screen
+
+        Assert.Equal(30, plan.RepeatPrevious); // 2 s of copies, not 54,000
+        Assert.Equal(1, plan.FirstRepeatSlot);
+        Assert.Equal(54_000, plan.Slot);       // the frame keeps its real presentation time (the hole is in the timestamps)
+        Assert.Equal(54_001, n.WrittenSlots);
+    }
+
+    [Fact]
+    public void LongTail_IsCappedToo()
+    {
+        var n = new FrameRateNormalizer(15);
+        n.Plan(0);
+
+        Assert.Equal((30, 1L), n.Finish(3_600_000));
+    }
+
+    // ---- File names: never truncate ----
+
+    [Fact]
+    public void ReserveUnique_NeverReusesAnExistingFile()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "deskshare-res-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try
+        {
+            var existing = Path.Combine(folder, "a.webm");
+            File.WriteAllText(existing, "precious");
+
+            var second = RecordingFiles.ReserveUnique(folder, "a.webm");
+            var third = RecordingFiles.ReserveUnique(folder, "a.webm");
+
+            Assert.Equal(Path.Combine(folder, "a-2.webm"), second);
+            Assert.Equal(Path.Combine(folder, "a-3.webm"), third);
+            Assert.Equal("precious", File.ReadAllText(existing)); // untouched
+        }
+        finally { Directory.Delete(folder, true); }
+    }
+
+    [Fact]
+    public void TwoRecordersInTheSameSecond_GetDifferentFiles()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "deskshare-two-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string Record()
+            {
+                using var recorder = new SessionRecorder(folder, "server-x", NullLogger.Instance, (_, _, _, _) => new FakeWriter());
+                recorder.Start();
+                recorder.TryAddFrame(new byte[16], 2, 2);
+                return Assert.Single(recorder.Stop());
+            }
+
+            // Same server id; names are only to the second, so quick restarts can collide.
+            var names = new HashSet<string> { Record(), Record(), Record() };
+
+            Assert.Equal(3, names.Count);
+        }
+        finally { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
+    }
+
+    // ---- Finishing a file can fail ----
+
+    private sealed class FakeWriter : ISegmentWriter
+    {
+        public Exception? FinishError;
+        public bool Disposed;
+        public void WriteFrame(byte[] bgra, long pts) { }
+        public void RepeatLast(long pts) { }
+        public void Finish() { if (FinishError != null) throw FinishError; }
+        public void Dispose() => Disposed = true;
+    }
+
+    [Fact]
+    public void FailedFinish_IsReportedAsError_NotSwallowed()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "deskshare-fail-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var writer = new FakeWriter { FinishError = new IOException("disk full") };
+            Exception? failedEvent = null;
+            using var recorder = new SessionRecorder(folder, "server-x", NullLogger.Instance, (_, _, _, _) => writer);
+            recorder.Failed += ex => failedEvent = ex;
+            recorder.Start();
+            recorder.TryAddFrame(new byte[16], 2, 2);
+
+            recorder.Stop();
+
+            Assert.Equal("disk full", recorder.Error?.Message);
+            Assert.Same(recorder.Error, failedEvent);
+            Assert.True(writer.Disposed); // native resources are released even when closing failed
+        }
+        finally { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
+    }
+
+    [Fact]
+    public void SuccessfulFinish_HasNoError()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "deskshare-ok-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var recorder = new SessionRecorder(folder, "server-x", NullLogger.Instance, (_, _, _, _) => new FakeWriter());
+            recorder.Start();
+            recorder.TryAddFrame(new byte[16], 2, 2);
+
+            recorder.Stop();
+
+            Assert.Null(recorder.Error);
+        }
+        finally { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
     }
 
     // ---- DropWhenFullQueue ----

@@ -5,7 +5,9 @@ namespace DeskShare.Desktop.Shared.Services.Recording;
 /// <summary>What <see cref="FrameRateNormalizer.Plan"/> decided for one incoming frame.</summary>
 /// <param name="Accept">False: this frame arrived too soon after the previous one (its time slot is taken), drop it.</param>
 /// <param name="RepeatPrevious">How many extra copies of the PREVIOUS frame to write first, to cover a gap in the stream.</param>
-public readonly record struct FramePlan(bool Accept, int RepeatPrevious);
+/// <param name="FirstRepeatSlot">Time slot (= presentation time) of the first of those copies; the others follow one slot apart.</param>
+/// <param name="Slot">Time slot of the new frame itself. Can be later than the copies end: a long gap is NOT filled completely.</param>
+public readonly record struct FramePlan(bool Accept, int RepeatPrevious, long FirstRepeatSlot, long Slot);
 
 /// <summary>
 /// Turns frames that arrive at irregular times into a constant frame rate: the video timeline is a row of slots of
@@ -23,7 +25,19 @@ public sealed class FrameRateNormalizer
     {
         if (fps <= 0) throw new ArgumentOutOfRangeException(nameof(fps));
         _fps = fps;
+        MaxGapCopies = fps * MaxGapSeconds;
     }
+
+    /// <summary>
+    /// A still screen sends no frames, so gaps can last an hour. Encoding a copy for every empty slot (54,000 for an hour)
+    /// would keep the encoder busy for no benefit. At most this many seconds of copies are written per gap; the next
+    /// frame then gets its true (later) presentation time. WebM allows timestamps with holes, a player just keeps showing
+    /// the last picture across the hole.
+    /// </summary>
+    public const int MaxGapSeconds = 2;
+
+    /// <summary>The same limit in frames.</summary>
+    public int MaxGapCopies { get; }
 
     /// <summary>Slots already written (= frames in the output so far).</summary>
     public long WrittenSlots => _nextSlot;
@@ -33,22 +47,24 @@ public sealed class FrameRateNormalizer
     {
         if (_originMs < 0) _originMs = timestampMs; // the first frame starts the video
         var slot = SlotOf(timestampMs);
-        if (slot < _nextSlot) return new FramePlan(false, 0);
-        var repeat = (int)(slot - _nextSlot); // empty slots between the previous frame and this one
+        if (slot < _nextSlot) return new FramePlan(false, 0, 0, 0);
+        var first = _nextSlot;
+        var repeat = (int)Math.Min(slot - _nextSlot, MaxGapCopies); // empty slots between the previous frame and this one, capped
         _nextSlot = slot + 1;
-        return new FramePlan(true, repeat);
+        return new FramePlan(true, repeat, first, slot);
     }
 
     /// <summary>
-    /// At the end of the recording: how many copies of the last frame are needed so the video lasts until
-    /// <paramref name="timestampMs"/> (a static screen sends no frames, the recording should still be that long).
+    /// At the end of the recording: copies of the last frame so the video lasts until <paramref name="timestampMs"/>
+    /// (capped like a gap, see <see cref="MaxGapSeconds"/>). <c>FirstSlot</c> is the presentation slot of the first copy.
     /// </summary>
-    public int Finish(long timestampMs)
+    public (int Count, long FirstSlot) Finish(long timestampMs)
     {
-        if (_originMs < 0) return 0;
-        var repeat = (int)Math.Max(0, SlotOf(timestampMs) - _nextSlot);
-        _nextSlot += repeat;
-        return repeat;
+        if (_originMs < 0) return (0, 0);
+        var first = _nextSlot;
+        var gap = Math.Max(0, SlotOf(timestampMs) - _nextSlot);
+        _nextSlot += gap;
+        return ((int)Math.Min(gap, MaxGapCopies), first);
     }
 
     private long SlotOf(long timestampMs) => Math.Max(0, timestampMs - _originMs) * _fps / 1000;
@@ -98,6 +114,31 @@ public static class RecordingFiles
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos) is { Length: > 0 } videos
             ? videos
             : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Videos"), "DeskShare");
+
+    /// <summary>
+    /// Creates the (empty) file for <paramref name="fileName"/> and returns its path. If the name is taken (two recordings
+    /// in the same second: quick restart, two windows) the next free "-2", "-3", ... name is used. The file is created with
+    /// <see cref="FileMode.CreateNew"/>, which fails instead of truncating when the file exists, so another recording is never
+    /// overwritten and two recorders can never claim the same name (the check and the creation are one atomic call).
+    /// </summary>
+    public static string ReserveUnique(string folder, string fileName)
+    {
+        var stem = Path.GetFileNameWithoutExtension(fileName);
+        var ext = Path.GetExtension(fileName);
+        for (var n = 1; ; n++)
+        {
+            var path = Path.Combine(folder, n == 1 ? fileName : $"{stem}-{n}{ext}");
+            try
+            {
+                using (new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+                return path;
+            }
+            catch (IOException) when (File.Exists(path))
+            {
+                // taken: try the next number
+            }
+        }
+    }
 
     /// <summary>deskshare-&lt;server&gt;-yyyyMMdd-HHmmss[-N].webm. N is the segment number, written from the 2nd segment on.</summary>
     public static string FileName(string serverId, DateTime startedLocal, int segment)

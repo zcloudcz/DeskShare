@@ -710,7 +710,7 @@ public partial class ProjectionWindow : Window
         _clientManager.DisplaysChanged -= OnDisplaysChanged;
         _clientManager.ControlRequestStateChanged -= OnControlRequestStateChanged;
         _fileSendCts?.Cancel();
-        _recorder?.Dispose(); // finishes the file; the window is closing, so no "saved" message
+        FinishRecordingInBackground(); // finishes the file without blocking the UI thread; no "saved" message (the window is closing)
 
         _clientManager.DisconnectAsync().GetAwaiter().GetResult();
 

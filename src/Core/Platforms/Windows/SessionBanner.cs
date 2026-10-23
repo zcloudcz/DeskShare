@@ -23,6 +23,7 @@ public sealed class SessionBanner : IDisposable
     private readonly object _lock = new();
     private Win32Panel? _panel;
     private bool _disposed;
+    private long _version; // newest model version shown (0 = callers that do not number their updates)
 
     /// <param name="stopControl">Revokes the viewer's control (the viewer keeps watching).</param>
     /// <param name="endSession">Disconnects the viewer.</param>
@@ -43,12 +44,18 @@ public sealed class SessionBanner : IDisposable
     }
 
     /// <summary>Shows, updates or removes the banner. Safe from any thread.</summary>
-    public void Update(SessionBannerState state, bool recording = false)
+    public void Update(SessionBannerState state, bool recording = false, long version = 0)
     {
         Win32Panel? toClose = null;
         lock (_lock)
         {
             if (_disposed) return;
+            // Updates from different threads can arrive out of order; the model numbers its states, so an old one is dropped.
+            if (version != 0)
+            {
+                if (version < _version) return;
+                _version = version;
+            }
             if (state == SessionBannerState.None)
             {
                 toClose = _panel;

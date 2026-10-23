@@ -74,6 +74,37 @@ public sealed class SessionStateModelTests
     }
 
     [Fact]
+    public void Recording_DelayedOlderDecision_CannotOverwriteANewerOne()
+    {
+        var (model, _) = Create();
+        model.ViewerStarted();
+
+        // Decision 1 = on, decision 2 = off; their publication happens in the opposite order.
+        model.RecordingChanged(false, sequence: 2);
+        model.RecordingChanged(true, sequence: 1);
+
+        Assert.False(model.Recording);
+    }
+
+    [Fact]
+    public void Snapshot_VersionGrowsWithEveryChange_AndStateIsConsistent()
+    {
+        var (model, _) = Create();
+        var v0 = model.Snapshot.Version;
+
+        model.ViewerStarted();
+        model.RecordingChanged(true, 1);
+        var s = model.Snapshot;
+
+        Assert.True(s.Version > v0 + 1);
+        Assert.Equal((SessionBannerState.Viewing, true), (s.State, s.Recording));
+
+        model.ViewerEnded();
+        Assert.Equal((SessionBannerState.None, false), (model.Snapshot.State, model.Snapshot.Recording));
+        Assert.True(model.Snapshot.Version > s.Version);
+    }
+
+    [Fact]
     public void RepeatedEvents_DoNotRaiseChangedAgain()
     {
         var (model, seen) = Create();

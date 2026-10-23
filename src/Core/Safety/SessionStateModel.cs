@@ -34,10 +34,17 @@ public sealed class SessionStateModel
     /// </summary>
     public bool Recording
     {
-        get { lock (_lock) return _shownRecording; }
+        get { lock (_lock) return _recording; }
     }
 
-    private bool _shownRecording;
+    /// <summary>State, recording flag and a version that grows with every change, read together under one lock.</summary>
+    public (SessionBannerState State, bool Recording, long Version) Snapshot
+    {
+        get { lock (_lock) return (_state, _recording, _version); }
+    }
+
+    private long _version;
+    private long _recordingSeq;
 
     /// <summary>Raised (outside the lock) every time <see cref="State"/> or <see cref="Recording"/> changes.</summary>
     public event Action<SessionBannerState>? Changed;
@@ -49,20 +56,35 @@ public sealed class SessionStateModel
     /// <summary>The input controller's authorization changed. Without a viewer this alone shows nothing (control is "armed", not in use).</summary>
     public void ControlChanged(bool authorized) => Update(() => _control = authorized);
 
-    /// <summary>The viewer started or stopped recording. Without a viewer this shows nothing.</summary>
-    public void RecordingChanged(bool recording) => Update(() => _recording = recording);
+    /// <summary>
+    /// The viewer started or stopped recording. Without a viewer this shows nothing.
+    /// </summary>
+    /// <param name="sequence">
+    /// Callers that can run concurrently number their decisions (in the order they were made). A call older than one already
+    /// applied is ignored, so a delayed "off" can never overwrite a newer "on". 0 means "not numbered, always apply".
+    /// </param>
+    public void RecordingChanged(bool recording, long sequence = 0) => Update(() =>
+    {
+        if (sequence != 0)
+        {
+            if (sequence <= _recordingSeq) return;
+            _recordingSeq = sequence;
+        }
+        _recording = recording;
+    });
 
     private void Update(Action change)
     {
         SessionBannerState next;
         lock (_lock)
         {
+            var wasRecording = _recording;
             change();
             if (!_viewer) _recording = false; // a viewer that left no longer records
             next = !_viewer ? SessionBannerState.None : _control ? SessionBannerState.Controlling : SessionBannerState.Viewing;
-            if (next == _state && _recording == _shownRecording) return;
+            if (next == _state && _recording == wasRecording) return;
             _state = next;
-            _shownRecording = _recording;
+            _version++;
         }
         Changed?.Invoke(next);
     }

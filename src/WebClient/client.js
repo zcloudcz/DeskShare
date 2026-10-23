@@ -560,6 +560,7 @@ async function handleOffer(message) {
                 startBindTimer(session);
                 startStatsMonitoring(); // Start collecting statistics
             } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+                stopRecordingOf(session); // cleanup() may not run while signaling is still connected; the file is still offered
                 updateStatus('WebRTC connection failed', 'error');
                 stopStatsMonitoring(); // Stop collecting statistics
                 // Media lost while the signaling socket was already gone: start the normal reconnect path.
@@ -796,6 +797,7 @@ function setupDataChannel(session, channel) {
     };
     channel.onclose = () => {
         if (!sessions.isCurrent(session)) return; // an old channel closing must not tear down the current one
+        stopRecordingOf(session);
         if (remoteControl) remoteControl.disable();
         remoteControl = null;
         dataChannel = null;
@@ -915,20 +917,31 @@ function toggleRecording() {
         updateStatus('Recording is not available in this browser or connection', 'error');
         return;
     }
-    // Tell the host first: if that does not work (connection gone), do not record behind its back.
+    // Build and start the recorder BEFORE telling the host: if the browser throws here, the host was never told "on",
+    // so no "off" is owed. (Nothing can throw after the message below.)
+    let recorder;
+    const rec = { chunks: [], session, serverId: (e2eKey && e2eKey.serverId) || 'unknown', startedAt: Date.now(), timer: null };
+    try {
+        // Video tracks only: this app never plays or records audio.
+        const videoOnly = new MediaStream(stream.getVideoTracks());
+        const mimeType = pickRecordingMime();
+        recorder = new MediaRecorder(videoOnly, mimeType ? { mimeType } : undefined);
+        rec.recorder = recorder;
+        recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) rec.chunks.push(e.data); };
+        // onstop also fires when the tracks end by themselves (disconnect): the file is offered in every case.
+        recorder.onstop = () => { if (recording === rec) stopRecording(); else finishRecording(rec); };
+        recorder.start(1000);
+    } catch (err) {
+        updateStatus('Could not start recording: ' + err.message, 'error');
+        return;
+    }
+    // Tell the host: if that does not work (connection gone), do not keep a recording behind its back.
     if (!sessions.send(session, { type: 'recording_state', on: true })) {
+        rec.finished = true; // discard: no file for a recording the host was not told about
+        recorder.stop();
         updateStatus('Could not tell the host about the recording; not recording', 'error');
         return;
     }
-    // Video tracks only: this app never plays or records audio.
-    const videoOnly = new MediaStream(stream.getVideoTracks());
-    const mimeType = pickRecordingMime();
-    const recorder = new MediaRecorder(videoOnly, mimeType ? { mimeType } : undefined);
-    const rec = { recorder, chunks: [], session, serverId: (e2eKey && e2eKey.serverId) || 'unknown', startedAt: Date.now(), timer: null };
-    recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) rec.chunks.push(e.data); };
-    // onstop also fires when the tracks end by themselves (disconnect): the file is offered in every case.
-    recorder.onstop = () => { if (recording === rec) stopRecording(); else finishRecording(rec); };
-    recorder.start(1000);
     recording = rec;
     rec.timer = setInterval(updateRecordingIndicator, 500);
     updateRecordingIndicator();
@@ -944,6 +957,11 @@ function updateRecordingIndicator() {
     recIndicator.textContent = `● REC ${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
     recIndicator.hidden = false;
     recordBtn.textContent = 'Stop recording';
+}
+
+// Stops the recording only if it belongs to this session (a late event of a replaced connection must not stop a newer one).
+function stopRecordingOf(session) {
+    if (recording && recording.session === session) stopRecording();
 }
 
 // Safe to call anytime (disconnect, peer replacement): does nothing when not recording.
