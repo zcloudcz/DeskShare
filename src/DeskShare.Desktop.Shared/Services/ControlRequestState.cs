@@ -18,3 +18,26 @@ public enum ControlRequestState
     /// <summary>The host needs a newer viewer to be asked for control.</summary>
     UpdateRequired,
 }
+
+/// <summary>Pure rules that turn the host's messages into a <see cref="ControlRequestState"/> (kept out of ClientManager so they can be tested).</summary>
+public static class ControlRequestStates
+{
+    public static bool IsRequestable(System.Text.Json.JsonElement response) =>
+        response.TryGetProperty("requestable", out var v) && v.ValueKind == System.Text.Json.JsonValueKind.True;
+
+    public static ControlRequestState FromAuthorizationResponse(System.Text.Json.JsonElement response)
+    {
+        var granted = response.TryGetProperty("authorized", out var a) && a.ValueKind == System.Text.Json.JsonValueKind.True;
+        var reason = response.TryGetProperty("reason", out var r) && r.ValueKind == System.Text.Json.JsonValueKind.String ? r.GetString() : null;
+        return granted ? ControlRequestState.Granted
+            : reason == "client_update_required" ? ControlRequestState.UpdateRequired
+            : reason == "timeout" ? ControlRequestState.TimedOut
+            : reason == "denied" ? ControlRequestState.Denied
+            : IsRequestable(response) ? ControlRequestState.Requestable
+            : ControlRequestState.Unavailable;
+    }
+
+    /// <summary>After the host revoked control: ask again if the host takes requests, otherwise nothing is offered.</summary>
+    public static ControlRequestState AfterRevoked(bool hostAllowsRequests) =>
+        hostAllowsRequests ? ControlRequestState.Requestable : ControlRequestState.Unavailable;
+}

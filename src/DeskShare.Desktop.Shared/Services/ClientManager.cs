@@ -120,6 +120,8 @@ public class ClientManager : IDisposable
     /// <summary>Fired when the state of this viewer's request for control changes (see <see cref="ControlRequestState"/>).</summary>
     public event EventHandler<ControlRequestState>? ControlRequestStateChanged;
 
+    private volatile bool _hostAllowsRequests; // from the host's last authorization_response ("requestable")
+
     private void RaiseControlRequest(PeerContext peer, ControlRequestState state)
     {
         if (!peer.IsRetired) ControlRequestStateChanged?.Invoke(this, state);
@@ -640,15 +642,16 @@ public class ClientManager : IDisposable
                         && doc.RootElement.TryGetProperty("authorized", out var authorized) && authorized.ValueKind == JsonValueKind.True, peer);
                     var controlGranted = doc.RootElement.TryGetProperty("authorized", out var control) && control.ValueKind == JsonValueKind.True;
                     UpdateDisplays(peer, controlGranted);
-                    var requestable = doc.RootElement.TryGetProperty("requestable", out var req) && req.ValueKind == JsonValueKind.True;
-                    var reasonText = doc.RootElement.TryGetProperty("reason", out var why) && why.ValueKind == JsonValueKind.String ? why.GetString() : null;
-                    RaiseControlRequest(peer,
-                        controlGranted ? ControlRequestState.Granted
-                        : reasonText == "client_update_required" ? ControlRequestState.UpdateRequired
-                        : reasonText == "timeout" ? ControlRequestState.TimedOut
-                        : reasonText == "denied" ? ControlRequestState.Denied
-                        : requestable ? ControlRequestState.Requestable
-                        : ControlRequestState.Unavailable);
+                    _hostAllowsRequests = ControlRequestStates.IsRequestable(doc.RootElement);
+                    RaiseControlRequest(peer, ControlRequestStates.FromAuthorizationResponse(doc.RootElement));
+                }
+                else if (messageType == "authorization_revoked")
+                {
+                    // The host stopped our control ("Stop control", timeout): input no longer works, so show the state truthfully
+                    // and offer to ask again when the host still allows requests.
+                    UpdateDisplays(peer, false);
+                    SetHostAllowsPrivacyScreen(false, peer);
+                    RaiseControlRequest(peer, ControlRequestStates.AfterRevoked(_hostAllowsRequests));
                 }
                 else if (messageType == "approval_pending" && doc.RootElement.TryGetProperty("what", out var what) && what.GetString() == "control")
                 {

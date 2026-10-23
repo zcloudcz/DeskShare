@@ -105,6 +105,18 @@ public sealed class SessionApprovalFlowTests
     }
 
     [Fact]
+    public async Task ControllerRevoked_OwnerLosesControl_AndALaterViewerDoesNotGetItBecauseTheControllerIsOnAgain()
+    {
+        var (manager, controller) = VerifiedManager(_ => Task.FromResult(true));
+        manager.ProcessInputMessage(AskInteractive);
+        await WaitUntil(() => manager.GrantedCapabilities.HasFlag(DeskShare.Core.Models.SessionCapabilities.Control));
+
+        controller.AuthorizationStateChanged += Raise.Event<EventHandler<InputAuthorizationState>>(controller, InputAuthorizationState.Revoked);
+
+        Assert.False(manager.GrantedCapabilities.HasFlag(DeskShare.Core.Models.SessionCapabilities.Control));
+    }
+
+    [Fact]
     public async Task OldViewerWithoutTheInteractiveField_CanNeverAsk()
     {
         // Answered with reason "client_update_required"; it must not open a prompt or get control.

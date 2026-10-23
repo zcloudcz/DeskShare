@@ -632,7 +632,9 @@ public sealed class DataChannelManager : IDisposable
                 // is an older viewer that can never ask, so it is told to update instead of silently staying view-only.
                 var hasInteractive = root.TryGetProperty("interactive", out var interactiveElement);
                 var interactive = hasInteractive && interactiveElement.ValueKind == JsonValueKind.True;
-                bool authorized = _inputController?.IsEnabled ?? false;
+                // THIS peer's grant (not the global controller state): another viewer's authorization that is still finishing
+                // must not make this one believe it has control.
+                bool authorized = (granted & SessionCapabilities.Control) != 0;
                 var approval = ControlApproval;
                 _logger.Information("Remote control requested by viewer, authorized: {Authorized}, interactive: {Interactive}", authorized, interactive);
                 if (approval != null && interactive && !authorized)
@@ -817,7 +819,9 @@ public sealed class DataChannelManager : IDisposable
 
         _logger.Information("Viewer was admitted by the host after the end-to-end binding check");
         ViewerVerified?.Invoke(this, peer);
-        SendAuthorizationResponse(peer, _inputController?.IsEnabled ?? false, GrantedFor(peer), ControlApproval != null && _inputController?.IsEnabled != true);
+        var grantedNow = GrantedFor(peer);
+        var controlNow = (grantedNow & SessionCapabilities.Control) != 0;
+        SendAuthorizationResponse(peer, controlNow, grantedNow, ControlApproval != null && !controlNow);
     }
 
     /// <summary>
@@ -871,7 +875,23 @@ public sealed class DataChannelManager : IDisposable
     // Bumped whenever the control authorization changes, so a display switch requested under an earlier grant can be cancelled.
     private int _controlEpoch;
 
-    private void OnAuthorizationStateChanged(object? sender, InputAuthorizationState state) => Interlocked.Increment(ref _controlEpoch);
+    private void OnAuthorizationStateChanged(object? sender, InputAuthorizationState state)
+    {
+        Interlocked.Increment(ref _controlEpoch);
+        if (ControlApproval == null || state is InputAuthorizationState.Authorized or InputAuthorizationState.Pending)
+            return;
+
+        // The authorization ended (host revoked it, timed out, rollback): whoever owned control loses it and is told.
+        PeerContext? owner;
+        lock (_controlLock)
+        {
+            owner = _controlPeer;
+            _controlPeer = null;
+        }
+        // On another thread: this event may be raised while the controller holds its own lock, and sending takes the peer's lock.
+        if (owner != null && !owner.IsRetired)
+            _ = Task.Run(() => SendOn(owner, JsonSerializer.Serialize(new { type = "authorization_revoked" })));
+    }
 
     // Runs outside the peer's lock (an effect). The answer goes to the peer that asked.
     private async Task SwitchDisplayAsync(PeerContext peer, JsonElement message, int epoch)
