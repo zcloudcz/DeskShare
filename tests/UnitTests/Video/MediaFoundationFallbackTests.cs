@@ -557,4 +557,28 @@ public sealed class MediaFoundationFallbackTests
             sink.Dispose();
         }
     }
+
+    [Fact]
+    public void ReplacementThreadAlreadyWaiting_IsWokenForTheRecoveryReplay()
+    {
+        var hung = new HangingDecoder();
+        var software = new FakeDecoder(_ => true);
+        // The pause lets the new thread reach its wait on the empty queue before the replay is put in (the race Codex found).
+        var sink = new MediaFoundationVideoSink(NullLogger.Instance, p => p == H264Path.MediaFoundationGpu ? hung : software,
+            () => Substitute.For<IVideoSink>(), H264Path.MediaFoundationGpu)
+        { HangLimit = TimeSpan.FromMilliseconds(150), AfterReplacementStarted = () => Thread.Sleep(200) };
+        try
+        {
+            sink.GotVideoFrame(Ep, 0, Key(1), H264);   // static screen: nothing follows
+            Assert.True(hung.Entered.Wait(5000));
+            var deadline = Stopwatch.StartNew();
+            while (software.Seen.Count == 0 && deadline.ElapsedMilliseconds < 5000) Thread.Sleep(20);
+            Assert.Equal(new byte[] { 1 }, software.Seen);
+        }
+        finally
+        {
+            hung.Release.Set();
+            sink.Dispose();
+        }
+    }
 }

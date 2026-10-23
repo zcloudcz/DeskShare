@@ -46,6 +46,9 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
     // short enough for the viewer to recover before the user gives up on a frozen picture.
     internal TimeSpan HangLimit { get; init; } = TimeSpan.FromSeconds(2);
 
+    /// <summary>Test seam: runs after a replacement decoder thread started and before its recovery replay is queued.</summary>
+    internal Action? AfterReplacementStarted { get; init; }
+
     // After this many abandoned decoders the machine clearly cannot be trusted with Media Foundation: go to FFmpeg for good
     // (each abandoned decoder keeps a thread and native memory alive).
     private const int MaxAbandonedDecoders = 2;
@@ -376,8 +379,14 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
             stuck.Queue.Clear();
         }
         _worker = StartWorker();
+        AfterReplacementStarted?.Invoke();
         if (h264 && _gop.Count > 0)
-            lock (_worker.Gate) _worker.Queue.Enqueue(new Item(null!, 0, Array.Empty<byte>(), default, _gop.ToArray()));
+            lock (_worker.Gate)
+            {
+                _worker.Queue.Enqueue(new Item(null!, 0, Array.Empty<byte>(), default, _gop.ToArray()));
+                // The new thread may already be waiting on an empty queue; on a static screen no later frame wakes it.
+                System.Threading.Monitor.PulseAll(_worker.Gate);
+            }
         foreach (var item in leftovers) Enqueue(_worker, item);
     }
 
