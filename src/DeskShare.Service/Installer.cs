@@ -55,6 +55,9 @@ internal static class Installer
         try
         {
             CopyDir(sourceDir, staging);
+            // Agent files shared with the app are packaged once in the app root (<app>\service is our source dir); copy them into
+            // staging now so the checks below see the complete folder. No-op when the package has no agent-shared.txt (MSI).
+            AgentSharedFiles.Restore(staging, Directory.GetParent(sourceDir)!.FullName);
             // Re-check AFTER the copy: the source is user-writable and may have changed since the first look.
             var missing = StagingCheck.Missing(staging);
             if (missing.Count > 0) throw new InvalidOperationException("Missing after copy: " + string.Join(", ", missing));
