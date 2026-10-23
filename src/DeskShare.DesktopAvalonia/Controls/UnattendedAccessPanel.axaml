@@ -17,6 +17,8 @@
             <StackPanel x:Name="PasswordPanel" Orientation="Horizontal" Spacing="10" Margin="0,10,0,0" IsVisible="False">
                 <Button x:Name="SetPasswordButton" Content="Set password..." Classes="modernButton" Click="OnSetPassword"/>
                 <Button x:Name="ClearPasswordButton" Content="Remove password" Classes="modernButton" Click="OnClearPassword"/>
+                <!-- Signed in to ZCLOUD only: lists the unattended agent's Server ID under "My devices". -->
+                <Button x:Name="AddToMyDevicesButton" Content="Add to my devices" Classes="modernButton" Click="OnAddToMyDevices" IsVisible="False"/>
             </StackPanel>
         </StackPanel>
     </Border>

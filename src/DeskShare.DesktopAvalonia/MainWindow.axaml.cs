@@ -161,6 +161,8 @@ public partial class MainWindow : Window
         // IsVisible replaces Visibility.Visible/Collapsed
         LogTab.IsVisible = App.ShowLogTab;
 
+        InitAccounts(); // optional ZCLOUD account UI, see MainWindow.Accounts.cs
+
         _logger.LogInformation("MainWindow initialized (Avalonia)");
     }
 
