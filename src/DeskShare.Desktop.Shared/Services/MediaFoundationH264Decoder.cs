@@ -208,9 +208,17 @@ internal sealed class MediaFoundationH264Decoder : IH264FrameDecoder
                 var result = output.Sample;
                 if (result != null)
                 {
-                    onFrame(ToBgra(result, out var w, out var h), w, h);
-                    frames++;
-                    if (own == null) result.Dispose();
+                    try
+                    {
+                        onFrame(ToBgra(result, out var w, out var h), w, h);
+                        frames++;
+                    }
+                    finally
+                    {
+                        // Also when the conversion throws (e.g. Lock2D after a GPU device loss): SharpGen never
+                        // releases COM objects by itself, so a skipped Dispose leaks the decoder's sample and its buffer.
+                        if (own == null) result.Dispose();
+                    }
                 }
             }
             finally
