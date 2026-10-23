@@ -269,4 +269,42 @@ public sealed class MediaFoundationFixtureTests(ITestOutputHelper output)
         sink.Dispose();
         Assert.True(created[1].Decoder.Disposed);
     }
+
+    /// <summary>
+    /// Only the device swap, no error: the real MFT accepts input and never outputs. The sink's watchdog has to notice
+    /// that on its own, step down to software and replay from the IDR.
+    /// </summary>
+    [MfGpuFixtureFact]
+    public void GpuThatGoesSilentAfterADeviceSwap_IsCaughtByTheWatchdog_AndThePictureContinues()
+    {
+        var created = new List<(H264Path Path, TrackedDecoder Decoder)>();
+        using var sink = new MediaFoundationVideoSink(new TestLogger(output),
+            path =>
+            {
+                var tracked = new TrackedDecoder(new MediaFoundationH264Decoder(hardware: path == H264Path.MediaFoundationGpu));
+                created.Add((path, tracked));
+                return tracked;
+            },
+            () => throw new InvalidOperationException("FFmpeg must not be needed"),
+            H264Path.MediaFoundationGpu);
+        var pictures = new List<(int W, int H, byte[] Data)>();
+        CollectPictures(sink, pictures);
+
+        var stream = MfFixtures.Read(MfFixtures.H264Hd);
+        const int lossAt = 10;
+        for (var i = 0; i < lossAt; i++)
+            sink.GotVideoFrame(Ep, 0, stream[i], H264);
+        var before = pictures.Count;
+        created[0].Decoder.Inner.SimulateDeviceLoss(failLoudly: false);
+
+        // The fixture is short, so its inter frames are fed again until the watchdog limit is passed (the picture is static).
+        for (var i = 0; i < MediaFoundationVideoSink.SilentUnitsBeforeStall + 15; i++)
+            sink.GotVideoFrame(Ep, 0, stream[lossAt + i % (stream.Count - lossAt)], H264);
+
+        output.WriteLine($"path: {sink.CurrentPath}, pictures: {before} before the swap, {pictures.Count} in total");
+        Assert.Equal(H264Path.MediaFoundationSoftware, sink.CurrentPath);
+        Assert.True(created[0].Decoder.Disposed);
+        Assert.True(pictures.Count > before + 15, "pictures must continue after the step down");
+        MediaFoundationDecoderTests.AssertColours(pictures[^1].Data, 1920, 1080);
+    }
 }

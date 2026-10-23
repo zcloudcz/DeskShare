@@ -26,6 +26,12 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
     /// <summary>Consecutive failed frames before a decoder is given up. One bad packet must not cost the GPU path, a dead device fails every frame.</summary>
     internal const int FailuresBeforeFallback = 3;
 
+    // Access units a decoder may swallow without a single picture before it counts as stalled. A decoder with a device
+    // that silently died keeps accepting input and never outputs, so no exception ever reaches us. Real decoders here
+    // (low latency, no B-frames) delay by 0-1 frames; 45 AU is 1.5 s at 30 fps, long enough to never fire on a slow
+    // start or a dropped burst, short enough that the viewer does not sit on a frozen picture.
+    internal const int SilentUnitsBeforeStall = 45;
+
     // Cap for the frames kept for replay (see _gop). A 6 Mbit/s stream is about 8 MB per 10 s.
     private const long MaxReplayBytes = 32 * 1024 * 1024;
 
@@ -42,6 +48,8 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
     private H264Path _path;
     private IH264FrameDecoder? _h264;
     private int _h264Failures;
+    private bool _h264SawIdr;      // silence only counts once the decoder got a keyframe: before it, no picture is expected
+    private int _h264SilentUnits;  // access units fed since the last picture came out
     private VpxDecoder? _vp8;
     private int _vp8Failures;
     private bool _vp8OnFfmpeg;
@@ -169,18 +177,29 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         try
         {
             _h264 ??= _createH264(_path);
-            _h264.Decode(frame, Raise);
+            FeedH264(frame);
             _h264Failures = 0;
         }
         catch (Exception ex)
         {
-            // A decoder that cannot even be created is given up at once; a running one only after repeated failures.
-            _h264Failures = _h264 == null ? FailuresBeforeFallback : _h264Failures + 1;
+            // A decoder that cannot even be created, or that went silent, is given up at once; a running one only after repeated failures.
+            _h264Failures = _h264 == null || ex is DecoderStalledException ? FailuresBeforeFallback : _h264Failures + 1;
             _logger.LogWarning("Media Foundation H.264 ({Path}) failed ({Count}/{Max}): {Message}", _path, _h264Failures, FailuresBeforeFallback, ex.Message);
             if (_h264Failures >= FailuresBeforeFallback)
                 StepDown(); // replays the current frame too: it is the newest one remembered
             // Below the limit the frame is dropped; the next one may work.
         }
+    }
+
+    private sealed class DecoderStalledException() : Exception($"No picture for {SilentUnitsBeforeStall} access units after a keyframe");
+
+    // Decodes one access unit and watches for a decoder that accepts input but never outputs (see SilentUnitsBeforeStall).
+    private void FeedH264(byte[] frame)
+    {
+        var pictures = _h264!.Decode(frame, Raise);
+        _h264SawIdr |= ContainsIdr(frame);
+        if (pictures > 0) _h264SilentUnits = 0;
+        else if (_h264SawIdr && ++_h264SilentUnits >= SilentUnitsBeforeStall) throw new DecoderStalledException();
     }
 
     // Moves to the next decoder and feeds it everything since the last keyframe so the picture continues without a new keyframe.
@@ -189,6 +208,8 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         _h264?.Dispose();
         _h264 = null;
         _h264Failures = 0;
+        _h264SawIdr = false;
+        _h264SilentUnits = 0;
         _path++;
         _logger.LogWarning("Switching H.264 decoding to {Path}", _path);
 
@@ -201,7 +222,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         Replay(frame =>
         {
             _h264 ??= _createH264(_path);
-            _h264.Decode(frame.Data, Raise);
+            FeedH264(frame.Data); // a replay into a decoder that is silent as well steps down again
         });
     }
 

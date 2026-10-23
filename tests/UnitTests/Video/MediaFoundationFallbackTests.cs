@@ -33,6 +33,15 @@ public sealed class MediaFoundationFallbackTests
         public void Dispose() => Disposed = true;
     }
 
+    // A decoder whose device died silently: accepts everything, never outputs, never throws.
+    private sealed class SilentDecoder : IH264FrameDecoder
+    {
+        public readonly List<byte> Seen = new();
+        public bool Disposed;
+        public int Decode(byte[] annexB, Action<byte[], int, int> onFrame) { Seen.Add(annexB[5]); return 0; }
+        public void Dispose() => Disposed = true;
+    }
+
     private static (MediaFoundationVideoSink Sink, List<int> Pictures) Make(
         Func<H264Path, IH264FrameDecoder> create, IVideoSink? ffmpeg = null, H264Path start = H264Path.MediaFoundationGpu)
     {
@@ -132,5 +141,54 @@ public sealed class MediaFoundationFallbackTests
         Assert.Equal(2, attempts);
         ffmpeg.Received(1).GotVideoFrame(Ep, 0, Arg.Is<byte[]>(b => b[5] == 1), H264);
         ffmpeg.Received(1).GotVideoFrame(Ep, 1, Arg.Is<byte[]>(b => b[5] == 2), H264);
+    }
+
+    [Fact]
+    public void DecoderThatGoesSilentAfterAKeyframe_IsGivenUpAfterTheLimit_AndSoftwareTakesOverFromTheKeyframe()
+    {
+        var gpu = new SilentDecoder();
+        var software = new FakeDecoder(_ => true);
+        var (sink, pictures) = Make(p => p == H264Path.MediaFoundationGpu ? gpu : software);
+        var limit = MediaFoundationVideoSink.SilentUnitsBeforeStall;
+
+        sink.GotVideoFrame(Ep, 0, Key(1), H264);
+        for (var i = 1; i < limit - 1; i++)
+            sink.GotVideoFrame(Ep, (uint)i, Delta(2), H264);
+        Assert.False(gpu.Disposed);                   // one unit short of the limit: still waiting
+        Assert.Empty(software.Seen);
+
+        sink.GotVideoFrame(Ep, (uint)limit, Delta(3), H264);   // the limit is reached: step down without any exception
+
+        Assert.True(gpu.Disposed);
+        Assert.Equal(limit, software.Seen.Count);     // key frame + everything since, no new keyframe needed
+        Assert.Equal(1, software.Seen[0]);
+        Assert.Single(pictures);                      // only the newest picture is shown
+    }
+
+    [Fact]
+    public void SilenceBeforeTheFirstKeyframe_IsNotAStall()
+    {
+        var gpu = new SilentDecoder();
+        var (sink, _) = Make(_ => gpu);
+
+        // A stream that joins mid-GOP: no picture is possible until the first IDR, however long that takes.
+        for (var i = 0; i < MediaFoundationVideoSink.SilentUnitsBeforeStall * 2; i++)
+            sink.GotVideoFrame(Ep, (uint)i, Delta(2), H264);
+
+        Assert.False(gpu.Disposed);
+        Assert.Equal(H264Path.MediaFoundationGpu, sink.CurrentPath);
+    }
+
+    [Fact]
+    public void ADecoderThatKeepsProducingPictures_NeverStalls()
+    {
+        var gpu = new FakeDecoder(_ => true);
+        var (sink, _) = Make(_ => gpu);
+
+        sink.GotVideoFrame(Ep, 0, Key(1), H264);
+        for (var i = 1; i < MediaFoundationVideoSink.SilentUnitsBeforeStall * 3; i++)
+            sink.GotVideoFrame(Ep, (uint)i, Delta(2), H264);
+
+        Assert.False(gpu.Disposed);
     }
 }
