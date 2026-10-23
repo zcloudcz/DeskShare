@@ -28,7 +28,9 @@ internal static class DataChannelPolicy
         ["file_end"] = SessionCapabilities.FileTransfer,
         ["file_cancel"] = SessionCapabilities.FileTransfer,
         // Hiding the host's screen from its user is only acceptable for someone who may also control it.
-        ["privacy_screen"] = SessionCapabilities.PrivacyScreen | SessionCapabilities.Control
+        ["privacy_screen"] = SessionCapabilities.PrivacyScreen | SessionCapabilities.Control,
+        // Changing what the host shows is as invasive as controlling it.
+        ["switch_display"] = SessionCapabilities.Control
     };
 
     /// <summary>

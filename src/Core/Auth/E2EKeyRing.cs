@@ -40,6 +40,9 @@ public sealed class E2EKeyRing
         }
     }
 
+    /// <summary>Adds the key of the permanent password (see <see cref="PermanentKeyFile"/>); it never expires.</summary>
+    public void AddPermanent(byte[] e2eKey) => Add(e2eKey, DateTime.MaxValue - Grace);
+
     /// <summary>
     /// Finds the key that makes <paramref name="mac"/> a valid bind of <paramref name="role"/> over the two
     /// fingerprints. Every key is tried (no early exit on timing-sensitive data: the compare itself is constant time).

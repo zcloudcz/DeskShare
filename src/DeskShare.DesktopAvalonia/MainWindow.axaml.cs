@@ -65,6 +65,8 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         PrivacyScreenPanel.IsVisible = OperatingSystem.IsWindows(); // the overlay is Windows-only
+        FillDisplayChoices();
+        ApplyPolicyLocks();
 
         // Setup logging and services from DI container (same as WPF project)
         _logger = App.ServiceProvider?.GetService<ILogger<MainWindow>>()
@@ -159,6 +161,28 @@ public partial class MainWindow : Window
         _logger.LogInformation("MainWindow initialized (Avalonia)");
     }
 
+    /// <summary>
+    /// Options fixed by the administrator's machine policy (MSI) are shown at their enforced value, disabled, with a hint.
+    /// Called again whenever the handlers re-enable the checkboxes. ServerManager enforces the same values, so this is only the display.
+    /// </summary>
+    private void ApplyPolicyLocks()
+    {
+        var policy = DeskShare.Unattended.MachinePolicy.Current;
+        void Lock(CheckBox box, bool? forced)
+        {
+            if (forced is not { } value) return;
+            box.IsChecked = value;
+            box.IsEnabled = false;
+            const string hint = " (Set by your administrator)";
+            if (box.Content is string text && !text.EndsWith(hint, StringComparison.Ordinal)) box.Content = text + hint;
+        }
+        Lock(EnableRemoteControlCheckBox, policy.RemoteControl);
+        Lock(EnableClipboardCheckBox, policy.Clipboard);
+        Lock(EnableFileReceiveCheckBox, policy.FileReceive);
+        Lock(EnablePrivacyScreenCheckBox, policy.PrivacyScreen);
+        if (policy.PrivacyScreen == false) PrivacyScreenBlocksInputCheckBox.IsEnabled = false;
+    }
+
     #region Server Mode Event Handlers
 
     private async void StartServer_Click(object? sender, RoutedEventArgs e)
@@ -183,7 +207,8 @@ public partial class MainWindow : Window
             bool privacyBlocksInput = enablePrivacyScreen && PrivacyScreenBlocksInputCheckBox.IsChecked == true;
 
             _serverManager.FileReceived += OnFileReceived;
-            await _serverManager.StartAsync(serverId, password, enableRemoteControl, trustClientPermanent, enableClipboard, enableFileReceive, enablePrivacyScreen, privacyBlocksInput);
+            var display = DisplayPanel.IsVisible && DisplayComboBox.SelectedIndex >= 0 && DisplayComboBox.SelectedIndex < _displays.Count ? _displays[DisplayComboBox.SelectedIndex] : null;
+            await _serverManager.StartAsync(serverId, password, enableRemoteControl, trustClientPermanent, enableClipboard, enableFileReceive, enablePrivacyScreen, privacyBlocksInput, display?.AdapterIndex, display?.OutputIndex);
 
             _logger.LogInformation("Server started with remote control {Status}",
                 enableRemoteControl ? "ENABLED" : "DISABLED");
@@ -226,6 +251,7 @@ public partial class MainWindow : Window
             EnablePrivacyScreenCheckBox.IsEnabled = false;
             PrivacyScreenBlocksInputCheckBox.IsEnabled = false;
             TrustClientPermanentCheckBox.IsEnabled = false;
+            DisplayComboBox.IsEnabled = false;
 
             UpdateTabAvailability();
 
@@ -256,7 +282,23 @@ public partial class MainWindow : Window
             EnablePrivacyScreenCheckBox.IsEnabled = true;
             PrivacyScreenBlocksInputCheckBox.IsEnabled = true;
             TrustClientPermanentCheckBox.IsEnabled = true;
+            DisplayComboBox.IsEnabled = true;
+            ApplyPolicyLocks();
         }
+    }
+
+    private IReadOnlyList<DeskShare.Core.Displays.DisplayInfo> _displays = Array.Empty<DeskShare.Core.Displays.DisplayInfo>();
+
+    // Default display for the next share; only Windows lists more than one (see DisplayCatalog), so the picker is hidden elsewhere.
+    private void FillDisplayChoices()
+    {
+        _displays = DeskShare.Core.Displays.DisplayCatalog.Enumerate(0, 0);
+        DisplayPanel.IsVisible = _displays.Count > 1;
+        DisplayComboBox.ItemsSource = _displays.Select(d => d.Name).ToList();
+        var config = App.ServiceProvider?.GetService<Microsoft.Extensions.Configuration.IConfiguration>();
+        int.TryParse(config?["Server:AdapterIndex"], out var adapter);
+        int.TryParse(config?["Server:OutputIndex"], out var output);
+        DisplayComboBox.SelectedIndex = DeskShare.Core.Displays.DisplayCatalog.FindConfigured(_displays, adapter, output);
     }
 
     private string? _lastReceivedFolder;
@@ -322,6 +364,8 @@ public partial class MainWindow : Window
             EnablePrivacyScreenCheckBox.IsEnabled = true;
             PrivacyScreenBlocksInputCheckBox.IsEnabled = true;
             TrustClientPermanentCheckBox.IsEnabled = true;
+            DisplayComboBox.IsEnabled = true;
+            ApplyPolicyLocks();
 
             UpdateTabAvailability();
 
@@ -497,7 +541,9 @@ public partial class MainWindow : Window
         try
         {
             string serverId = ServerIdGenerator.NormalizeServerIdInput(ManualServerIdTextBox.Text);
-            string passkey = DeskShare.Core.Auth.AuthenticationService.UnformatPasskey(ManualPasskeyTextBox.Text?.Trim() ?? "");
+            // Passkey OR permanent password, kept as typed: a password must not be upper-cased or lose its dashes.
+            // ConnectToServerAsync tells them apart (E2EBinding.DeriveFromUserInput).
+            string passkey = ManualPasskeyTextBox.Text ?? "";
             // In Avalonia, TextBox with PasswordChar is used instead of PasswordBox
             string password = ManualPasswordBox.Text ?? "";
 
@@ -512,11 +558,11 @@ public partial class MainWindow : Window
                 return;
             }
 
-            if (string.IsNullOrEmpty(passkey) || passkey.Length != 9)
+            if (!IsPasskeyOrPassword(passkey))
             {
                 var msgBox = MessageBoxManager.GetMessageBoxStandard(
                     "Validation Error",
-                    "Please enter a valid 9-character passkey",
+                    PasskeyOrPasswordHint,
                     ButtonEnum.Ok,
                     MsBoxIcon.Warning);
                 await msgBox.ShowWindowDialogAsync(this);
@@ -579,13 +625,15 @@ public partial class MainWindow : Window
                 return; // User cancelled
             }
 
-            string passkey = DeskShare.Core.Auth.AuthenticationService.UnformatPasskey(passkeyResult.Trim());
+            // Passkey or permanent password. PasskeyDialog trims, which is harmless: a permanent password cannot
+            // start or end with whitespace (E2EBinding.ValidatePermanentPassword).
+            string passkey = passkeyResult;
 
-            if (passkey.Length != 9)
+            if (!IsPasskeyOrPassword(passkey))
             {
                 var msgBox = MessageBoxManager.GetMessageBoxStandard(
                     "Validation Error",
-                    "Invalid passkey. Must be 9 characters.",
+                    PasskeyOrPasswordHint,
                     ButtonEnum.Ok,
                     MsBoxIcon.Warning);
                 await msgBox.ShowWindowDialogAsync(this);
@@ -660,6 +708,13 @@ public partial class MainWindow : Window
         }
     }
 
+    private const string PasskeyOrPasswordHint =
+        "Please enter the 9-character passkey or the permanent password of the unattended computer (at least 12 characters)";
+
+    private static bool IsPasskeyOrPassword(string input) =>
+        DeskShare.Core.Auth.E2EBinding.LooksLikePasskey(input) ||
+        input.Length >= DeskShare.Core.Auth.E2EBinding.PermanentPasswordMinLength;
+
     private async Task ConnectToServerAsync(string serverId, string passkey, string? password)
     {
         _logger.LogInformation("Authenticating with server {ServerId}", serverId);
@@ -684,7 +739,9 @@ public partial class MainWindow : Window
 
             // The server never gets the passkey: it gets authKey, derived from it. The matching e2eKey stays on this
             // machine and is used to check, end to end, that nobody sits between us and the sender (see E2EBinding).
-            var keys = DeskShare.Core.Auth.E2EBinding.DeriveKeys(passkey, serverId);
+            // The field takes the passkey or the host's permanent password; the password path runs PBKDF2 (about a
+            // second), hence off the UI thread.
+            var keys = await Task.Run(() => DeskShare.Core.Auth.E2EBinding.DeriveFromUserInput(passkey, serverId));
 
             var signature = DeskShare.Core.Auth.RequestSigningService.SignRequest(
                 serverId, keys.AuthKey, timestamp, nonce);

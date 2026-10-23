@@ -1,3 +1,4 @@
+using DeskShare.Unattended;
 using Microsoft.Extensions.Logging;
 using Velopack;
 using Velopack.Sources;
@@ -16,6 +17,9 @@ public static class UpdateService
     /// <summary>Fire-and-forget; only active for installed builds (not portable or dev runs).</summary>
     public static async Task CheckAndStageAsync(ILogger logger)
     {
+        // MSI installs are updated by deploying a newer MSI; the per-user Velopack channel must not touch them.
+        if (MachinePolicy.Current.UpdatesDisabled || MachinePolicy.IsMsiInstall(AppContext.BaseDirectory)) return;
+
         try
         {
             var manager = new UpdateManager(new GithubSource(RepoUrl, null, false));

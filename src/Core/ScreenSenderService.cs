@@ -2,6 +2,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using DeskShare.Core.WebRTC;
 using DeskShare.Core.Conversion;
+using DeskShare.Core.Displays;
 using DeskShare.Core.Pipeline;
 using DeskShare.Core.Video;
 using DeskShare.Core.Interfaces;
@@ -216,6 +217,10 @@ public class ScreenSenderService : IHostedService, IDisposable
 
             _logger.LogInformation("Screen resolution: {Width}x{Height}", width, height);
 
+            // The configured output is the default; a viewer with remote control may switch to another one.
+            var displays = DisplayCatalog.Enumerate(width, height);
+            var currentDisplay = DisplayCatalog.FindConfigured(displays, _configuration.AdapterIndex, _configuration.OutputIndex);
+
             // The session (and its encoders) must be created with the size we actually send, not the screen size.
             var (outputWidth, outputHeight) = OutputSize.Compute(width, height, _configuration.MaxOutputWidth);
             _logger.LogInformation("Output resolution: {Width}x{Height} (MaxOutputWidth={Max})", outputWidth, outputHeight, _configuration.MaxOutputWidth);
@@ -283,6 +288,22 @@ public class ScreenSenderService : IHostedService, IDisposable
                 }
                 ApplyIceServers(_webrtcSessionWithInput.VideoSource);
                 _webrtcSessionWithInput.EnableE2EBinding(_e2eKeys);
+
+                inputController.SetCapturedDisplay(InputRectFor(displays[currentDisplay]));
+                _webrtcSessionWithInput.DataChannel.DisplaySwitcher = new DisplaySwitchService(displays, currentDisplay, async (display, stillAllowed) =>
+                {
+                    if (_pipeline == null)
+                        return false;
+                    var next = PlatformServiceFactory.CreateScreenCapturer(display.AdapterIndex, display.OutputIndex, _configuration.TargetFps);
+                    // Pointer input is mapped to the new display only once the viewer is actually receiving its picture,
+                    // otherwise clicks would hit the new monitor while the viewer still sees the old one.
+                    var switched = await _pipeline.SwitchCapturerAsync(next, stillAllowed, () =>
+                    {
+                        inputController.SetCapturedDisplay(InputRectFor(display));
+                        _logger.LogInformation("Now sharing {Display}", display.Name);
+                    });
+                    return switched;
+                });
 
                 // Subscribe to events
                 _webrtcSessionWithInput.ConnectionStateChanged += (sender, state) =>
@@ -378,6 +399,10 @@ public class ScreenSenderService : IHostedService, IDisposable
             IsRunning = false;
         }
     }
+
+    // The primary display is what SendInput targets by default; only another display needs an explicit rectangle.
+    private static ScreenRect? InputRectFor(DisplayInfo display) =>
+        display.Primary ? null : new ScreenRect(display.Left, display.Top, display.Width, display.Height);
 
     /// <summary>
     /// Generates a new passkey and updates expiration time.
@@ -518,6 +543,30 @@ public class ScreenSenderService : IHostedService, IDisposable
         }
     }
 
+    // Logged once, not on every 45 s re-registration.
+    private bool _permanentKeyWarned;
+
+    /// <summary>
+    /// Keys of the permanent password, or null when none is configured. Read on every registration (a tiny file), so
+    /// a Server ID change after a collision is noticed: the keys are bound to the old ID and stop being offered.
+    /// Its e2e key joins the key ring for good, so a viewer that typed the password passes the binding check.
+    /// </summary>
+    private (string AuthKey, byte[] E2EKey)? LoadPermanentKeys()
+    {
+        var path = _configuration.PermanentPasswordKeyFile;
+        if (string.IsNullOrEmpty(path)) return null;
+
+        var keys = PermanentKeyFile.Load(path, ServerId);
+        if (keys is { } k)
+            _e2eKeys.AddPermanent(k.E2EKey);
+        else if (File.Exists(path) && !_permanentKeyWarned)
+        {
+            _permanentKeyWarned = true;
+            _logger.LogWarning("Permanent password file is unreadable or was set for another Server ID; set the password again | ServerId: {ServerId}", ServerId);
+        }
+        return keys;
+    }
+
     /// <summary>
     /// Registers this server with the SignalingServer so clients can discover and authenticate.
     /// </summary>
@@ -572,6 +621,7 @@ public class ScreenSenderService : IHostedService, IDisposable
                 // ServerId is part of the salt and can change on a 403.
                 var keys = E2EBinding.DeriveKeys(_currentPasskey, ServerId);
                 _e2eKeys.Add(keys.E2EKey, _passkeyValidTo);
+                var permanent = LoadPermanentKeys();
 
                 var registration = new ServerRegistrationMessage
                 {
@@ -580,7 +630,8 @@ public class ScreenSenderService : IHostedService, IDisposable
                     ValidTo = _passkeyValidTo,
                     RemoteControlEnabled = _configuration.EnableRemoteControl,
                     TrustClientPermanent = _configuration.TrustClientPermanent,
-                    OwnerSecret = GetOwnerSecret()
+                    OwnerSecret = GetOwnerSecret(),
+                    PermanentAuthKey = permanent?.AuthKey
                 };
 
                 response = await _httpClient.PostAsJsonAsync(registerUrl, registration);
@@ -789,6 +840,12 @@ public class ScreenSenderConfiguration
     /// Default is false for security reasons - must be explicitly enabled by user.
     /// </summary>
     public bool TrustClientPermanent { get; set; } = false;
+
+    /// <summary>
+    /// Path of a <see cref="PermanentKeyFile"/>. When it holds keys for this Server ID, viewers may also connect with
+    /// the permanent password instead of the current passkey. Empty = passkey only.
+    /// </summary>
+    public string PermanentPasswordKeyFile { get; set; } = string.Empty;
 
     /// <summary>
     /// Ensures the configuration has a valid Server ID.

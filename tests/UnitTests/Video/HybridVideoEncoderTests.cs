@@ -337,6 +337,36 @@ public sealed class HybridVideoEncoderTests
         Assert.True(contexts[^1].KeyFlags[0], "B's first frame must be a keyframe");
     }
 
+    [Fact]
+    public void PeerSwitch_ThroughTheResizingWrapper_AlsoDiscardsTheBufferedFrame()
+    {
+        // SIPSorceryVideoSource only holds the ResizingVideoEncoder wrapper, so the discard must work through it.
+        var contexts = new List<BufferingContext>();
+        var h264 = new HardwareH264Encoder("fake", (_, _) => { var c = new BufferingContext(); contexts.Add(c); return c; });
+        var hybrid = new HybridVideoEncoder(NSubstitute.Substitute.For<IVideoSource>(), h264);
+        using var wrapper = new ResizingVideoEncoder(() => hybrid);
+        wrapper.SetVideoSourceFormat(HardwareH264Encoder.Format);
+        var sent = new List<byte>();
+        wrapper.OnVideoSourceEncodedSample += (_, data) => sent.Add(data[0]);
+        void Push(byte screen)
+        {
+            var i420 = new byte[64 * 64 * 3 / 2];
+            i420[0] = screen;
+            wrapper.ExternalVideoSourceRawSample(33, 64, 64, i420, VideoPixelFormatsEnum.I420);
+        }
+        const byte A = 0xA, B = 0xB;
+
+        Push(A); Push(A);
+        sent.Clear();
+
+        wrapper.DiscardPending();
+        Push(B); Push(B); Push(B);
+
+        Assert.DoesNotContain(A, sent);
+        Assert.Equal(new[] { B, B }, sent);
+        Assert.True(contexts[^1].KeyFlags[0], "B's first frame must be a keyframe");
+    }
+
     private static bool HasNal(byte[] annexB, int nalType)
     {
         for (var i = 0; i + 3 < annexB.Length; i++)

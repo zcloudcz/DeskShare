@@ -80,6 +80,11 @@ jobs:
           dotnet publish src/ScreenSenderApp/DeskShare.ScreenSenderApp.csproj -c Release -r win-x64 --self-contained false -o publish/service/agent -p:Version=${{ steps.version.outputs.version }}
           Copy-Item publish/ffmpeg publish/service/agent/ffmpeg -Recurse
 
+      # Per-machine MSI for IT admins (Intune / GPO / SCCM, see docs/deployment.md). Self-contained, so it publishes the
+      # projects again on its own. UNSIGNED: sign DeskShare-x64.msi (and the exes) separately before enterprise rollout.
+      - name: Build MSI
+        run: dotnet build installer/DeskShare.Msi -c Release -p:Version=${{ steps.version.outputs.version }}
+
       - name: Install Velopack CLI
         run: dotnet tool install -g vpk --version ${{ env.VPK_VERSION }}
 
@@ -108,6 +113,12 @@ jobs:
           --releaseName "DeskShare ${{ github.ref_name }}"
           --publish
           ${{ steps.version.outputs.prerelease == 'True' && '--pre' || '' }}
+
+      # The release exists now (created by vpk above); attach the MSI to it.
+      - name: Attach MSI to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload ${{ github.ref_name }} installer/DeskShare.Msi/bin/Release/DeskShare-x64.msi --repo ${{ github.repository }}
 
   release-linux:
     name: Linux (beta)

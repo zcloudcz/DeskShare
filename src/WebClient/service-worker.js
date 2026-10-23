@@ -13,7 +13,7 @@
  * - The "fetch" event fires for every network request the page makes.
  */
 
-const CACHE_NAME = 'deskshare-v9';
+const CACHE_NAME = 'deskshare-v11';
 
 // Files to cache during install (the "app shell")
 const APP_SHELL_FILES = [

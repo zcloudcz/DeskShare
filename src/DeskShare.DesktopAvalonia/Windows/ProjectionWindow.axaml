@@ -148,6 +148,14 @@
                                   IsVisible="False"
                                   Click="SendFile_Click"/>
 
+                            <!-- Visible only while the host has several displays and authorized control (see OnDisplaysChanged). -->
+                            <ComboBox x:Name="DisplayCombo"
+                                  MinWidth="200"
+                                  Margin="5,0"
+                                  IsVisible="False"
+                                  ToolTip.Tip="Switch the shared display"
+                                  SelectionChanged="Display_Changed"/>
+
                             <ToggleButton x:Name="PrivacyButton"
                                   Content="Privacy screen"
                                   Background="#444444"

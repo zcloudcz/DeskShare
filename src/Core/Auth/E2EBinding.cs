@@ -59,7 +59,80 @@ public static class E2EBinding
         ArgumentException.ThrowIfNullOrEmpty(passkey);
         ArgumentException.ThrowIfNullOrEmpty(serverId);
 
-        var ikm = Encoding.UTF8.GetBytes(NormalizePasskey(passkey));
+        return DeriveFromSecret(Encoding.UTF8.GetBytes(NormalizePasskey(passkey)), serverId);
+    }
+
+    /// <summary>Shortest permanent password we accept. Longer than the 9-character passkey, so the two never look alike.</summary>
+    public const int PermanentPasswordMinLength = 12;
+
+    /// <summary>
+    /// PBKDF2 work factor for the permanent password. Unlike the passkey, the password does not rotate, so the server
+    /// (or anyone who steals <c>authKey</c> from it) could brute-force it offline. 600 000 iterations of HMAC-SHA256
+    /// (OWASP 2023 guidance) make every single guess cost about as much as the viewer's one-time 0.5-1 s wait.
+    /// </summary>
+    public const int PermanentPasswordIterations = 600_000;
+
+    private const string PermanentSaltPrefix = "DeskShare/v1/perm/";
+
+    /// <summary>
+    /// The same two keys as <see cref="DeriveKeys"/>, but from a long-lived password instead of the rotating passkey:
+    /// <c>master = PBKDF2-SHA256(password, "DeskShare/v1/perm/" + serverId, 600000)</c>, then the usual HKDF step with
+    /// <c>master</c> as input. The PBKDF2 salt is public (it is the Server ID); it only exists so that one precomputed
+    /// table cannot attack every server at once.
+    /// </summary>
+    /// <param name="password">Exactly what the user typed (no upper-casing or dash removal, unlike a passkey). It is
+    /// Unicode-normalized (NFC) first, because the same visible text can arrive as different code points from
+    /// different keyboards/OSes; the web viewer does the same.</param>
+    public static DerivedKeys FromPermanentPassword(string password, string serverId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(password);
+        ArgumentException.ThrowIfNullOrEmpty(serverId);
+
+        var master = Rfc2898DeriveBytes.Pbkdf2(
+            Encoding.UTF8.GetBytes(password.Normalize(NormalizationForm.FormC)),
+            Encoding.UTF8.GetBytes(PermanentSaltPrefix + serverId),
+            PermanentPasswordIterations, HashAlgorithmName.SHA256, KeyBytes);
+        return DeriveFromSecret(master, serverId);
+    }
+
+    /// <summary>True when the input is a passkey: 9 letters/digits once dashes and spaces are removed.</summary>
+    public static bool LooksLikePasskey(string? input) =>
+        input != null && NormalizePasskey(input) is { Length: AuthenticationService.PasskeyLength } p && p.All(char.IsAsciiLetterOrDigit);
+
+    /// <summary>
+    /// What a viewer does with its one "passkey or password" field: a passkey goes through <see cref="DeriveKeys"/>,
+    /// anything else must be a permanent password (slow because of PBKDF2: call it off the UI thread).
+    /// </summary>
+    /// <exception cref="ArgumentException">Neither a passkey nor long enough to be a permanent password.</exception>
+    public static DerivedKeys DeriveFromUserInput(string? input, string serverId)
+    {
+        if (LooksLikePasskey(input)) return DeriveKeys(input!, serverId);
+        if (string.IsNullOrEmpty(input) || input.Length < PermanentPasswordMinLength)
+            throw new ArgumentException(
+                $"Enter the 9-character passkey or the permanent password (at least {PermanentPasswordMinLength} characters).", nameof(input));
+        return FromPermanentPassword(input, serverId);
+    }
+
+    /// <summary>
+    /// Null when <paramref name="password"/> may be set as a permanent password, otherwise the reason it may not.
+    /// A password that looks like a passkey is refused: viewers would treat it as a passkey and it could never match.
+    /// </summary>
+    public static string? ValidatePermanentPassword(string? password)
+    {
+        if (string.IsNullOrEmpty(password) || password.Length < PermanentPasswordMinLength)
+            return $"The password must have at least {PermanentPasswordMinLength} characters.";
+        if (LooksLikePasskey(password))
+            return "The password must not look like a passkey (9 letters or digits).";
+        // Input fields and copy/paste often add or drop surrounding spaces; refusing them avoids a password that
+        // only works when typed exactly right.
+        if (password.Trim().Length != password.Length)
+            return "The password must not start or end with a space.";
+        return null;
+    }
+
+    // Shared HKDF step: passkey and permanent password differ only in how the input secret is made.
+    private static DerivedKeys DeriveFromSecret(byte[] ikm, string serverId)
+    {
         var salt = Encoding.UTF8.GetBytes(SaltPrefix + serverId);
 
         var auth = HKDF.DeriveKey(HashAlgorithmName.SHA256, ikm, KeyBytes, salt, "auth"u8.ToArray());

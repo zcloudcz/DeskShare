@@ -1,5 +1,6 @@
 ﻿using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using DeskShare.Core.Displays;
 using DeskShare.Core.Interfaces;
 using DeskShare.Core.Models;
 using Serilog;
@@ -129,6 +130,9 @@ public sealed class WindowsInputController : IInputController
     private const int SM_CYSCREEN = 1;  // Primary monitor height
     private const int SM_CXVIRTUALSCREEN = 78;  // Virtual screen width (all monitors)
     private const int SM_CYVIRTUALSCREEN = 79;  // Virtual screen height (all monitors)
+    private const int SM_XVIRTUALSCREEN = 76;   // Virtual screen left (negative when a monitor lies left of the primary)
+    private const int SM_YVIRTUALSCREEN = 77;   // Virtual screen top
+    private const uint MOUSEEVENTF_VIRTUALDESK = 0x4000;
 
     #endregion
 
@@ -192,6 +196,13 @@ public sealed class WindowsInputController : IInputController
     public Func<string, bool>? AuthorizationRequested { get; set; }
 
     #endregion
+
+    // Display the viewer sees; null = primary monitor (the SendInput default).
+    private volatile object? _capturedDisplayBox;
+    private ScreenRect? _capturedDisplay => (ScreenRect?)_capturedDisplayBox;
+
+    /// <inheritdoc />
+    public void SetCapturedDisplay(ScreenRect? display) => _capturedDisplayBox = display;
 
     #region Constructor
 
@@ -465,6 +476,16 @@ public sealed class WindowsInputController : IInputController
 
         int absoluteX = (int)(input.X.Value * 65535);
         int absoluteY = (int)(input.Y.Value * 65535);
+        uint absoluteFlags = MOUSEEVENTF_ABSOLUTE;
+
+        // Without VIRTUALDESK the 0-65535 range spans the primary monitor only. When the viewer sees another
+        // display, map into the whole virtual screen instead.
+        if (_capturedDisplay is { } display)
+        {
+            var virtualScreen = new ScreenRect(GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN), screenWidth, screenHeight);
+            (absoluteX, absoluteY) = DisplayMapping.ToVirtualDesk(input.X.Value, input.Y.Value, display, virtualScreen);
+            absoluteFlags |= MOUSEEVENTF_VIRTUALDESK;
+        }
 
         var mouseInput = new INPUT
         {
@@ -476,7 +497,7 @@ public sealed class WindowsInputController : IInputController
                     X = absoluteX,
                     Y = absoluteY,
                     MouseData = 0,
-                    Flags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
+                    Flags = MOUSEEVENTF_MOVE | absoluteFlags,
                     Time = 0,
                     ExtraInfo = IntPtr.Zero
                 }

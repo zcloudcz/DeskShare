@@ -21,10 +21,12 @@ internal static class Installer
         FileLog.FileEnabled = false; // console only until %ProgramData%\DeskShare is proven ours (see PrepareDataDir)
         if (!IsAdmin()) return Fail("Administrator rights are required.");
         string? aside;
-        try { aside = PrepareDataDir(); }
+        string? policyAside;
+        try { aside = PrepareDataDir(); policyAside = QuarantineUntrustedPolicyDir(); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException) { return Fail(ex.Message, 3); }
         FileLog.FileEnabled = true;
         if (aside != null) FileLog.Write($"Existing {UnattendedPaths.DataDir} was not protected as expected, moved to {aside}; configuration reset to defaults.");
+        if (policyAside != null) FileLog.Write($"Existing machine policy folder was not admin-only, moved to {policyAside}; its settings are ignored.");
 
         sourceDir = Path.GetFullPath(sourceDir);
         var live = UnattendedPaths.InstallDir;
@@ -258,7 +260,7 @@ internal static class Installer
     /// Must not log to a file: nothing in that folder is trustworthy until this method has returned.
     /// Returns the quarantine path when an untrusted folder was moved aside, otherwise null.
     /// </summary>
-    private static string? PrepareDataDir()
+    internal static string? PrepareDataDir() // also used by PasswordCommand
     {
         var dir = UnattendedPaths.DataDir;
         string? aside = null;
@@ -281,7 +283,7 @@ internal static class Installer
         // Closes the race where someone re-creates the folder between our move and our create.
         if (!IsTrusted(dir)) throw new InvalidOperationException(dir + " is not protected as expected after creation; aborting.");
 
-        // ponytail: U1 keeps the rotating passkey (read it from the agent log). Permanent password + auth arrive in U3.
+        // Remote viewers use the permanent password (set-password, see PasswordCommand) or the rotating passkey from the agent log.
         if (!File.Exists(UnattendedPaths.ConfigPath))
             File.WriteAllText(UnattendedPaths.ConfigPath, """
                 {
@@ -289,6 +291,21 @@ internal static class Installer
                   "Security": { "EnableRemoteControl": false, "TrustClientPermanent": false }
                 }
                 """);
+        return aside;
+    }
+
+    /// <summary>
+    /// %ProgramData%\DeskShare.Policy is created by the MSI with an admin-only-write DACL. A standard user can pre-create it
+    /// when the service is installed WITHOUT the MSI, and the SYSTEM agent would then obey that policy; PolicyTrust already makes
+    /// the reader ignore it, and here it is also moved aside (like PrepareDataDir does) so a later MSI starts clean.
+    /// </summary>
+    private static string? QuarantineUntrustedPolicyDir()
+    {
+        var dir = Path.GetDirectoryName(MachinePolicy.DefaultPath)!;
+        if (!Directory.Exists(dir) || PolicyTrust.Problem(MachinePolicy.DefaultPath) == null) return null;
+        var aside = dir + ".untrusted-" + DateTime.Now.ToString("yyyyMMddHHmmss");
+        try { Directory.Move(dir, aside); }
+        catch (IOException ex) { throw new InvalidOperationException("Cannot move an untrusted " + dir + " aside (" + ex.Message + "); delete it manually and retry."); }
         return aside;
     }
 

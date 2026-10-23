@@ -51,6 +51,13 @@ public interface IInputController : IDisposable
     bool ApplyInput(InputMessage message);
 
     /// <summary>
+    /// Tells the controller which display the viewer sees, so normalized (0..1) pointer coordinates land on that
+    /// display. The rectangle is in virtual desktop pixels. Null (the default) means the primary display.
+    /// Controllers whose platform only has one capture target ignore it.
+    /// </summary>
+    void SetCapturedDisplay(Displays.ScreenRect? display) { }
+
+    /// <summary>
     /// Gets current input statistics.
     /// </summary>
     InputStatistics GetStatistics();

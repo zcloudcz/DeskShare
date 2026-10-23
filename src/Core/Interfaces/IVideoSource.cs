@@ -48,6 +48,12 @@ public interface IVideoSource : IDisposable
     /// </summary>
     /// <returns>Statistics object containing frame counts, drops, and bitrate information.</returns>
     VideoSourceStatistics GetStatistics();
+
+    /// <summary>
+    /// Asks the encoder(s) for a keyframe on the next pushed frame. Used when the picture changes completely
+    /// (the shared display was switched). The default does nothing, for sources that have no encoder.
+    /// </summary>
+    void RequestKeyFrame() { }
 }
 
 /// <summary>
