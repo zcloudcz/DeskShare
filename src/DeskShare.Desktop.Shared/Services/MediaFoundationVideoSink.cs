@@ -353,7 +353,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
             if (item.Format.Codec == VideoCodecsEnum.H264 && item.Replay == null && ContainsIdr(item.Data) && w.Queue.Count > 0)
             {
                 // An IDR resets the decoder: queued H.264 frames and catch-up replays before it would only be decoded in vain.
-                var keep = w.Queue.Where(i => i.Format.Codec != VideoCodecsEnum.H264 && i.Replay == null).ToArray();
+                var keep = w.Queue.Where(i => !IsH264Work(i)).ToArray();
                 w.Queue.Clear();
                 foreach (var other in keep) w.Queue.Enqueue(other);
             }
@@ -366,7 +366,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
                     // A dropped H.264 delta would break the reference chain and, if it was the last change of a static
                     // screen, would never be shown. Instead the queued H.264 frames become ONE catch-up item: the whole GOP
                     // (it already contains this frame) decoded again from its keyframe, which resets the decoder.
-                    var keep = w.Queue.Where(i => i.Format.Codec != VideoCodecsEnum.H264 && i.Replay == null).ToArray();
+                    var keep = w.Queue.Where(i => !IsH264Work(i)).ToArray();
                     w.Queue.Clear();
                     foreach (var other in keep) w.Queue.Enqueue(other);
                     item = new Item(null!, 0, Array.Empty<byte>(), default, _gop.ToArray());
@@ -383,6 +383,9 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
             System.Threading.Monitor.PulseAll(w.Gate);
         }
     }
+
+    // H.264 frames and catch-up snapshots: everything a newer GOP snapshot or an IDR makes obsolete.
+    private static bool IsH264Work(Item i) => i.Replay != null || i.Format.Codec == VideoCodecsEnum.H264;
 
     private static bool IsKeyframe(Item item) =>
         item.Format.Codec == VideoCodecsEnum.H264 ? ContainsIdr(item.Data) : item.Data.Length > 0 && (item.Data[0] & 1) == 0; // VP8: bit 0 of the frame tag is 0 for keyframes
@@ -410,18 +413,18 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         else _vp8OnFfmpeg = true;
         if (cappedOut) { _path = H264Path.FFmpeg; _vp8OnFfmpeg = true; }
 
-        // Everything the hung thread had queued is inside the GOP snapshot, except VP8 frames (no replay for those).
-        // The new worker gets the snapshot as its first item; if it hangs too, the next Abandon takes a fresh snapshot.
-        var h264 = stuck.Codec == VideoCodecsEnum.H264;
+        // Everything H.264 the hung thread had queued (frames and older catch-up snapshots) is inside the current GOP
+        // snapshot; only VP8 frames carry over (no replay for those). The H.264 decoder is gone with the thread whichever
+        // codec hung, so the new worker always starts with the snapshot; if it hangs too, the next Abandon takes a fresh one.
         Item[] leftovers;
         lock (stuck.Gate)
         {
-            leftovers = stuck.Queue.Where(i => !h264 || i.Format.Codec != VideoCodecsEnum.H264).ToArray();
+            leftovers = stuck.Queue.Where(i => !IsH264Work(i) && !i.StallCheck).ToArray();
             stuck.Queue.Clear();
         }
         _worker = StartWorker();
         AfterReplacementStarted?.Invoke();
-        if (h264 && _gop.Count > 0)
+        if (_gop.Count > 0)
             lock (_worker.Gate)
             {
                 _worker.Queue.Enqueue(new Item(null!, 0, Array.Empty<byte>(), default, _gop.ToArray()));
@@ -439,7 +442,7 @@ internal sealed class MediaFoundationVideoSink : IVideoSink, IDisposable
         {
             lock (w.Gate)
             {
-                var keep = w.Queue.Where(i => i.Format.Codec != VideoCodecsEnum.H264).ToArray();
+                var keep = w.Queue.Where(i => !IsH264Work(i)).ToArray();
                 w.Queue.Clear();
                 foreach (var item in keep) w.Queue.Enqueue(item);
             }

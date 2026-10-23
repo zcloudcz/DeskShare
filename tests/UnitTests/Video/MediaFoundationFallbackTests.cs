@@ -669,4 +669,58 @@ public sealed class MediaFoundationFallbackTests
             sink.Dispose();
         }
     }
+
+    // Call 1 waits for First (then works), call 2 waits for Second and fails, every later call fails.
+    private sealed class TwoPauseDecoder : IH264FrameDecoder
+    {
+        public readonly ManualResetEventSlim First = new(), Second = new(), InFirst = new(), InSecond = new();
+        private int _n;
+        public int Decode(byte[] annexB, Action<byte[], int, int> onFrame)
+        {
+            var n = ++_n;
+            if (n == 1) { InFirst.Set(); First.Wait(); onFrame(new byte[16], 2, 2); return 1; }
+            if (n == 2) { InSecond.Set(); Second.Wait(); }
+            throw new InvalidOperationException("device lost");
+        }
+        public void Dispose() { }
+    }
+
+    [Fact]
+    public void OverflowDuringACatchUp_ThenFallback_EndsOnTheNewestFrame_NotAnOlderSnapshot()
+    {
+        var broken = new TwoPauseDecoder();
+        var software = new FakeDecoder(_ => true);
+        var pictures = new List<int>();
+        var sink = MakeWithHangLimit(p => p == H264Path.MediaFoundationGpu ? broken : software, TimeSpan.FromSeconds(30), pictures);
+        var sent = new List<byte> { 1 };
+        void Send(int count)
+        {
+            for (var k = 0; k < count; k++)
+            {
+                var tag = (byte)(2 + sent.Count % 200);
+                sent.Add(tag);
+                sink.GotVideoFrame(Ep, (uint)sent.Count, Delta(tag), H264);
+            }
+        }
+        try
+        {
+            sink.GotVideoFrame(Ep, 0, Key(1), H264);
+            Assert.True(broken.InFirst.Wait(5000));
+            Send(150);                       // overflow: catch-up A (older snapshot) + later frames
+            broken.First.Set();
+            Assert.True(broken.InSecond.Wait(5000)); // now replaying A, paused
+            Send(100);                       // overflow again while A runs: catch-up B is queued
+            broken.Second.Set();             // A's replay fails 3 times -> fallback with the CURRENT GOP; B is obsolete
+            Assert.True(sink.WaitIdle(TimeSpan.FromSeconds(10)));
+
+            Assert.Equal(H264Path.MediaFoundationSoftware, sink.CurrentPath);
+            Assert.Equal(sent.Last(), software.Seen.Last());   // ends on the newest frame, not B's older end
+        }
+        finally
+        {
+            broken.First.Set();
+            broken.Second.Set();
+            sink.Dispose();
+        }
+    }
 }
