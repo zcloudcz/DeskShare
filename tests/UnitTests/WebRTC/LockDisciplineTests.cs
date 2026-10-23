@@ -26,7 +26,13 @@ public sealed class LockDisciplineTests : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(_folder)) Directory.Delete(_folder, recursive: true);
+        // A virus scanner on Windows CI may still hold a just-deleted .part file for a moment: retry, never fail the test.
+        for (var attempt = 0; attempt < 10 && Directory.Exists(_folder); attempt++)
+        {
+            try { Directory.Delete(_folder, recursive: true); }
+            catch (IOException) { Thread.Sleep(100); }
+            catch (UnauthorizedAccessException) { Thread.Sleep(100); }
+        }
     }
 
     private static JsonElement Json(string json) => JsonDocument.Parse(json).RootElement;
@@ -84,7 +90,14 @@ public sealed class LockDisciplineTests : IDisposable
         receiver.Handle("file_offer", Json($$"""{"type":"file_offer","id":"{{id}}","name":"a.txt","size":10}"""), json => { lock (viaA) viaA.Add(json); return true; });
         // A second viewer's message arrives later; the idle timeout of A's transfer must still answer A.
         receiver.Handle("file_cancel", Json("""{"type":"file_cancel","id":"00000000-0000-0000-0000-000000000000"}"""), json => { lock (viaB) viaB.Add(json); return true; });
-        await Task.Delay(300);
+        // The idle timer runs on the thread pool, which a busy CI agent may start late: wait for the reply
+        // instead of a fixed delay.
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (DateTime.UtcNow < deadline)
+        {
+            lock (viaA) if (viaA.Exists(r => r.Contains("file_error"))) break;
+            await Task.Delay(20);
+        }
 
         lock (viaA) Assert.Contains(viaA, r => r.Contains("file_error"));
         lock (viaB) Assert.Empty(viaB);
