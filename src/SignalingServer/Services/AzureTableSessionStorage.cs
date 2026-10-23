@@ -63,6 +63,9 @@ public class AzureTableSessionStorage : IServerSessionStorage
                 RowKey = registration.ServerId,
                 ServerId = registration.ServerId,
                 Passkey = HashPasskey(registration.Passkey),
+                // Hashed like the passkey. "" rather than null when there is no password: the upsert below merges, and
+                // a null property is simply left out, so it would keep a password the owner has removed.
+                PermanentAuthKey = registration.PermanentAuthKey is { } permanent ? HashPasskey(permanent) : "",
                 ValidTo = registration.ValidTo,
                 RemoteControlEnabled = registration.RemoteControlEnabled,
                 TrustClientPermanent = registration.TrustClientPermanent,
@@ -168,10 +171,9 @@ public class AzureTableSessionStorage : IServerSessionStorage
             {
                 // The table holds a hash of the registered passkey; compare hashes in constant time.
                 // A session without a stored passkey fails closed.
-                if (string.IsNullOrEmpty(session.Passkey) || string.IsNullOrEmpty(authRequest.Passkey) ||
-                    !CryptographicOperations.FixedTimeEquals(
-                        Encoding.UTF8.GetBytes(session.Passkey),
-                        Encoding.UTF8.GetBytes(HashPasskey(authRequest.Passkey))))
+                // The permanent password's authKey is accepted too; both compares always run ("|", not "||").
+                if (string.IsNullOrEmpty(authRequest.Passkey) ||
+                    !(HashMatches(session.Passkey, authRequest.Passkey) | HashMatches(session.PermanentAuthKey, authRequest.Passkey)))
                 {
                     _logger.LogWarning(
                         "Authentication failed - invalid passkey: {ServerId}/{ClientId}",
@@ -392,6 +394,10 @@ public class AzureTableSessionStorage : IServerSessionStorage
         };
     }
 
+    private static bool HashMatches(string? storedHash, string provided) =>
+        !string.IsNullOrEmpty(storedHash) &&
+        CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(storedHash), Encoding.UTF8.GetBytes(HashPasskey(provided)));
+
     private static string HashPasskey(string passkey)
     {
         // Upper-cased so the comparison stays case-insensitive like the in-memory path.
@@ -418,6 +424,7 @@ internal class ServerSessionEntity : ITableEntity
 
     public string ServerId { get; set; } = string.Empty;
     public string Passkey { get; set; } = string.Empty;
+    public string? PermanentAuthKey { get; set; } // SHA-256 hash, like Passkey
     public DateTime ValidTo { get; set; }
     public bool RemoteControlEnabled { get; set; }
     public bool TrustClientPermanent { get; set; }

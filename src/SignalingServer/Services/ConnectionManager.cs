@@ -38,6 +38,25 @@ public sealed class ConnectionManager : IDisposable
     private readonly ConcurrentDictionary<string, (string ClientId, string ServerId, byte[]? OwnerHash, DateTime ExpiresAt)> _resumeTokens = new();
     private static readonly TimeSpan ResumeTokenLifetime = TimeSpan.FromMinutes(15);
 
+    // Failed-attempt lockout per ServerId, only for servers that registered a permanent password. The passkey rotates
+    // every 45 s, so guessing it is hopeless; a permanent password does not, so an attacker spread over many IPs
+    // (the per-IP rate limit does not stop that) could keep guessing. Accepted ceiling: by failing on purpose,
+    // anyone who knows a Server ID can lock its owner out for up to MaxPasswordLockout at a time.
+    // ponytail: a burst of parallel requests that all pass the "locked?" check before the 5th failure is recorded
+    // gets through; the per-IP limit bounds that. Make check+record one atomic step if it ever matters.
+    private readonly ConcurrentDictionary<string, PasswordLockout> _passwordLockouts = new();
+    /// <summary>Consecutive failures that lock a ServerId with a permanent password.</summary>
+    public const int PasswordLockoutThreshold = 5;
+    private static readonly TimeSpan FirstPasswordLockout = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan MaxPasswordLockout = TimeSpan.FromMinutes(15);
+
+    private sealed class PasswordLockout
+    {
+        public int Failures;            // consecutive, reset by a success
+        public TimeSpan LastLockout;     // doubles with every lockout, up to MaxPasswordLockout
+        public DateTime LockedUntilUtc;
+    }
+
     // ServerId ownership claims (trust on first use): ServerId -> (SHA256 of owner secret, last successful registration).
     // Only the hash is kept so the secret itself never sits in memory/logs longer than the request.
     private readonly ConcurrentDictionary<string, (byte[] SecretHash, DateTime LastSeen)> _ownerClaims = new();
@@ -466,6 +485,51 @@ public sealed class ConnectionManager : IDisposable
     public bool IsKnownServerId(string id) => _serverSessions.ContainsKey(id) || _ownerClaims.ContainsKey(id);
 
     /// <summary>
+    /// Called after every successful /register: the lockout applies only while the server offers a permanent password
+    /// (for both storage backends, which is why it lives here and not in the session). Removing the password drops
+    /// the lockout state.
+    /// </summary>
+    public void SetPermanentPasswordRegistered(string serverId, bool registered)
+    {
+        if (registered) _passwordLockouts.TryAdd(serverId, new PasswordLockout());
+        else _passwordLockouts.TryRemove(serverId, out _);
+    }
+
+    /// <summary>True while /authenticate must refuse every attempt for this ServerId (passkey included: we cannot
+    /// tell which one a viewer is trying without checking it, and checking is exactly what the lockout prevents).</summary>
+    public bool IsPasswordLockedOut(string serverId, DateTime? now = null)
+    {
+        if (!_passwordLockouts.TryGetValue(serverId, out var l)) return false;
+        lock (l) return (now ?? DateTime.UtcNow) < l.LockedUntilUtc;
+    }
+
+    /// <summary>
+    /// Counts an /authenticate result. The 5th consecutive failure locks for 1 min; every further failure after a
+    /// lockout locks again for twice as long (2, 4, 8, 15, 15 ... min). A success resets everything.
+    /// </summary>
+    public void RecordPasswordAttempt(string serverId, bool success, DateTime? now = null)
+    {
+        if (!_passwordLockouts.TryGetValue(serverId, out var l)) return;
+        lock (l)
+        {
+            if (success)
+            {
+                l.Failures = 0;
+                l.LastLockout = TimeSpan.Zero;
+                l.LockedUntilUtc = default;
+                return;
+            }
+
+            if (++l.Failures < PasswordLockoutThreshold) return;
+            l.LastLockout = l.LastLockout == TimeSpan.Zero
+                ? FirstPasswordLockout
+                : TimeSpan.FromTicks(Math.Min(l.LastLockout.Ticks * 2, MaxPasswordLockout.Ticks));
+            l.LockedUntilUtc = (now ?? DateTime.UtcNow) + l.LastLockout;
+            _logger.LogWarning("Too many failed attempts, ServerId locked | ServerId: {ServerId} | For: {Lockout}", serverId, l.LastLockout);
+        }
+    }
+
+    /// <summary>
     /// Drops ownership claims that have not been refreshed within the claim lifetime.
     /// Called from the periodic cleanup timer; public so tests can drive it with a fake clock.
     /// </summary>
@@ -517,6 +581,7 @@ public sealed class ConnectionManager : IDisposable
                 ValidTo = registration.ValidTo,
                 RemoteControlEnabled = registration.RemoteControlEnabled,
                 TrustClientPermanent = registration.TrustClientPermanent,
+                PermanentAuthKey = registration.PermanentAuthKey,
                 Status = SessionStatus.Registered,
                 CreatedAt = DateTime.UtcNow,
                 LastActivity = DateTime.UtcNow
@@ -530,6 +595,8 @@ public sealed class ConnectionManager : IDisposable
                 existing.ValidTo = registration.ValidTo;
                 existing.RemoteControlEnabled = registration.RemoteControlEnabled;
                 existing.TrustClientPermanent = registration.TrustClientPermanent;
+                // Overwritten, not merged: a registration without it means the owner removed the password.
+                existing.PermanentAuthKey = registration.PermanentAuthKey;
                 existing.Status = SessionStatus.Registered;
                 existing.LastActivity = DateTime.UtcNow;
                 return existing;
@@ -692,8 +759,14 @@ public sealed class ConnectionManager : IDisposable
             // ServerId is not enough; a session without a stored passkey fails closed. The passkey also has to
             // be unexpired: session.IsValid ignores ValidTo for a Connected session (it only looks at activity),
             // so a leaked passkey would otherwise stay usable for as long as someone is connected.
-            if ((now ?? DateTime.UtcNow) >= session.ValidTo ||
-                !AuthenticationService.PasskeyMatches(session.Passkey, auth.Passkey))
+            // The permanent password's authKey is accepted too. Both compares always run (non-short-circuit "|") so
+            // the response time does not tell an attacker which of the two a guess was checked against.
+            var credentialMatches =
+                AuthenticationService.PasskeyMatches(session.Passkey, auth.Passkey) |
+                AuthenticationService.PasskeyMatches(session.PermanentAuthKey, auth.Passkey);
+            // ValidTo still applies to the permanent path: the sender refreshes it every 45 s while alive, so it is
+            // also our "the host is online" signal.
+            if ((now ?? DateTime.UtcNow) >= session.ValidTo || !credentialMatches)
             {
                 _logger.LogWarning("Client authentication failed - invalid passkey | ServerId: {ServerId} | ClientId: {ClientId}",
                     auth.ServerId, auth.ClientId);

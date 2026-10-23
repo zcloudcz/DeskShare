@@ -23,6 +23,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DeskShare.Unattended\DeskShare.Unattended.csproj" />
+    <!-- The key file format is owned by Core (the agent reads it). Linked as source instead of referencing Core, which
+         would pull WebRTC/codec assemblies into the elevated single-file helper. -->
+    <Compile Include="..\Core\Auth\PermanentKeyFile.cs" Link="PermanentKeyFile.cs" />
   </ItemGroup>
 
 </Project>

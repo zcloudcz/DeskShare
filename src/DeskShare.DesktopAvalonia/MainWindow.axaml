@@ -502,15 +502,14 @@
 
                                 <!-- Passkey (Required) -->
                                 <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Margin="0,15,0,0">
-                                    <TextBlock Text="Passkey (9 characters)"
+                                    <TextBlock Text="Passkey (9 characters) or permanent password"
                                              FontSize="12"
                                              Foreground="#666666"
                                              Margin="0,0,0,5"/>
                                     <TextBox x:Name="ManualPasskeyTextBox"
                                            Classes="modernTextBox"
-                                           FontFamily="Consolas"
-                                           MaxLength="11"/>
-                                    <TextBlock Text="Get this from the server screen"
+                                           FontFamily="Consolas"/>
+                                    <TextBlock Text="Get the passkey from the server screen, or use the password set for unattended access"
                                              FontSize="10"
                                              Foreground="#868E96"
                                              Margin="0,4,0,0"/>

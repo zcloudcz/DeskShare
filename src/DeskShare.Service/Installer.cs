@@ -258,7 +258,7 @@ internal static class Installer
     /// Must not log to a file: nothing in that folder is trustworthy until this method has returned.
     /// Returns the quarantine path when an untrusted folder was moved aside, otherwise null.
     /// </summary>
-    private static string? PrepareDataDir()
+    internal static string? PrepareDataDir() // also used by PasswordCommand
     {
         var dir = UnattendedPaths.DataDir;
         string? aside = null;
@@ -281,7 +281,7 @@ internal static class Installer
         // Closes the race where someone re-creates the folder between our move and our create.
         if (!IsTrusted(dir)) throw new InvalidOperationException(dir + " is not protected as expected after creation; aborting.");
 
-        // ponytail: U1 keeps the rotating passkey (read it from the agent log). Permanent password + auth arrive in U3.
+        // Remote viewers use the permanent password (set-password, see PasswordCommand) or the rotating passkey from the agent log.
         if (!File.Exists(UnattendedPaths.ConfigPath))
             File.WriteAllText(UnattendedPaths.ConfigPath, """
                 {

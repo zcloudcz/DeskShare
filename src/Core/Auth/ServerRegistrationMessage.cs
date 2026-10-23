@@ -47,6 +47,14 @@ public sealed class ServerRegistrationMessage
     /// Null for older senders that predate this field.
     /// </summary>
     public string? OwnerSecret { get; set; }
+
+    /// <summary>
+    /// Optional <c>authKey</c> derived from the host's permanent password (<see cref="E2EBinding.FromPermanentPassword"/>,
+    /// base64url, 43 characters). A viewer may then authenticate with it instead of the current passkey's authKey.
+    /// The password itself never leaves the host. Only honoured together with an <see cref="OwnerSecret"/>.
+    /// Null = passkey only (also what older senders send).
+    /// </summary>
+    public string? PermanentAuthKey { get; set; }
 }
 
 /// <summary>
