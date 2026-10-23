@@ -33,8 +33,9 @@
   <!-- libvpx (vpxmd.dll from SIPSorceryMedia.Encoders, VP8 encode and decode) links the VC++ runtime dynamically and fails
        to load on a clean Windows without the VC++ Redistributable (no VP8 video at all on a PC without a GPU encoder).
        vcruntime140.dll is a redistributable file Microsoft allows to ship next to the app ("app-local"), so it is copied
-       from the build machine (any Windows with the redistributable, e.g. the CI runner) into every app and agent output. -->
-  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows')) and Exists('$(SystemRoot)\System32\vcruntime140.dll')">
+       from the build machine (any Windows with the redistributable, e.g. the CI runner) into every app and agent output.
+       System32 holds the x64 runtime, so x86 builds are left out (they would need the SysWOW64 one; we ship win-x64 only). -->
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows')) and '$(Platform)' != 'x86' and '$(PlatformTarget)' != 'x86' and Exists('$(SystemRoot)\System32\vcruntime140.dll')">
     <None Include="$(SystemRoot)\System32\vcruntime140.dll" Link="vcruntime140.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Visible="false" />
   </ItemGroup>
 
