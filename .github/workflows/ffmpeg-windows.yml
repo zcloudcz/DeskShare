@@ -8,7 +8,7 @@ name: ffmpeg-windows
 on:
   workflow_dispatch:
   push:
-    branches: [main, build/ffmpeg-min-windows]
+    branches: [main]
     paths:
       - 'scripts/ffmpeg-win/**'
       - '.github/workflows/ffmpeg-windows.yml'
