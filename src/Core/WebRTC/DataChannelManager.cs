@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using DeskShare.Core.Auth;
 using DeskShare.Core.Interfaces;
 using DeskShare.Core.Models;
+using DeskShare.Core.Safety;
 using Serilog;
 using SIPSorcery.Net;
 
@@ -95,9 +96,57 @@ public sealed class DataChannelManager : IDisposable
     public void BeginPeer(PeerContext peer)
     {
         ArgumentNullException.ThrowIfNull(peer);
-        _peer.Retire(); // first: waits for a message handler of the old peer that is still running
+        var previous = _peer;
+        var wasVerified = previous.IsVerified;
+        previous.Retire(); // first: waits for a message handler of the old peer that is still running
         _peer = peer;
         DetachDataChannel();
+        CancelPendingQuestions();
+        if (wasVerified)
+            EndViewerSession(previous);
+    }
+
+    /// <summary>
+    /// Unattended agent: asked once per connection, after the viewer's e2e binding verified and BEFORE it gets video or any
+    /// capability. True admits it; false (or the <see cref="AdmissionTimeout"/>) refuses it. Null admits everyone.
+    /// The token is cancelled when the viewer goes away, so the question on screen can close.
+    /// </summary>
+    public Func<CancellationToken, Task<bool>>? AdmitViewer { get; set; }
+
+    /// <summary>How long the person at the computer has to answer <see cref="AdmitViewer"/>.</summary>
+    public TimeSpan AdmissionTimeout { get; set; } = ControlApprovalGate.DefaultTimeout;
+
+    /// <summary>
+    /// Attended app: control needs the host's explicit approval for every session. Set means "viewers may ask"; the control
+    /// authorization is then NOT given when sharing starts but only after the person clicked Allow, and it ends with the session.
+    /// </summary>
+    public ControlApprovalGate? ControlApproval { get; set; }
+
+    /// <summary>Raised when the host refused (or did not answer) the admission question; the session closes the connection.</summary>
+    public event EventHandler<PeerContext>? ViewerAdmissionDenied;
+
+    /// <summary>Raised when a verified viewer is gone (its channel closed or another connection replaced it).</summary>
+    public event EventHandler<PeerContext>? ViewerEnded;
+
+    /// <summary>Raised with the size in bytes of every clipboard message sent to the viewer.</summary>
+    public event Action<int>? ClipboardSent;
+
+    private CancellationTokenSource? _admissionCts;
+
+    private void CancelPendingQuestions()
+    {
+        ControlApproval?.CancelPending();
+        try { Interlocked.Exchange(ref _admissionCts, null)?.Cancel(); }
+        catch (ObjectDisposedException) { /* the question just finished */ }
+    }
+
+    private void EndViewerSession(PeerContext peer)
+    {
+        CancelPendingQuestions();
+        // Control approved for this viewer ends with its session: the next one has to be approved again.
+        if (ControlApproval != null && _inputController?.IsEnabled == true)
+            _inputController.RevokeAuthorization();
+        ViewerEnded?.Invoke(this, peer);
     }
 
     /// <summary>Raised with the verified peer's context when the viewer's e2e binding verified.</summary>
@@ -156,7 +205,10 @@ public sealed class DataChannelManager : IDisposable
     public bool TrySendClipboard(string json)
     {
         var peer = _peer; // one read: subscription check and send concern the same peer connection
-        return peer.ClipboardSubscribed && SendOn(peer, json);
+        var sent = peer.ClipboardSubscribed && SendOn(peer, json);
+        if (sent)
+            ClipboardSent?.Invoke(Encoding.UTF8.GetByteCount(json));
+        return sent;
     }
 
     /// <summary>
@@ -379,9 +431,13 @@ public sealed class DataChannelManager : IDisposable
     {
         _logger.Information("DataChannel closed: Label={Label}, ID={Id}",
             _dataChannel?.label, _dataChannel?.id);
-        _peer.Revoke();
+        var peer = _peer;
+        var wasVerified = peer.IsVerified;
+        peer.Revoke();
         FileReceiver?.Abort();
         _privacyScreen?.Disable("channel_closed");
+        if (wasVerified)
+            EndViewerSession(peer);
 
         ChannelClosed?.Invoke(this, EventArgs.Empty);
     }
@@ -521,6 +577,11 @@ public sealed class DataChannelManager : IDisposable
         var granted = GrantedFor(peer);
         if ((granted & required) != required)
         {
+            // The viewer asks for its capabilities as soon as its own check passed, while the host is still being asked whether
+            // it may connect. Tell it why nothing happens (the answer to its request follows when the host decided).
+            if (typeName == "authorization_request" && peer.AdmissionStarted)
+                return () => SendOn(peer, JsonSerializer.Serialize(new { type = "approval_pending", what = "connection" }), requireVerified: false);
+
             LogRejection(typeName, $"capability {required} not granted");
             // Tell a viewer that offers a file anyway (stale UI, other client) instead of leaving it waiting.
             if (typeName == "file_offer" && FileReceiver.TryGetId(root) is { } offerId)
@@ -541,24 +602,25 @@ public sealed class DataChannelManager : IDisposable
 
             if (messageType == "authorization_request")
             {
-                // The host decides with the "Allow remote control" checkbox, which authorizes the input
-                // controller when sharing starts. Report that state; the browser only sends input once
-                // it got authorized = true.
+                // Without a ControlApproval the host decided with the "Allow remote control" checkbox, which authorized the
+                // input controller when sharing started: report that state. The viewer only sends input once it got
+                // authorized = true.
+                // With a ControlApproval, "interactive" requests (the viewer's user clicked "Enable control") ask the person at
+                // the computer; the first, automatic request only learns what is possible ("requestable").
+                var interactive = root.TryGetProperty("interactive", out var interactiveElement) && interactiveElement.ValueKind == JsonValueKind.True;
                 bool authorized = _inputController?.IsEnabled ?? false;
-                _logger.Information("Remote control requested by viewer, authorized: {Authorized}", authorized);
-                // "clipboard" tells the viewer whether the host shares the text clipboard (only then its buttons are usable).
-                var clipboard = (granted & SessionCapabilities.Clipboard) != 0;
-                // "files" likewise tells the viewer whether it may send files to this host.
-                var files = (granted & SessionCapabilities.FileTransfer) != 0;
-                // "privacy" says whether the viewer may offer its privacy screen button.
-                var privacy = (granted & SessionCapabilities.PrivacyScreen) != 0;
-                return () =>
+                var approval = ControlApproval;
+                _logger.Information("Remote control requested by viewer, authorized: {Authorized}, interactive: {Interactive}", authorized, interactive);
+                if (approval != null && interactive && !authorized)
                 {
-                    SendJsonOn(peer, new { type = "authorization_response", authorized, clipboard, files, privacy, timestamp = DateTime.UtcNow });
-                    // The display list follows to the same peer; its viewer shows the picker only when it also has control.
-                    if (DisplaySwitcher is { } displays)
-                        SendOn(peer, displays.BuildMessage());
-                };
+                    return () =>
+                    {
+                        SendOn(peer, JsonSerializer.Serialize(new { type = "approval_pending", what = "control" }));
+                        _ = RunControlApprovalAsync(peer, approval);
+                    };
+                }
+                var requestable = approval != null && !authorized;
+                return () => SendAuthorizationResponse(peer, authorized, granted, requestable);
             }
 
             if (messageType == "switch_display")
@@ -638,15 +700,101 @@ public sealed class DataChannelManager : IDisposable
         };
     }
 
+    // The answer to "authorization_request": what the host allows, in the viewer's vocabulary. Also sent unasked once a
+    // waiting viewer was admitted or its control request was answered.
+    private void SendAuthorizationResponse(PeerContext peer, bool authorized, SessionCapabilities granted, bool requestable = false, string? reason = null)
+    {
+        // "clipboard" tells the viewer whether the host shares the text clipboard (only then its buttons are usable).
+        var clipboard = (granted & SessionCapabilities.Clipboard) != 0;
+        // "files" likewise tells the viewer whether it may send files to this host.
+        var files = (granted & SessionCapabilities.FileTransfer) != 0;
+        // "privacy" says whether the viewer may offer its privacy screen button.
+        var privacy = (granted & SessionCapabilities.PrivacyScreen) != 0;
+        SendJsonOn(peer, new { type = "authorization_response", authorized, clipboard, files, privacy, requestable, reason, timestamp = DateTime.UtcNow });
+        // The display list follows to the same peer; its viewer shows the picker only when it also has control.
+        if (DisplaySwitcher is { } displays)
+            SendOn(peer, displays.BuildMessage());
+    }
+
+    // Runs outside the peer's lock (an effect). Asks the person at the computer and answers the peer that asked.
+    private async Task RunControlApprovalAsync(PeerContext peer, ControlApprovalGate approval)
+    {
+        try
+        {
+            var outcome = await approval.RequestAsync(peer).ConfigureAwait(false);
+            if (outcome == ApprovalOutcome.Ignored || peer.IsRetired)
+                return; // the viewer left while the question was open: nothing to grant, nobody to tell
+
+            var authorized = false;
+            if (outcome == ApprovalOutcome.Allowed && _inputController != null)
+            {
+                authorized = await _inputController.RequestAuthorizationAsync("approved-by-host").ConfigureAwait(false);
+                if (peer.IsRetired)
+                {
+                    // The viewer left in the instant between the click and the authorization: take it back.
+                    if (authorized) _inputController.RevokeAuthorization();
+                    return;
+                }
+            }
+
+            SendAuthorizationResponse(peer, authorized, GrantedFor(peer),
+                reason: authorized ? null : outcome == ApprovalOutcome.TimedOut ? "timeout" : "denied");
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error while asking the host for control approval");
+        }
+    }
+
+    // Unattended agent: the viewer's binding verified, now the person at the computer decides whether it may connect.
+    private async Task AdmitThenVerifyAsync(PeerContext peer, Func<CancellationToken, Task<bool>> admit)
+    {
+        var cts = new CancellationTokenSource(AdmissionTimeout);
+        Interlocked.Exchange(ref _admissionCts, cts)?.Cancel(); // an older question is moot
+        var allowed = false;
+        try
+        {
+            allowed = await admit(cts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            if (ex is not OperationCanceledException)
+                _logger.Error(ex, "Admission question failed; the viewer is refused");
+        }
+        finally
+        {
+            Interlocked.CompareExchange(ref _admissionCts, null, cts);
+            cts.Dispose();
+        }
+
+        // The effect runs after the question: judge again whether this connection is still the live one.
+        if (peer.IsRetired)
+            return;
+
+        if (!allowed)
+        {
+            SendOn(peer, JsonSerializer.Serialize(new { type = "approval_denied", what = "connection" }), requireVerified: false);
+            ViewerAdmissionDenied?.Invoke(this, peer);
+            return;
+        }
+
+        if (!peer.TryVerify())
+            return;
+
+        _logger.Information("Viewer was admitted by the host after the end-to-end binding check");
+        ViewerVerified?.Invoke(this, peer);
+        SendAuthorizationResponse(peer, _inputController?.IsEnabled ?? false, GrantedFor(peer), ControlApproval != null && _inputController?.IsEnabled != true);
+    }
+
     /// <summary>
     /// Verifies the viewer's <c>e2e_bind</c>. On success the peer gets its normal grants and receives the sender's own
     /// bind; on failure nothing is sent back (the sender's mac must not be handed to an unverified peer).
     /// </summary>
     private void HandleViewerBind(PeerContext peer, JsonElement message)
     {
-        if (VerifyViewerBind == null || peer.IsVerified)
+        if (VerifyViewerBind == null || peer.IsVerified || (AdmitViewer != null && peer.AdmissionStarted))
         {
-            return; // binding not in use, or already done: a repeated message changes nothing
+            return; // binding not in use, or already done / waiting for the host's answer: a repeated message changes nothing
         }
 
         string? senderMac = null;
@@ -667,6 +815,14 @@ public sealed class DataChannelManager : IDisposable
         // peer because its MAC just verified; TrySend still refuses a retired peer.
         var reply = JsonSerializer.Serialize(new { type = "e2e_bind", v = E2EBinding.Version, role = E2EBinding.SenderRole, mac = senderMac });
         SendOn(peer, reply, requireVerified: false);
+
+        // Unattended confirmation: the peer stays unverified (no video, no grants) until the host says yes.
+        if (AdmitViewer is { } admit)
+        {
+            if (peer.TryBeginAdmission())
+                _ = AdmitThenVerifyAsync(peer, admit);
+            return;
+        }
 
         // Commits to the captured peer only, and only if it was not retired meanwhile.
         if (!peer.TryVerify())

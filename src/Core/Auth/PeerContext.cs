@@ -61,6 +61,22 @@ public sealed class PeerContext
         }
     }
 
+    private volatile bool _admissionStarted;
+
+    /// <summary>True once the host was asked whether this viewer may connect (unattended confirmation); it is asked once per connection.</summary>
+    public bool AdmissionStarted => _admissionStarted;
+
+    /// <summary>Marks the admission question as started. Returns false when it already was, or the connection was retired.</summary>
+    public bool TryBeginAdmission()
+    {
+        lock (_lock)
+        {
+            if (_dead || _admissionStarted) return false;
+            _admissionStarted = true;
+            return true;
+        }
+    }
+
     /// <summary>
     /// Runs <paramref name="send"/> on THIS connection's data channel, but only if the context is alive, (optionally)
     /// verified and the channel is open. Check and send happen under the lock <see cref="Retire"/> needs.

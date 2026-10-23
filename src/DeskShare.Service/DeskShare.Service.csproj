@@ -19,6 +19,7 @@
     <!-- ServiceBase: needed instead of Microsoft.Extensions.Hosting.WindowsServices because that lifetime does not
          subscribe to SERVICE_CONTROL_SESSIONCHANGE (CanHandleSessionChangeEvent stays false and is not overridable). -->
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.1" />
+    <PackageReference Include="System.Diagnostics.EventLog" Version="8.0.1" />
   </ItemGroup>
 
   <ItemGroup>
