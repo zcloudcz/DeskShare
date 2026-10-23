@@ -642,7 +642,9 @@ public class ClientManager : IDisposable
                         && doc.RootElement.TryGetProperty("authorized", out var authorized) && authorized.ValueKind == JsonValueKind.True, peer);
                     var controlGranted = doc.RootElement.TryGetProperty("authorized", out var control) && control.ValueKind == JsonValueKind.True;
                     UpdateDisplays(peer, controlGranted);
-                    _hostAllowsRequests = ControlRequestStates.IsRequestable(doc.RootElement);
+                    // A grant answers "requestable: false" (nothing left to ask for); that must not erase what the earlier probe
+                    // said, or after "Stop control" the viewer could never ask again.
+                    _hostAllowsRequests = ControlRequestStates.NextHostAllowsRequests(doc.RootElement, _hostAllowsRequests);
                     RaiseControlRequest(peer, ControlRequestStates.FromAuthorizationResponse(doc.RootElement));
                 }
                 else if (messageType == "authorization_revoked")

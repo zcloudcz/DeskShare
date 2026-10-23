@@ -38,6 +38,11 @@ public static class ControlRequestStates
     }
 
     /// <summary>After the host revoked control: ask again if the host takes requests, otherwise nothing is offered.</summary>
+    /// <summary>Whether the host accepts control requests, kept across a grant (which answers requestable:false).</summary>
+    public static bool NextHostAllowsRequests(System.Text.Json.JsonElement response, bool previous) =>
+        IsRequestable(response)
+        || (previous && response.TryGetProperty("authorized", out var a) && a.ValueKind == System.Text.Json.JsonValueKind.True);
+
     public static ControlRequestState AfterRevoked(bool hostAllowsRequests) =>
         hostAllowsRequests ? ControlRequestState.Requestable : ControlRequestState.Unavailable;
 }

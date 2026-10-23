@@ -30,4 +30,15 @@ public sealed class ControlRequestStatesTests
     [Fact]
     public void HostStopsControl_WithoutRequests_NothingIsOffered() =>
         Assert.Equal(ControlRequestState.Unavailable, ControlRequestStates.AfterRevoked(false));
+
+    [Fact]
+    public void ProbeThenGrantThenRevoke_KeepsTheRequestButton()
+    {
+        static System.Text.Json.JsonElement J(string json) => System.Text.Json.JsonDocument.Parse(json).RootElement;
+        var allows = ControlRequestStates.NextHostAllowsRequests(J("""{"authorized":false,"requestable":true}"""), false);
+        allows = ControlRequestStates.NextHostAllowsRequests(J("""{"authorized":true,"requestable":false}"""), allows);
+
+        Assert.True(allows);
+        Assert.Equal(ControlRequestState.Requestable, ControlRequestStates.AfterRevoked(allows));
+    }
 }
