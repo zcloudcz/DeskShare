@@ -26,6 +26,8 @@
     <!-- The key file format is owned by Core (the agent reads it). Linked as source instead of referencing Core, which
          would pull WebRTC/codec assemblies into the elevated single-file helper. -->
     <Compile Include="..\Core\Auth\PermanentKeyFile.cs" Link="PermanentKeyFile.cs" />
+    <!-- Same reason: claim-proof computes the "My devices" proof exactly like the server checks it. -->
+    <Compile Include="..\Core\Auth\DeviceClaimProof.cs" Link="DeviceClaimProof.cs" />
   </ItemGroup>
 
 </Project>

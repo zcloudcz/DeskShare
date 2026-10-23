@@ -24,15 +24,22 @@ internal static class PasswordCommand
     /// <c>set-password [--pipe &lt;name&gt; --owner-pid &lt;pid&gt;]</c>: the keys come over that pipe from the app
     /// process with that id, else over stdin/stdout.
     /// </summary>
-    public static int Set(string[] args)
+    public static int Set(string[] args) => RunOverPipeOrConsole(args, PasswordSetup.SetVerb, Run);
+
+    /// <summary>
+    /// Runs <paramref name="run"/> over the app's pipe (<c>--pipe &lt;name&gt; --owner-pid &lt;pid&gt;</c>) or over
+    /// stdin/stdout. Shared with <c>claim-proof</c> (see <see cref="ClaimProofCommand"/>), so both verbs get the same
+    /// peer checks.
+    /// </summary>
+    internal static int RunOverPipeOrConsole(string[] args, string verb, Func<TextReader, TextWriter, int> run)
     {
         string? Arg(string name) { var i = Array.IndexOf(args, name); return i >= 0 && i + 1 < args.Length ? args[i + 1] : null; }
         var pipeName = Arg("--pipe");
         if (pipeName is null)
-            return Run(Console.In, Console.Out);
+            return run(Console.In, Console.Out);
         if (!int.TryParse(Arg("--owner-pid"), out var ownerPid))
         {
-            FileLog.Write("ERROR: set-password: --pipe needs --owner-pid.");
+            FileLog.Write($"ERROR: {verb}: --pipe needs --owner-pid.");
             return 2;
         }
 
@@ -40,20 +47,20 @@ internal static class PasswordCommand
         // Identification level: the pipe server may ask who we are, but cannot act as this elevated process.
         using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.None, TokenImpersonationLevel.Identification);
         try { pipe.Connect(10_000); }
-        catch (System.TimeoutException) { FileLog.Write("ERROR: set-password: the app's pipe did not answer."); return 1; }
+        catch (System.TimeoutException) { FileLog.Write($"ERROR: {verb}: the app's pipe did not answer."); return 1; }
 
         // Whoever serves a pipe of that name now is not necessarily the app (it may have closed its pipe and someone
         // else created one). Talk only to the process that launched us (see PasswordSetup); nothing is sent before.
         var serverPid = PipePeer.ServerProcessId(pipe);
         if (serverPid != ownerPid)
         {
-            FileLog.Write($"ERROR: set-password: the pipe is served by process {serverPid?.ToString() ?? "?"}, expected {ownerPid}; nothing sent.");
+            FileLog.Write($"ERROR: {verb}: the pipe is served by process {serverPid?.ToString() ?? "?"}, expected {ownerPid}; nothing sent.");
             return 1;
         }
 
         using var reader = new StreamReader(pipe, leaveOpen: true);
         using var writer = new StreamWriter(pipe, leaveOpen: true);
-        return Run(reader, writer);
+        return run(reader, writer);
     }
 
     private static int Run(TextReader input, TextWriter output)
@@ -95,7 +102,7 @@ internal static class PasswordCommand
     }
 
     // Same rules as the installer: admin only, and the data folder must be the protected one before we write a secret into it.
-    private static string? PrepareDataDir()
+    internal static string? PrepareDataDir() // also used by ClaimProofCommand
     {
         FileLog.FileEnabled = false; // see Installer.Install: no file log until the folder is proven ours
         if (!new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator))

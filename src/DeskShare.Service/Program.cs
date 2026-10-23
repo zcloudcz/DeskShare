@@ -21,12 +21,14 @@ switch (mode)
         return PasswordCommand.Set(args);
     case PasswordSetup.ClearVerb:
         return PasswordCommand.Clear();
+    case ClaimProofSetup.Verb:
+        return ClaimProofCommand.Run(args);
     case "--console":
         return RunConsole(args);
     case "":
         if (Environment.UserInteractive)
         {
-            Console.WriteLine("Usage: DeskShare.Service install | update | uninstall | set-password [--pipe <name> --owner-pid <pid>] | clear-password | --console [--agent <exe>] [--config <json>]");
+            Console.WriteLine("Usage: DeskShare.Service install | update | uninstall | set-password [--pipe <name> --owner-pid <pid>] | clear-password | claim-proof [--pipe <name> --owner-pid <pid>] | --console [--agent <exe>] [--config <json>]");
             return 0;
         }
         ServiceBase.Run(new SupervisorService());
