@@ -26,8 +26,32 @@ env:
   FFMPEG_BTBN: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest
 
 jobs:
+  # The minimal Windows FFmpeg built from THIS checkout's scripts/ffmpeg-win/build.sh (cache hit = same recipe, so
+  # normally seconds). Built inside the release run so a tag can never pick up DLLs of another branch or recipe.
+  ffmpeg:
+    name: FFmpeg (Windows, minimal)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: out/ffmpeg-win64-min.zip
+          key: ffmpeg-win64-min-${{ hashFiles('scripts/ffmpeg-win/build.sh') }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p out
+          docker run --rm -v "$PWD:/src" -v "$PWD/out:/out" ubuntu:24.04 bash /src/scripts/ffmpeg-win/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-win64-min
+          path: out/ffmpeg-win64-min.zip
+          retention-days: 1
+
   release:
     name: Windows
+    needs: ffmpeg
     runs-on: windows-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -57,14 +81,20 @@ jobs:
       - name: Build solution
         run: dotnet build DeskShare.sln --configuration Release --no-restore
 
+      # Minimal FFmpeg 8.1 LGPL DLLs from the ffmpeg job (not in git because of size). Installed before the tests, so the native FFmpeg tests (decode, hardware encode, WebM recording) run against these DLLs.
+      - name: Get FFmpeg from the ffmpeg job
+        uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-win64-min
+          path: ffmpeg-artifact
+
+      - name: Install FFmpeg
+        shell: pwsh
+        run: ./src/DeskShare.DesktopAvalonia/download-ffmpeg.ps1 -Zip ffmpeg-artifact/ffmpeg-win64-min.zip
+
       # WindowsInputController tests call SendInput on a real desktop session and are flaky on hosted runners.
       - name: Run tests
         run: dotnet test DeskShare.sln --configuration Release --no-build --filter "FullyQualifiedName!~WindowsInputController"
-
-      # FFmpeg 8.1 LGPL shared DLLs (video decoding in the viewer); not in git because of size.
-      - name: Download FFmpeg
-        shell: pwsh
-        run: ./src/DeskShare.DesktopAvalonia/download-ffmpeg.ps1
 
       # Framework-dependent publish; Velopack's Setup.exe installs the .NET 8 runtime if missing
       # (see --framework below). Keeps the installer small. The csproj copies ./ffmpeg into publish/ffmpeg.
