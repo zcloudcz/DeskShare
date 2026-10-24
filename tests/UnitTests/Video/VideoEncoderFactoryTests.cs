@@ -85,8 +85,8 @@ public sealed class VideoEncoderFactoryTests
             encoder.ExternalVideoSourceRawSample(33, width, height, i420, VideoPixelFormatsEnum.I420);
         var encodeMs = clock.Elapsed.TotalMilliseconds / 15;
 
-        // Every frame is sent at once (no look-ahead holding frames back), and only the requested first frame is a key
-        // frame (VP8: bit 0 of the first byte is 0 for key frames); libvpx must not add its own.
+        // Every frame is sent at once (no look-ahead holding frames back), and within the 3 s refresh period only the
+        // requested first frame is a key frame (VP8: bit 0 of the first byte is 0 for key frames).
         Assert.Equal(15, samples.Count);
         Assert.Equal(1, samples.Count(x => (x[0] & 1) == 0));
 
@@ -144,4 +144,20 @@ public sealed class VideoEncoderFactoryTests
         return i420;
     }
 
+    [RequiresFfmpegFact]
+    public void FfmpegVp8_RefreshesWithAKeyFrameEveryGop_WithoutBeingAsked()
+    {
+        // Recovery after packet loss for sources that never force one (MultiClientVideoSource): libvpx's own period.
+        using var encoder = (LibvpxVp8Encoder)VideoEncoderFactory.Create(useFfmpeg: true, FindFfmpegFolder(), VideoCodecPreference.Vp8);
+        var keyFrames = new List<int>();
+        var n = 0;
+        encoder.OnVideoSourceEncodedSample += (_, data) => { if ((data[0] & 1) == 0) keyFrames.Add(n); n++; };
+        var i420 = new byte[320 * 192 * 3 / 2];
+        for (var frame = 0; frame < LibvpxVp8Encoder.GopSize * 2 + 1; frame++)
+        {
+            i420[frame % 1000] ^= 0xFF; // keep it changing a little
+            encoder.ExternalVideoSourceRawSample(33, 320, 192, i420, VideoPixelFormatsEnum.I420);
+        }
+        Assert.Equal(new[] { 0, LibvpxVp8Encoder.GopSize, LibvpxVp8Encoder.GopSize * 2 }, keyFrames);
+    }
 }

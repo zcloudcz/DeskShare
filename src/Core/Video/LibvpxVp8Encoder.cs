@@ -13,9 +13,8 @@ namespace DeskShare.Core.Video;
 /// swallow, and capping it (max-intra-rate) is what made the text blurry.</item>
 /// <item>The libvpx wrapper in SIPSorceryMedia.Encoders (Windows) has a similarly low fixed bitrate.</item>
 /// </list>
-/// Here the key frames are only the ones the sender asks for (new viewer, its periodic refresh): libvpx itself never
-/// starts one (long GOP), so they can stay full quality. Realtime deadline and no look-ahead keep each frame
-/// immediately sendable.
+/// Here a key frame comes every 3 s (and when the sender asks, e.g. for a new viewer), so it can stay full quality.
+/// Realtime deadline and no look-ahead keep each frame immediately sendable.
 /// </summary>
 internal sealed class LibvpxVp8Encoder : IVideoSource, IDisposable
 {
@@ -32,8 +31,10 @@ internal sealed class LibvpxVp8Encoder : IVideoSource, IDisposable
     // ~2 bits per pixel per second: 2.9 Mbit/s at 1600x900, 4.1 at 1080p. A still screen uses a fraction (VBR).
     internal static long BitrateFor(int width, int height) => width * (long)height * 2;
 
-    // libvpx would otherwise insert its own key frame every gop_size frames. The sender forces them when needed.
-    private const int GopSize = 100_000;
+    // A full-quality key frame every 3 s at 30 fps (SIPSorcery's was every second, which forced capping its size): the
+    // refresh a viewer needs after packet loss, since no source asks for one on RTCP PLI. Same period as the forced
+    // refresh in SIPSorceryVideoSource, and it also covers MultiClientVideoSource, which forces none.
+    internal const int GopSize = 90;
 
     private readonly Func<int, int, IH264Context> _createContext;
     private readonly object _lock = new();
