@@ -468,8 +468,10 @@ public sealed class FileReceiverTests : IDisposable
         using var r = Create(idle: TimeSpan.FromMilliseconds(150));
         Offer(r, NewId(), "x.bin", 10);
 
-        await WaitUntil(() => Files().Length == 0);
+        // The receiver deletes the .part file and tells the viewer; their order is not fixed, so wait for both.
+        await WaitUntil(() => LastType() == "file_error" && Files().Length == 0);
 
+        Assert.Empty(Files());
         Assert.Equal("file_error", LastType());
         Assert.Equal("timeout", LastReason());
     }

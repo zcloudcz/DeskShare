@@ -17,9 +17,16 @@ WAYLAND_DISPLAY=$(basename "$(ls $XDG_RUNTIME_DIR/wayland-* | grep -v lock | hea
 # xdg-desktop-portal-wlr only captures on damage and shares one capture per output between sessions, so a
 # sender that joins while the screen is perfectly still may never get a first frame. A real desktop always
 # has some movement; here the pointer nudges back and forth near the centre (the test samples elsewhere).
+# The nudge alone was not enough (the portal does not draw the cursor into the picture, so moving it damages
+# nothing and a sender got no frame now and then), so the background also alternates between two blues two
+# levels apart, far inside the video test's colour tolerance (16).
 (while true; do
   swaymsg -q seat - cursor move 1 1 || true; sleep 0.3
   swaymsg -q seat - cursor move -- -1 -1 || true; sleep 0.3
+done) &
+(while true; do
+  swaymsg -q output '*' bg '#3070b2' solid_color || true; sleep 0.5
+  swaymsg -q output '*' bg '#3070b0' solid_color || true; sleep 0.5
 done) &
 
 # The portals are started by D-Bus activation and need to know where the compositor is.
