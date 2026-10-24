@@ -166,6 +166,24 @@ public sealed class VideoEncoderFactoryTests
     {
         // A first encoder created where no FFmpeg folder exists (as many tests and a broken install do) must not touch
         // FFmpeg: FFmpeg.AutoGen keeps a failed library lookup, and every later FFmpeg encoder would fail with it.
+        // That only shows in a process where FFmpeg was never loaded, so the test re-runs itself in a fresh one.
+        if (Environment.GetEnvironmentVariable("DESKSHARE_COLD_FFMPEG") != "1")
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("dotnet",
+                $"test \"{typeof(VideoEncoderFactoryTests).Assembly.Location}\" --filter \"FullyQualifiedName~{nameof(EncoderWithoutAnFfmpegFolder_DoesNotBreakFfmpegForTheRestOfTheProcess)}\"")
+            { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            psi.Environment["DESKSHARE_COLD_FFMPEG"] = "1";
+            psi.Environment["DOTNET_CLI_UI_LANGUAGE"] = "en"; // a summary line to check below
+            using var child = System.Diagnostics.Process.Start(psi)!;
+            var output = child.StandardOutput.ReadToEndAsync();
+            var errors = child.StandardError.ReadToEndAsync();
+            Assert.True(child.WaitForExit(180_000), "the fresh test process did not finish");
+            Assert.True(child.ExitCode == 0, $"fresh process failed:{Environment.NewLine}{output.Result}{errors.Result}");
+            // It really ran the test: a filter that matches nothing also exits 0.
+            Assert.Matches(@"Passed:\s+1\b", output.Result);
+            return;
+        }
+
         var missing = Path.Combine(Path.GetTempPath(), "no-ffmpeg-" + Guid.NewGuid().ToString("N"));
         (VideoEncoderFactory.Create(useFfmpeg: null, missing, VideoCodecPreference.Vp8) as IDisposable)?.Dispose();
 
