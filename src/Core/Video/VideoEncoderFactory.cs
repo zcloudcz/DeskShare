@@ -17,9 +17,9 @@ public enum VideoCodecPreference
 }
 
 /// <summary>
-/// Creates the VP8 encoder used for WebRTC, optionally combined with a hardware H.264 encoder. SIPSorceryMedia.Encoders ships its native libvpx wrapper (vpxmd.dll)
-/// for Windows only, so macOS and Linux encode through FFmpeg instead (the app bundles FFmpeg with libvpx
-/// next to the executable on every platform).
+/// Creates the VP8 encoder used for WebRTC, optionally combined with a hardware H.264 encoder. VP8 goes through the
+/// bundled FFmpeg's libvpx on every OS (<see cref="LibvpxVp8Encoder"/>); SIPSorcery's own libvpx wrapper (vpxmd.dll,
+/// Windows only) is the fallback when FFmpeg is missing.
 /// </summary>
 public static class VideoEncoderFactory
 {
@@ -36,7 +36,7 @@ public static class VideoEncoderFactory
     /// <summary>
     /// Creates one encoder. Callers own it and must dispose it (all implementations are <see cref="IDisposable"/>).
     /// </summary>
-    /// <param name="useFfmpeg">Null picks by platform (FFmpeg everywhere except Windows); true forces FFmpeg, which tests use on Windows.</param>
+    /// <param name="useFfmpeg">Null or true: libvpx through FFmpeg when available (Windows falls back to vpxmd.dll without it); false forces vpxmd.dll (Windows only).</param>
     /// <param name="ffmpegFolder">Folder with the FFmpeg shared libraries; defaults to "ffmpeg" next to the executable.</param>
     /// <param name="codec">Null uses <see cref="Preference"/>.</param>
     /// <param name="probeHardware">Test seam: returns the hardware H.264 encoder name or null. Defaults to a real probe.</param>
@@ -70,10 +70,28 @@ public static class VideoEncoderFactory
 
     private static IVideoSource CreateVp8(bool? useFfmpeg, string? ffmpegFolder)
     {
-        if (!(useFfmpeg ?? !OperatingSystem.IsWindows()))
+        if (useFfmpeg == false)
             return new VideoEncoderEndPoint();
 
-        InitFfmpeg(ffmpegFolder);
+        // Our own libvpx encoder on every OS: SIPSorcery's VP8 encoders both give a blurry desktop (see LibvpxVp8Encoder).
+        // On Windows VP8 also works without FFmpeg, so a broken FFmpeg folder (a DLL or dependency missing) only costs quality.
+        var libvpx = false;
+        try
+        {
+            InitFfmpeg(ffmpegFolder);
+            libvpx = LibvpxVp8Encoder.IsAvailable();
+        }
+        catch (Exception ex) when (OperatingSystem.IsWindows())
+        {
+            Log.Warning(ex, "FFmpeg could not be loaded");
+        }
+        if (libvpx)
+            return new LibvpxVp8Encoder();
+        if (OperatingSystem.IsWindows())
+        {
+            Log.Warning("FFmpeg with libvpx not found, using the built-in VP8 encoder (lower picture quality)");
+            return new VideoEncoderEndPoint();
+        }
 
         var encoder = new FFmpegVideoEndPoint();
         // FFmpegVideoEndPoint also offers VP9, H264, H265 and AV1. We only want VP8: the browser would otherwise

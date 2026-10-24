@@ -15,19 +15,25 @@ internal interface IH264Context : IDisposable
 /// FFmpegVideoEncoder because that one (10.0.16) hands YUV420P planes to a context whose pix_fmt is the encoder's
 /// first format (NV12 for AMF), so chroma comes out wrong, and it allocates an AVPacket per frame it never frees.
 /// We always feed NV12, which every hardware H.264 encoder takes, and convert from I420 ourselves.
+/// Also drives libvpx (VP8) for <see cref="LibvpxVp8Encoder"/>: that one takes planar I420 (YUV420P) and a long GOP.
 /// </summary>
 internal sealed unsafe class NativeH264Context : IH264Context
 {
     private const int Fps = 30;
 
     private readonly int _width, _height;
+    private readonly bool _planar; // YUV420P (I420 as is) instead of NV12
     private AVCodecContext* _ctx;
     private AVFrame* _frame;
     private AVPacket* _packet; // reused for every frame, freed in Dispose
     private long _pts;
 
-    public NativeH264Context(string encoderName, Dictionary<string, string> options, int width, int height, long bitrate)
+    /// <param name="planarI420">Feed YUV420P (libvpx) instead of NV12 (hardware H.264 encoders).</param>
+    /// <param name="gopSize">Frames between automatic key frames; null = 2 s.</param>
+    public NativeH264Context(string encoderName, Dictionary<string, string> options, int width, int height, long bitrate,
+        bool planarI420 = false, int? gopSize = null)
     {
+        _planar = planarI420;
         if (width <= 0 || height <= 0 || width % 2 != 0 || height % 2 != 0)
             throw new ArgumentException("Width and height must be positive and even.");
         _width = width;
@@ -42,10 +48,11 @@ internal sealed unsafe class NativeH264Context : IH264Context
             _ctx = ffmpeg.avcodec_alloc_context3(codec);
             _ctx->width = width;
             _ctx->height = height;
-            _ctx->pix_fmt = AVPixelFormat.AV_PIX_FMT_NV12;
+            var pixFmt = planarI420 ? AVPixelFormat.AV_PIX_FMT_YUV420P : AVPixelFormat.AV_PIX_FMT_NV12;
+            _ctx->pix_fmt = pixFmt;
             _ctx->time_base = new AVRational { num = 1, den = Fps };
             _ctx->framerate = new AVRational { num = Fps, den = 1 };
-            _ctx->gop_size = Fps * 2; // a periodic IDR lets a viewer that missed the first one recover
+            _ctx->gop_size = gopSize ?? Fps * 2; // a periodic IDR lets a viewer that missed the first one recover
             _ctx->max_b_frames = 0;   // B-frames add latency
             _ctx->bit_rate = bitrate;
 
@@ -57,7 +64,7 @@ internal sealed unsafe class NativeH264Context : IH264Context
             Check(rc, "avcodec_open2");
 
             _frame = ffmpeg.av_frame_alloc();
-            _frame->format = (int)AVPixelFormat.AV_PIX_FMT_NV12;
+            _frame->format = (int)pixFmt;
             _frame->width = width;
             _frame->height = height;
             Check(ffmpeg.av_frame_get_buffer(_frame, 32), "av_frame_get_buffer");
@@ -75,7 +82,7 @@ internal sealed unsafe class NativeH264Context : IH264Context
         if (i420.Length < (long)_width * _height * 3 / 2)
             throw new ArgumentException("I420 buffer is shorter than width x height x 1.5.", nameof(i420));
         Check(ffmpeg.av_frame_make_writable(_frame), "av_frame_make_writable");
-        FillNv12(i420);
+        if (_planar) FillI420(i420); else FillNv12(i420);
         _frame->pts = _pts++;
         _frame->pict_type = forceKeyFrame ? AVPictureType.AV_PICTURE_TYPE_I : AVPictureType.AV_PICTURE_TYPE_NONE;
         _frame->flags = forceKeyFrame ? _frame->flags | ffmpeg.AV_FRAME_FLAG_KEY : _frame->flags & ~ffmpeg.AV_FRAME_FLAG_KEY;
@@ -91,6 +98,23 @@ internal sealed unsafe class NativeH264Context : IH264Context
         Marshal.Copy((IntPtr)_packet->data, bytes, 0, bytes.Length);
         ffmpeg.av_packet_unref(_packet);
         return bytes;
+    }
+
+    // Copies the three I420 planes row by row (the frame's rows can be padded).
+    private void FillI420(byte[] i420)
+    {
+        fixed (byte* src = i420)
+        {
+            var plane = src;
+            for (var p = 0; p < 3; p++)
+            {
+                var w = p == 0 ? _width : _width / 2;
+                var h = p == 0 ? _height : _height / 2;
+                for (var y = 0; y < h; y++)
+                    Buffer.MemoryCopy(plane + (long)y * w, _frame->data[(uint)p] + (long)y * _frame->linesize[(uint)p], w, w);
+                plane += (long)w * h;
+            }
+        }
     }
 
     // I420 = Y plane, U plane, V plane. NV12 = Y plane, then U and V interleaved in one plane.
