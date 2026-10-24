@@ -40,7 +40,9 @@ public class ScreenSenderService : IHostedService, IDisposable
     // input arrived within PointerHideAfterInput, since the viewer does not report switching control off.
     private static readonly TimeSpan PointerHideAfterInput = TimeSpan.FromSeconds(5);
     private volatile bool _pointerDrawn = true;  // what the running capturer does
-    private DisplayInfo? _sharedDisplay;
+    // Adapter and output of the running capturer: exactly what was opened (the configured target, or the display the
+    // viewer switched to), so a pointer swap never changes which screen is shared.
+    private (int Adapter, int Output)? _captureTarget;
     private bool _disposed;
     private SessionSafety? _safety;
 
@@ -310,7 +312,6 @@ public class ScreenSenderService : IHostedService, IDisposable
                 _safety = new SessionSafety(_webrtcSessionWithInput, _configuration, AuditLog.Default, _logger, ControlApprovalPrompt, ViewerAdmission);
 
                 inputController.SetCapturedDisplay(InputRectFor(displays[currentDisplay]));
-                _sharedDisplay = displays[currentDisplay];
                 _webrtcSessionWithInput.DataChannel.DisplaySwitcher = new DisplaySwitchService(displays, currentDisplay, async (display, stillAllowed) =>
                 {
                     if (_pipeline == null)
@@ -321,7 +322,7 @@ public class ScreenSenderService : IHostedService, IDisposable
                     var switched = await _pipeline.SwitchCapturerAsync(next, stillAllowed, () =>
                     {
                         inputController.SetCapturedDisplay(InputRectFor(display));
-                        _sharedDisplay = display;
+                        _captureTarget = (display.AdapterIndex, display.OutputIndex);
                         _logger.LogInformation("Now sharing {Display}", display.Name);
                         _safety?.DisplaySwitched(display.Name);
                     });
@@ -377,6 +378,7 @@ public class ScreenSenderService : IHostedService, IDisposable
 
             // Start capture pipeline with WebRTC video source
             var capturer = PlatformServiceFactory.CreateScreenCapturer(_configuration.AdapterIndex, _configuration.OutputIndex, _configuration.TargetFps, drawPointer: _pointerDrawn);
+            _captureTarget = (_configuration.AdapterIndex, _configuration.OutputIndex);
             var converter = new SimdPixelConverter(); // Use SIMD-optimized converter
 
             _pipeline = new CapturePipeline(capturer, converter, videoSource, _configuration.MaxOutputWidth);
@@ -443,9 +445,9 @@ public class ScreenSenderService : IHostedService, IDisposable
                 await Task.Delay(1000, stoppingToken);
                 var controlling = Environment.TickCount64 - dataChannel.LastInputTicks < PointerHideAfterInput.TotalMilliseconds;
                 var draw = !controlling;
-                if (draw == _pointerDrawn || _pipeline is not { } pipeline || _sharedDisplay is not { } display)
+                if (draw == _pointerDrawn || _pipeline is not { } pipeline || _captureTarget is not { } target)
                     continue;
-                var next = PlatformServiceFactory.CreateScreenCapturer(display.AdapterIndex, display.OutputIndex, _configuration.TargetFps, drawPointer: draw);
+                var next = PlatformServiceFactory.CreateScreenCapturer(target.Adapter, target.Output, _configuration.TargetFps, drawPointer: draw);
                 if (await pipeline.SwitchCapturerAsync(next))
                 {
                     _pointerDrawn = draw;
