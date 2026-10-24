@@ -65,8 +65,15 @@ public static class VideoEncoderFactory
     {
         var folder = ffmpegFolder ?? Path.Combine(AppContext.BaseDirectory, "ffmpeg");
         if (Directory.Exists(folder))
+        {
             FFmpegInit.Initialise(FfmpegLogLevelEnum.AV_LOG_WARNING, folder);
+            _ffmpegLoaded = true;
+        }
     }
+
+    // Set once FFmpeg was initialised from a real folder in this process. Calling into FFmpeg before that is not just
+    // a failed call: FFmpeg.AutoGen keeps the failed library lookup, so every later FFmpeg use in the process fails too.
+    private static volatile bool _ffmpegLoaded;
 
     private static IVideoSource CreateVp8(bool? useFfmpeg, string? ffmpegFolder)
     {
@@ -79,7 +86,10 @@ public static class VideoEncoderFactory
         try
         {
             InitFfmpeg(ffmpegFolder);
-            libvpx = LibvpxVp8Encoder.IsAvailable();
+            // Windows has no system FFmpeg: without the bundled folder there is nothing to ask (and asking would break
+            // FFmpeg for the whole process, see _ffmpegLoaded). Elsewhere FFmpeg may also come from the system.
+            if (_ffmpegLoaded || !OperatingSystem.IsWindows())
+                libvpx = LibvpxVp8Encoder.IsAvailable();
         }
         catch (Exception ex) when (OperatingSystem.IsWindows())
         {

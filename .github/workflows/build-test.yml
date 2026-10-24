@@ -11,6 +11,10 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+  actions: read   # download-ffmpeg.ps1 fetches the ffmpeg-win64-min artifact of ffmpeg-windows.yml
+
 jobs:
   build-and-test:
     runs-on: windows-latest
@@ -33,6 +37,14 @@ jobs:
       # Step 4: Build the entire solution in Release configuration
       - name: Build solution
         run: dotnet build DeskShare.sln --configuration Release --no-restore
+
+      # The minimal FFmpeg of the latest ffmpeg-windows run on main, so the FFmpeg-based tests (VP8 encoder, recording,
+      # decode) run here too instead of being skipped; without it a bug in that code only showed up in the release run.
+      - name: Install FFmpeg
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./src/DeskShare.DesktopAvalonia/download-ffmpeg.ps1
 
       # Step 5: Run all unit and integration tests, output results in TRX format
       - name: Run tests
