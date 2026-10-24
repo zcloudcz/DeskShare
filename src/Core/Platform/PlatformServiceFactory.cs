@@ -20,7 +20,7 @@ public static class PlatformServiceFactory
     /// <returns>Platform-specific screen capturer implementation.</returns>
     /// <exception cref="PlatformNotSupportedException">Thrown when current platform is not supported.</exception>
     #pragma warning disable CA1416 // Validate platform compatibility
-    public static IScreenCapturer CreateScreenCapturer(int adapterIndex = 0, int outputIndex = 0, int targetFps = 30)
+    public static IScreenCapturer CreateScreenCapturer(int adapterIndex = 0, int outputIndex = 0, int targetFps = 30, bool drawPointer = true)
     {
         if (OperatingSystem.IsWindows())
         {
@@ -33,12 +33,12 @@ public static class PlatformServiceFactory
             // see XWayland windows); X11 sessions keep FFmpeg x11grab.
             if (IsWaylandSession())
                 return new Platforms.Linux.PipeWireScreenCapturer();
-            return new Platforms.FfmpegScreenCapturer(outputIndex, targetFps);
+            return new Platforms.FfmpegScreenCapturer(outputIndex, targetFps, drawPointer: drawPointer);
         }
         else if (OperatingSystem.IsMacOS())
         {
             // macOS: FFmpeg avfoundation (triggers the system Screen Recording prompt)
-            return new Platforms.FfmpegScreenCapturer(outputIndex, targetFps);
+            return new Platforms.FfmpegScreenCapturer(outputIndex, targetFps, drawPointer: drawPointer);
         }
         else
         {

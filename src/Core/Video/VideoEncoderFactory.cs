@@ -73,9 +73,19 @@ public static class VideoEncoderFactory
         if (useFfmpeg == false)
             return new VideoEncoderEndPoint();
 
-        InitFfmpeg(ffmpegFolder);
         // Our own libvpx encoder on every OS: SIPSorcery's VP8 encoders both give a blurry desktop (see LibvpxVp8Encoder).
-        if (LibvpxVp8Encoder.IsAvailable())
+        // On Windows VP8 also works without FFmpeg, so a broken FFmpeg folder (a DLL or dependency missing) only costs quality.
+        var libvpx = false;
+        try
+        {
+            InitFfmpeg(ffmpegFolder);
+            libvpx = LibvpxVp8Encoder.IsAvailable();
+        }
+        catch (Exception ex) when (OperatingSystem.IsWindows())
+        {
+            Log.Warning(ex, "FFmpeg could not be loaded");
+        }
+        if (libvpx)
             return new LibvpxVp8Encoder();
         if (OperatingSystem.IsWindows())
         {

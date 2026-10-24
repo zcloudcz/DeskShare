@@ -215,7 +215,7 @@ public class ScreenSenderService : IHostedService, IDisposable
         {
             // Get screen resolution
             int width, height;
-            using (var tempCapturer = PlatformServiceFactory.CreateScreenCapturer(_configuration.AdapterIndex, _configuration.OutputIndex, _configuration.TargetFps))
+            using (var tempCapturer = PlatformServiceFactory.CreateScreenCapturer(_configuration.AdapterIndex, _configuration.OutputIndex, _configuration.TargetFps, drawPointer: !_configuration.EnableRemoteControl))
             {
                 if (!tempCapturer.Initialize())
                 {
@@ -307,7 +307,7 @@ public class ScreenSenderService : IHostedService, IDisposable
                 {
                     if (_pipeline == null)
                         return false;
-                    var next = PlatformServiceFactory.CreateScreenCapturer(display.AdapterIndex, display.OutputIndex, _configuration.TargetFps);
+                    var next = PlatformServiceFactory.CreateScreenCapturer(display.AdapterIndex, display.OutputIndex, _configuration.TargetFps, drawPointer: !_configuration.EnableRemoteControl);
                     // Pointer input is mapped to the new display only once the viewer is actually receiving its picture,
                     // otherwise clicks would hit the new monitor while the viewer still sees the old one.
                     var switched = await _pipeline.SwitchCapturerAsync(next, stillAllowed, () =>
@@ -367,7 +367,7 @@ public class ScreenSenderService : IHostedService, IDisposable
             }
 
             // Start capture pipeline with WebRTC video source
-            var capturer = PlatformServiceFactory.CreateScreenCapturer(_configuration.AdapterIndex, _configuration.OutputIndex, _configuration.TargetFps);
+            var capturer = PlatformServiceFactory.CreateScreenCapturer(_configuration.AdapterIndex, _configuration.OutputIndex, _configuration.TargetFps, drawPointer: !_configuration.EnableRemoteControl);
             var converter = new SimdPixelConverter(); // Use SIMD-optimized converter
 
             _pipeline = new CapturePipeline(capturer, converter, videoSource, _configuration.MaxOutputWidth);

@@ -28,6 +28,7 @@ public sealed class FfmpegScreenCapturer : IScreenCapturer
 
     private readonly int _monitorIndex;
     private readonly int _fps;
+    private readonly bool _drawPointer;
     private readonly string _ffmpegFolder;
 
     private readonly object _lock = new();
@@ -47,8 +48,11 @@ public sealed class FfmpegScreenCapturer : IScreenCapturer
     /// <param name="monitorIndex">Index into the FFmpeg monitor list; a negative or out-of-range value falls back to the primary (or first) monitor.</param>
     /// <param name="fps">Capture frame rate requested from FFmpeg.</param>
     /// <param name="ffmpegFolder">Folder with the FFmpeg shared libraries; defaults to "ffmpeg" next to the executable.</param>
-    public FfmpegScreenCapturer(int monitorIndex = 0, int fps = 30, string? ffmpegFolder = null)
+    /// <param name="drawPointer">Draw the host's pointer into the picture. Off while viewers may control the host: their
+    /// browser shows their own pointer, and a second one in the video trails behind it (Windows/DXGI never draws one).</param>
+    public FfmpegScreenCapturer(int monitorIndex = 0, int fps = 30, string? ffmpegFolder = null, bool drawPointer = true)
     {
+        _drawPointer = drawPointer;
         _monitorIndex = monitorIndex;
         _fps = fps > 0 ? fps : 30;
         _ffmpegFolder = ffmpegFolder ?? Path.Combine(AppContext.BaseDirectory, "ffmpeg");
@@ -147,8 +151,7 @@ public sealed class FfmpegScreenCapturer : IScreenCapturer
         if (OperatingSystem.IsLinux())
         {
             // Built here instead of FFmpegScreenSource: that one hard-codes display ":0" (we honour $DISPLAY like the X11
-            // input controller does) and lets x11grab draw the pointer into the picture. The viewer already shows its
-            // own pointer, so a second one in the video trails behind it (as on Windows, where DXGI captures without it).
+            // input controller does) and always lets x11grab draw the pointer (see drawPointer).
             var display = Environment.GetEnvironmentVariable("DISPLAY");
             var x11 = new FFmpegVideoSource();
             unsafe
@@ -161,7 +164,7 @@ public sealed class FfmpegScreenCapturer : IScreenCapturer
                 ["grab_x"] = monitor.Rect.X.ToString(),
                 ["grab_y"] = monitor.Rect.Y.ToString(),
                 ["framerate"] = _fps.ToString(),
-                ["draw_mouse"] = "0",
+                ["draw_mouse"] = _drawPointer ? "1" : "0",
             });
             return x11;
         }
@@ -179,7 +182,7 @@ public sealed class FfmpegScreenCapturer : IScreenCapturer
         source.InitialiseDecoder(new Dictionary<string, string>
         {
             ["framerate"] = _fps.ToString(),
-            ["capture_cursor"] = "1",
+            ["capture_cursor"] = _drawPointer ? "1" : "0",
         });
         return source;
     }
