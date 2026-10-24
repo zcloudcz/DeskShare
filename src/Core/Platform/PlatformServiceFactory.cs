@@ -81,6 +81,10 @@ public static class PlatformServiceFactory
         }
     }
 
+    /// <summary>True where the screen capturer draws the host pointer itself and honours drawPointer (FFmpeg capture
+    /// on X11 and macOS). Windows (DXGI) never draws it; the Wayland portal decides on its own.</summary>
+    public static bool CapturerDrawsPointer => OperatingSystem.IsMacOS() || (OperatingSystem.IsLinux() && !IsWaylandSession());
+
     [System.Runtime.Versioning.SupportedOSPlatform("linux")]
     private static bool IsWaylandSession() =>
         Platforms.Linux.WaylandPortalSession.IsWaylandSession(Environment.GetEnvironmentVariable);

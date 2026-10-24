@@ -738,9 +738,17 @@ public sealed class DataChannelManager : IDisposable
             if (!_inputController.ApplyInput(inputMessage))
             {
                 _logger.Warning("Input message rejected: Type={Type}", inputMessage.Type);
+                return;
             }
+            Volatile.Write(ref _lastInputTicks, Environment.TickCount64);
         };
     }
+
+    private long _lastInputTicks = long.MinValue / 2;
+
+    /// <summary>When a viewer's mouse or keyboard input was last applied (Environment.TickCount64); tells whether
+    /// someone is controlling right now (the browser does not report switching control off).</summary>
+    public long LastInputTicks => Volatile.Read(ref _lastInputTicks);
 
     // The answer to "authorization_request": what the host allows, in the viewer's vocabulary. Also sent unasked once a
     // waiting viewer was admitted or its control request was answered.

@@ -34,6 +34,13 @@ public class ScreenSenderService : IHostedService, IDisposable
     private CancellationTokenSource? _stoppingCts;
     private WebRTCSessionWithInput? _webrtcSessionWithInput;
     private CapturePipeline? _pipeline;
+
+    // The host pointer is drawn into the picture (Linux X11, macOS) unless a viewer is controlling right now: then the
+    // viewer's browser already shows its own pointer and a second one in the video trails behind it. "Right now" =
+    // input arrived within PointerHideAfterInput, since the viewer does not report switching control off.
+    private static readonly TimeSpan PointerHideAfterInput = TimeSpan.FromSeconds(5);
+    private volatile bool _pointerDrawn = true;  // what the running capturer does
+    private DisplayInfo? _sharedDisplay;
     private bool _disposed;
     private SessionSafety? _safety;
 
@@ -215,7 +222,7 @@ public class ScreenSenderService : IHostedService, IDisposable
         {
             // Get screen resolution
             int width, height;
-            using (var tempCapturer = PlatformServiceFactory.CreateScreenCapturer(_configuration.AdapterIndex, _configuration.OutputIndex, _configuration.TargetFps, drawPointer: !_configuration.EnableRemoteControl))
+            using (var tempCapturer = PlatformServiceFactory.CreateScreenCapturer(_configuration.AdapterIndex, _configuration.OutputIndex, _configuration.TargetFps, drawPointer: _pointerDrawn))
             {
                 if (!tempCapturer.Initialize())
                 {
@@ -303,16 +310,18 @@ public class ScreenSenderService : IHostedService, IDisposable
                 _safety = new SessionSafety(_webrtcSessionWithInput, _configuration, AuditLog.Default, _logger, ControlApprovalPrompt, ViewerAdmission);
 
                 inputController.SetCapturedDisplay(InputRectFor(displays[currentDisplay]));
+                _sharedDisplay = displays[currentDisplay];
                 _webrtcSessionWithInput.DataChannel.DisplaySwitcher = new DisplaySwitchService(displays, currentDisplay, async (display, stillAllowed) =>
                 {
                     if (_pipeline == null)
                         return false;
-                    var next = PlatformServiceFactory.CreateScreenCapturer(display.AdapterIndex, display.OutputIndex, _configuration.TargetFps, drawPointer: !_configuration.EnableRemoteControl);
+                    var next = PlatformServiceFactory.CreateScreenCapturer(display.AdapterIndex, display.OutputIndex, _configuration.TargetFps, drawPointer: _pointerDrawn);
                     // Pointer input is mapped to the new display only once the viewer is actually receiving its picture,
                     // otherwise clicks would hit the new monitor while the viewer still sees the old one.
                     var switched = await _pipeline.SwitchCapturerAsync(next, stillAllowed, () =>
                     {
                         inputController.SetCapturedDisplay(InputRectFor(display));
+                        _sharedDisplay = display;
                         _logger.LogInformation("Now sharing {Display}", display.Name);
                         _safety?.DisplaySwitched(display.Name);
                     });
@@ -367,7 +376,7 @@ public class ScreenSenderService : IHostedService, IDisposable
             }
 
             // Start capture pipeline with WebRTC video source
-            var capturer = PlatformServiceFactory.CreateScreenCapturer(_configuration.AdapterIndex, _configuration.OutputIndex, _configuration.TargetFps, drawPointer: !_configuration.EnableRemoteControl);
+            var capturer = PlatformServiceFactory.CreateScreenCapturer(_configuration.AdapterIndex, _configuration.OutputIndex, _configuration.TargetFps, drawPointer: _pointerDrawn);
             var converter = new SimdPixelConverter(); // Use SIMD-optimized converter
 
             _pipeline = new CapturePipeline(capturer, converter, videoSource, _configuration.MaxOutputWidth);
@@ -377,6 +386,8 @@ public class ScreenSenderService : IHostedService, IDisposable
             {
                 _logger.LogInformation("Capture pipeline started successfully");
                 _logger.LogInformation("ScreenSenderService is now streaming. Waiting for clients to connect...");
+                if (_webrtcSessionWithInput != null && PlatformServiceFactory.CapturerDrawsPointer)
+                    _ = Task.Run(() => PointerVisibilityLoopAsync(_webrtcSessionWithInput.DataChannel, stoppingToken), stoppingToken);
                 SignalStreaming();
 
                 // Keep service running until cancellation
@@ -417,6 +428,37 @@ public class ScreenSenderService : IHostedService, IDisposable
             _webrtcSessionWithInput = null;
 
             IsRunning = false;
+        }
+    }
+
+    // Swaps the capturer for one with or without the drawn pointer when a viewer starts or stops controlling (x11grab
+    // and avfoundation cannot change it on a running capture). A swap the pipeline refuses (another one in progress)
+    // is simply retried on the next tick.
+    private async Task PointerVisibilityLoopAsync(DataChannelManager dataChannel, CancellationToken stoppingToken)
+    {
+        try
+        {
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                await Task.Delay(1000, stoppingToken);
+                var controlling = Environment.TickCount64 - dataChannel.LastInputTicks < PointerHideAfterInput.TotalMilliseconds;
+                var draw = !controlling;
+                if (draw == _pointerDrawn || _pipeline is not { } pipeline || _sharedDisplay is not { } display)
+                    continue;
+                var next = PlatformServiceFactory.CreateScreenCapturer(display.AdapterIndex, display.OutputIndex, _configuration.TargetFps, drawPointer: draw);
+                if (await pipeline.SwitchCapturerAsync(next))
+                {
+                    _pointerDrawn = draw;
+                    _logger.LogInformation("Host pointer {State} the picture", draw ? "drawn into" : "left out of");
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Pointer visibility loop stopped");
         }
     }
 
