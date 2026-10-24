@@ -144,12 +144,29 @@ public sealed class FfmpegScreenCapturer : IScreenCapturer
 
     private FFmpegVideoSource CreateSource(SIPSorceryMedia.FFmpeg.Monitor monitor)
     {
-        if (!OperatingSystem.IsMacOS())
+        if (OperatingSystem.IsLinux())
         {
-            // On Linux the library hard-codes display ":0"; honour $DISPLAY like the X11 input controller does.
-            var display = OperatingSystem.IsLinux() ? Environment.GetEnvironmentVariable("DISPLAY") : null;
-            return new FFmpegScreenSource(string.IsNullOrEmpty(display) ? monitor.Path : display, monitor.Rect, _fps);
+            // Built here instead of FFmpegScreenSource: that one hard-codes display ":0" (we honour $DISPLAY like the X11
+            // input controller does) and lets x11grab draw the pointer into the picture. The viewer already shows its
+            // own pointer, so a second one in the video trails behind it (as on Windows, where DXGI captures without it).
+            var display = Environment.GetEnvironmentVariable("DISPLAY");
+            var x11 = new FFmpegVideoSource();
+            unsafe
+            {
+                x11.CreateVideoDecoder(string.IsNullOrEmpty(display) ? monitor.Path : display, ffmpeg.av_find_input_format("x11grab"), repeat: false, isCamera: true);
+            }
+            x11.InitialiseDecoder(new Dictionary<string, string>
+            {
+                ["video_size"] = $"{monitor.Rect.Width}x{monitor.Rect.Height}",
+                ["grab_x"] = monitor.Rect.X.ToString(),
+                ["grab_y"] = monitor.Rect.Y.ToString(),
+                ["framerate"] = _fps.ToString(),
+                ["draw_mouse"] = "0",
+            });
+            return x11;
         }
+        if (!OperatingSystem.IsMacOS())
+            return new FFmpegScreenSource(monitor.Path, monitor.Rect, _fps);
 
         // FFmpegScreenSource always adds a crop filter built from the monitor rectangle, but the avfoundation
         // monitor list leaves that rectangle empty (crop=0:0:0:0). Build the avfoundation source ourselves

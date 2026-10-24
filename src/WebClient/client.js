@@ -522,6 +522,15 @@ async function handleOffer(message) {
         // Handle incoming tracks. The video is held back until the sender is verified (see showVideo).
         pc.ontrack = (event) => {
             console.log('Received remote track:', event.track.kind);
+            // A remote desktop wants each frame on screen as soon as it is decoded. Left alone, the browser's jitter
+            // buffer grows after a burst (a key frame, a lossy relay) and keeps the picture half a second or more
+            // behind the pointer for the rest of the session. 0 = as little buffering as the browser allows.
+            try {
+                if ('jitterBufferTarget' in event.receiver) event.receiver.jitterBufferTarget = 0;
+                else if ('playoutDelayHint' in event.receiver) event.receiver.playoutDelayHint = 0; // older Chrome
+            } catch (e) {
+                console.warn('Could not lower the playout delay:', e);
+            }
             if (event.streams && event.streams[0]) {
                 session.pendingStream = event.streams[0];
                 showVideo(session); // only shows once the session is verified
