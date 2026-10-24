@@ -101,7 +101,10 @@ internal sealed class HardwareH264Encoder : IVideoSource, IDisposable
         "h264_amf" => new() { ["usage"] = "ultralowlatency", ["quality"] = "speed", ["rc"] = "cbr", ["profile"] = "constrained_baseline", ["forced_idr"] = "1", ["header_insertion_mode"] = "idr" },
         "h264_nvenc" => new() { ["preset"] = "p1", ["tune"] = "ull", ["zerolatency"] = "1", ["rc"] = "cbr", ["profile"] = "baseline", ["forced-idr"] = "1" },
         "h264_qsv" => new() { ["preset"] = "veryfast", ["profile"] = "baseline", ["forced_idr"] = "1" },
-        _ => new() { ["scenario"] = "display_remoting", ["rate_control"] = "cbr", ["low_latency"] = "1" },
+        // hw_encoding: only hardware MFTs. Without it h264_mf falls back to Microsoft's software H.264 MFT on a PC
+        // without a GPU encoder, which then wins the probe over VP8 (more CPU and delay, and it is not what "hardware
+        // encoder" promises).
+        _ => new() { ["scenario"] = "display_remoting", ["rate_control"] = "cbr", ["low_latency"] = "1", ["hw_encoding"] = "1" },
     };
 
     // The context is rebuilt per resolution because the bitrate depends on the frame size.
