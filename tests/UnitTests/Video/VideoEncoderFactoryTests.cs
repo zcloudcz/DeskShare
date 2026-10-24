@@ -160,4 +160,19 @@ public sealed class VideoEncoderFactoryTests
         }
         Assert.Equal(new[] { 0, LibvpxVp8Encoder.GopSize, LibvpxVp8Encoder.GopSize * 2 }, keyFrames);
     }
+
+    [RequiresFfmpegFact]
+    public void EncoderWithoutAnFfmpegFolder_DoesNotBreakFfmpegForTheRestOfTheProcess()
+    {
+        // A first encoder created where no FFmpeg folder exists (as many tests and a broken install do) must not touch
+        // FFmpeg: FFmpeg.AutoGen keeps a failed library lookup, and every later FFmpeg encoder would fail with it.
+        var missing = Path.Combine(Path.GetTempPath(), "no-ffmpeg-" + Guid.NewGuid().ToString("N"));
+        (VideoEncoderFactory.Create(useFfmpeg: null, missing, VideoCodecPreference.Vp8) as IDisposable)?.Dispose();
+
+        using var encoder = Assert.IsType<LibvpxVp8Encoder>(VideoEncoderFactory.Create(useFfmpeg: true, FindFfmpegFolder(), VideoCodecPreference.Vp8));
+        var samples = 0;
+        encoder.OnVideoSourceEncodedSample += (_, _) => samples++;
+        encoder.ExternalVideoSourceRawSample(33, 320, 192, new byte[320 * 192 * 3 / 2], VideoPixelFormatsEnum.I420);
+        Assert.Equal(1, samples);
+    }
 }
