@@ -36,14 +36,15 @@
 <main>
 <section class="hero" style="border-top:0">
   <div>
-    <h1>Share your Windows screen. Watch it from any browser, anywhere.</h1>
+    <h1 id="hero-title" data-mac="Share your Mac screen. Watch it from any browser, anywhere." data-linux="Share your Linux screen. Watch it from any browser, anywhere.">Share your Windows screen. Watch it from any browser, anywhere.</h1>
     <p class="lead">DeskShare streams the desktop over WebRTC directly between computers, with under 150 ms latency. Access is protected by a passkey that changes every 45 seconds.</p>
     <div class="actions">
-      <a class="btn primary" href="https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Setup.exe">
+      <a class="btn primary" id="hero-dl" href="https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Setup.exe">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
-        Download for Windows
+        <span id="hero-dl-label" data-mac="Download for macOS" data-linux="Download for Linux">Download for Windows</span>
       </a>
-      <a class="btn secondary" href="https://app.deskshare.zcloud.cz/webclient/index.html">Open the web viewer</a>
+      <a class="btn secondary" id="hero-web" href="https://app.deskshare.zcloud.cz/webclient/index.html">Open the web viewer</a>
+      <a id="hero-intel" href="https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-osx-x64-Setup.pkg" hidden>Intel Mac?</a>
     </div>
     <p class="meta" id="release-meta" data-label="Latest version">Windows 10/11 · macOS · Linux · free · MIT license</p>
   </div>
