@@ -1,49 +1,49 @@
-﻿# Komplexní Code Review - DeskShare
+﻿# Comprehensive Code Review - DeskShare
 
 **Datum:** 2025-01-15
 **Reviewer:** Claude Code (Automated Analysis)
 **Verze:** 1.0.0
-**LOC:** 27,157 řádků / 101 C# souborů
+**LOC:** 27,157 lines / 101 C# files
 
 ---
 
 ## 📊 Executive Summary
 
-**Celkové hodnocení:** ⭐⭐⭐⭐ 7.5/10
+**Overall rating:** ⭐⭐⭐⭐ 7.5/10
 
-Projekt vykazuje **dobrou architekturu** a **kvalitní dokumentaci**, ale má několik **kritických bezpečnostních problémů** a anti-patterns, které musí být vyřešeny před nasazením do produkce.
+The project shows a **good architecture** and **quality documentation**, but has several **critical security problems** and anti-patterns that must be resolved before deployment to production.
 
-### Klíčové metriky
+### Key metrics
 
-| Kategorie | Hodnota | Status |
+| Category | Value | Status |
 |-----------|---------|--------|
-| Kritické problémy | 3 | ❌ Vyžaduje okamžitou akci |
-| Vysoké problémy | 6 | ⚠️ Vyřešit do měsíce |
-| Střední problémy | 7 | ⚠️ Vyřešit do 3 měsíců |
-| Test coverage | ~65% | ⚠️ Vyžaduje zlepšení |
-| XML dokumentace | ~85% | ✅ Výborné |
-| Code duplication | ~5% | ✅ Nízké |
+| Critical issues | 3 | ❌ Requires immediate action |
+| High issues | 6 | ⚠️ Fix within a month |
+| Medium issues | 7 | ⚠️ Fix within 3 months |
+| Test coverage | ~65% | ⚠️ Needs improvement |
+| XML documentation | ~85% | ✅ Excellent |
+| Code duplication | ~5% | ✅ Low |
 
 ---
 
-## 🔴 KRITICKÉ PROBLÉMY (Akce do 7 dní)
+## 🔴 CRITICAL ISSUES (Action within 7 days)
 
 ### 1. Async/Await Anti-Pattern - Deadlock Risk
 
 **Severity:** 🔴 CRITICAL
-**Soubor:** `src/Core/WebRTC/WebRTCSession.cs:262-272`
-**Kategorie:** Performance / Code Quality
+**File:** `src/Core/WebRTC/WebRTCSession.cs:262-272`
+**Category:** Performance / Code Quality
 
-**Problém:**
+**Problem:**
 ```csharp
 case SignalingMessageType.Offer:
     HandleOfferAsync(message).Wait();  // ❌ DEADLOCK RISK!
     break;
 ```
 
-Použití `.Wait()` na async metody může způsobit deadlock, zejména v UI kontextech (WPF, WinForms).
+Using `.Wait()` on async methods can cause a deadlock, especially in UI contexts (WPF, WinForms).
 
-**Řešení:**
+**Solution:**
 ```csharp
 private async void OnSignalingMessageReceived(object? sender, SignalingMessage message)
 {
@@ -69,18 +69,18 @@ private async void OnSignalingMessageReceived(object? sender, SignalingMessage m
 }
 ```
 
-**Výskyt:** 11 lokací v projektu
-**Impakt:** Může způsobit zamrznutí aplikace
+**Occurrences:** 11 locations in the project
+**Impact:** Can cause the application to freeze
 
 ---
 
-### 2. Auto-Authorization bez uživatelského souhlasu
+### 2. Auto-Authorization without user consent
 
 **Severity:** 🔴 CRITICAL
-**Soubor:** `src/Core/Platforms/Windows/WindowsInputController.cs:217-221`
-**Kategorie:** Security
+**File:** `src/Core/Platforms/Windows/WindowsInputController.cs:217-221`
+**Category:** Security
 
-**Problém:**
+**Problem:**
 ```csharp
 // TODO: Show authorization dialog to user
 // For now, simulate a brief delay and auto-approve for development
@@ -89,10 +89,10 @@ await Task.Delay(1000, cancellationToken);
 bool authorized = true;  // ❌ TODO: Replace with actual user response
 ```
 
-Remote control je automaticky autorizován **BEZ** explicitního souhlasu uživatele!
+Remote control is authorized automatically **WITHOUT** explicit user consent!
 
-**Řešení:**
-Implementovat skutečný authorization dialog:
+**Solution:**
+Implement a real authorization dialog:
 
 ```csharp
 // Show real dialog (WPF/WinForms)
@@ -108,17 +108,17 @@ if (!authorized)
 }
 ```
 
-**Impakt:** ⚠️ Závažná bezpečnostní díra - umožňuje neoprávněný přístup!
+**Impact:** ⚠️ Serious security hole - allows unauthorized access!
 
 ---
 
-### 3. CORS AllowAnyOrigin v produkci
+### 3. CORS AllowAnyOrigin in production
 
 **Severity:** 🔴 CRITICAL
-**Soubor:** `src/SignalingServer/Program.cs:49-56`
-**Kategorie:** Security
+**File:** `src/SignalingServer/Program.cs:49-56`
+**Category:** Security
 
-**Problém:**
+**Problem:**
 ```csharp
 builder.Services.AddCors(options =>
 {
@@ -131,7 +131,7 @@ builder.Services.AddCors(options =>
 });
 ```
 
-**Řešení:**
+**Solution:**
 ```csharp
 builder.Services.AddCors(options =>
 {
@@ -157,7 +157,7 @@ builder.Services.AddCors(options =>
 });
 ```
 
-Přidat do `appsettings.json`:
+Add to `appsettings.json`:
 ```json
 {
   "Cors": {
@@ -169,18 +169,18 @@ Přidat do `appsettings.json`:
 }
 ```
 
-**Impakt:** Umožňuje CSRF útoky z libovolných domén
+**Impact:** Allows CSRF attacks from arbitrary domains
 
 ---
 
-## 🟠 VYSOKÉ PROBLÉMY (Akce do měsíce)
+## 🟠 HIGH ISSUES (Action within a month)
 
-### 4. Memory Leak - Nedisposované resources
+### 4. Memory Leak - Undisposed resources
 
 **Severity:** 🟠 HIGH
-**Soubor:** `src/Core/ScreenSenderService.cs:269-287`
+**File:** `src/Core/ScreenSenderService.cs:269-287`
 
-**Problém:**
+**Problem:**
 ```csharp
 int width, height;
 {
@@ -197,7 +197,7 @@ int width, height;
 }
 ```
 
-**Řešení:**
+**Solution:**
 ```csharp
 int width, height;
 using (var tempCapturer = PlatformServiceFactory.CreateScreenCapturer(...))
@@ -215,14 +215,14 @@ using (var tempCapturer = PlatformServiceFactory.CreateScreenCapturer(...))
 
 ---
 
-### 5. Duplicitní validační kód
+### 5. Duplicate validation code
 
 **Severity:** 🟠 HIGH
-**Kategorie:** Code Quality / Maintainability
+**Category:** Code Quality / Maintainability
 
-**Problém:** Stejná validace se opakuje napříč ~20 soubory.
+**Problem:** The same validation is repeated across ~20 files.
 
-**Řešení:** Vytvořit centrální Guard class:
+**Solution:** Create a central Guard class:
 
 ```csharp
 namespace RemoteDesktop.Core.Validation;
@@ -275,31 +275,31 @@ public static class Guard
 }
 ```
 
-**Použití:**
+**Usage:**
 ```csharp
-// Před:
+// Before:
 if (string.IsNullOrWhiteSpace(clientId))
     throw new ArgumentException("Client ID cannot be null or whitespace.", nameof(clientId));
 
-// Po:
+// After:
 Guard.NotNullOrWhiteSpace(clientId, nameof(clientId));
 ```
 
-**Impakt:** Sníží duplicitu o ~150 řádků kódu
+**Impact:** Reduces duplication by ~150 lines of code
 
 ---
 
-### 6. Magic Numbers bez konstant
+### 6. Magic Numbers without constants
 
 **Severity:** 🟠 HIGH
-**Kategorie:** Maintainability
+**Category:** Maintainability
 
-**Příklady:**
+**Examples:**
 - `WebRTCSession.cs:31` - `KeyframeInterval = 2`
 - `WindowsInputController.cs:136` - `MaxInputsPerSecond = 120`
 - `AuthenticationService.cs:30` - `PasskeyValiditySeconds = 45`
 
-**Řešení:** Vytvořit configuration třídy:
+**Solution:** Create configuration classes:
 
 ```csharp
 /// <summary>
@@ -348,44 +348,44 @@ public class SecurityConfiguration
 
 ---
 
-## 🟡 STŘEDNÍ PROBLÉMY (Akce do 3 měsíců)
+## 🟡 MEDIUM ISSUES (Action within 3 months)
 
-### 7. TODO Komentáře - Neimplementované features
+### 7. TODO Comments - Unimplemented features
 
 **Severity:** 🟡 MEDIUM
-**Nalezeno:** 20+ TODO komentářů
+**Found:** 20+ TODO comments
 
-**Top nedokončené features:**
+**Top unfinished features:**
 
-1. **macOS implementace** - kompletně chybí:
+1. **macOS implementation** - completely missing:
    - `CGEventInputController.cs` - Virtual-Key mapping
    - `CGWindowManager.cs` - Window management
    - `ScreenCaptureKitCapturer.cs` - Screen capture
 
-2. **Linux/Wayland podpora:**
+2. **Linux/Wayland support:**
    - `PlatformServiceFactory.cs` - Wayland detection
-   - PipeWire integrace
+   - PipeWire integration
 
-**Doporučení:**
-- Buď implementovat, nebo vytvořit GitHub Issues
-- Označit jako "Not supported yet" s odkazem na issue
-- Odebrat TODO komentáře, přesunout do issue trackeru
+**Recommendation:**
+- Either implement them, or create GitHub Issues
+- Mark as "Not supported yet" with a link to the issue
+- Remove the TODO comments, move them to the issue tracker
 
 ---
 
-### 8. Duplicitní kód - ScreenSenderApp vs Core
+### 8. Duplicate code - ScreenSenderApp vs Core
 
 **Severity:** 🟡 MEDIUM
-**Kategorie:** Code Duplication
+**Category:** Code Duplication
 
-**Problém:** Tyto třídy existují 2x:
+**Problem:** These classes exist twice:
 - `PixelConverter.cs` (2x)
 - `SimdPixelConverter.cs` (2x)
 - `PooledPixelConverter.cs` (2x)
 - `CapturePipeline.cs` (2x)
 - `WebRTCSession.cs` (2x)
 
-**Řešení:** Odstranit z ScreenSenderApp, používat pouze Core:
+**Solution:** Remove from ScreenSenderApp, use only Core:
 
 ```xml
 <!-- ScreenSenderApp.csproj -->
@@ -402,32 +402,32 @@ public class SecurityConfiguration
 
 ---
 
-### 9. Složité metody (>50 řádků)
+### 9. Complex methods (>50 lines)
 
 **Severity:** 🟡 MEDIUM
 
-**Největší problémy:**
+**Biggest problems:**
 
-1. **`ScreenSenderService.ExecuteAsync`** - 177 řádků! ❌
-   - Mělo by být: InitializeCapturer(), CreateWebRTCSession(), StartPipeline(), Monitor()
+1. **`ScreenSenderService.ExecuteAsync`** - 177 lines! ❌
+   - Should be: InitializeCapturer(), CreateWebRTCSession(), StartPipeline(), Monitor()
 
-2. **`Program.RunInteractiveMenuAsync`** - 83 řádků
-   - Mělo by být: DisplayMenu(), HandleMenuSelection()
+2. **`Program.RunInteractiveMenuAsync`** - 83 lines
+   - Should be: DisplayMenu(), HandleMenuSelection()
 
-**Doporučení:** Refaktorovat pomocí Extract Method pattern
+**Recommendation:** Refactor using the Extract Method pattern
 
 ---
 
 ## 📊 Test Coverage Gap Analysis
 
-### ❌ KRITICKY NETESTOVÁNO:
+### ❌ CRITICALLY UNTESTED:
 
-1. **WebRTCSession.cs** - žádné testy!
+1. **WebRTCSession.cs** - no tests!
    - Offer/Answer exchange
    - ICE candidate handling
    - Connection state changes
 
-2. **WebRTCSessionWithInput.cs** - žádné testy!
+2. **WebRTCSessionWithInput.cs** - no tests!
    - DataChannel operations
    - Clipboard sync
 
@@ -435,7 +435,7 @@ public class SecurityConfiguration
    - Producer-consumer pattern
    - Backpressure handling
 
-**Doporučení:** Přidat integration testy:
+**Recommendation:** Add integration tests:
 
 ```csharp
 [Fact]
@@ -462,13 +462,13 @@ public async Task WebRTCSession_OfferAnswerExchange_ShouldEstablishConnection()
 
 ---
 
-## ⚡ Performance Optimalizace
+## ⚡ Performance Optimizations
 
-### Buffer Allocations v Hot Path
+### Buffer Allocations in Hot Path
 
-**Soubor:** `SIPSorceryVideoSource.cs:236-244`
+**File:** `SIPSorceryVideoSource.cs:236-244`
 
-**Problém:**
+**Problem:**
 ```csharp
 public bool PushFrame(VideoFrame frame)
 {
@@ -481,7 +481,7 @@ public bool PushFrame(VideoFrame frame)
 }
 ```
 
-**Optimalizace s ArrayPool:**
+**Optimization with ArrayPool:**
 ```csharp
 private readonly ArrayPool<byte> _bufferPool = ArrayPool<byte>.Shared;
 
@@ -505,23 +505,23 @@ public bool PushFrame(VideoFrame frame)
 }
 ```
 
-**Očekávaný přínos:** Snížení GC pressure při 60 FPS z ~460 KB/s na téměř 0
+**Expected benefit:** Reduces GC pressure at 60 FPS from ~460 KB/s to almost 0
 
 ---
 
-## 🏗️ Architektonická doporučení
+## 🏗️ Architectural Recommendations
 
 ### SOLID Violations
 
 **Single Responsibility Principle:**
-- `ScreenSenderService` dělá příliš mnoho:
+- `ScreenSenderService` does too much:
   - Capturer initialization
   - WebRTC setup
   - Pipeline management
   - Passkey rotation
   - Monitoring
 
-**Doporučená struktura:**
+**Recommended structure:**
 
 ```csharp
 public class ScreenSenderService
@@ -543,43 +543,43 @@ public class ScreenSenderService
 
 ---
 
-## 📋 Akční plán
+## 📋 Action Plan
 
-### ⏰ Týden 1 (KRITICKÉ)
+### ⏰ Week 1 (CRITICAL)
 
-- [ ] Opravit .Wait() deadlock v WebRTCSession.cs
-- [ ] Implementovat authorization dialog v WindowsInputController.cs
-- [ ] Opravit CORS AllowAnyOrigin v Program.cs
-- [ ] Fix memory leaks - použít using statements
+- [ ] Fix the .Wait() deadlock in WebRTCSession.cs
+- [ ] Implement the authorization dialog in WindowsInputController.cs
+- [ ] Fix CORS AllowAnyOrigin in Program.cs
+- [ ] Fix memory leaks - use using statements
 
-**Odpovědnost:** Senior Developer
+**Responsible:** Senior Developer
 **Deadline:** 2025-01-22
 
-### ⏰ Měsíc 1 (VYSOKÉ)
+### ⏰ Month 1 (HIGH)
 
-- [ ] Vytvořit Guard validation class
-- [ ] Odstranit duplicitu ScreenSenderApp/Core
-- [ ] Přidat WebRTC integration testy
-- [ ] Vytvořit Configuration classes pro magic numbers
+- [ ] Create a Guard validation class
+- [ ] Remove the ScreenSenderApp/Core duplication
+- [ ] Add WebRTC integration tests
+- [ ] Create Configuration classes for magic numbers
 
-**Odpovědnost:** Všichni vývojáři
+**Responsible:** All developers
 **Deadline:** 2025-02-15
 
-### ⏰ Kvartál 1 (STŘEDNÍ)
+### ⏰ Quarter 1 (MEDIUM)
 
-- [ ] Vyřešit TODO komentáře (issues nebo implementace)
-- [ ] Refaktorovat složité metody (>50 LOC)
-- [ ] Optimalizovat buffer allocations
-- [ ] Doplnit chybějící XML dokumentaci
+- [ ] Resolve TODO comments (issues or implementation)
+- [ ] Refactor complex methods (>50 LOC)
+- [ ] Optimize buffer allocations
+- [ ] Fill in missing XML documentation
 
-**Odpovědnost:** Tech Lead
+**Responsible:** Tech Lead
 **Deadline:** 2025-04-15
 
 ---
 
-## 📈 Doporučené metriky pro sledování
+## 📈 Recommended metrics to track
 
-Implementovat do CI/CD pipeline:
+Implement in the CI/CD pipeline:
 
 ```yaml
 # .github/workflows/quality-check.yml
@@ -612,7 +612,7 @@ jobs:
           # Fail if any CRITICAL issues found
 ```
 
-**Cílové metriky:**
+**Target metrics:**
 - Test Coverage: ≥70% (current: ~65%)
 - CRITICAL Issues: 0 (current: 3)
 - HIGH Issues: <3 (current: 6)
@@ -620,22 +620,22 @@ jobs:
 
 ---
 
-## 🎯 Závěr
+## 🎯 Conclusion
 
-Projekt **DeskShare** má **solidní základ**, ale vyžaduje okamžitou akci na kritických bezpečnostních problémech. Po jejich opravě bude kód připravený pro produkční nasazení.
+Project **DeskShare** has a **solid foundation**, but requires immediate action on the critical security problems. Once they are fixed, the code will be ready for production deployment.
 
-**Doporučení pro management:**
-1. Naplánovat Sprint na opravu CRITICAL issues
-2. Alokovat 2 developery na týden na refactoring
-3. Zavést code review process pro nový kód
-4. Implementovat automatické quality checks v CI/CD
+**Recommendations for management:**
+1. Plan a Sprint to fix the CRITICAL issues
+2. Allocate 2 developers for a week on refactoring
+3. Introduce a code review process for new code
+4. Implement automatic quality checks in CI/CD
 
-**Celkové hodnocení:**
-- **Před opravami:** 7.5/10 ⭐⭐⭐⭐
-- **Po opravách:** 8.5/10 ⭐⭐⭐⭐⭐
+**Overall rating:**
+- **Before fixes:** 7.5/10 ⭐⭐⭐⭐
+- **After fixes:** 8.5/10 ⭐⭐⭐⭐⭐
 
 ---
 
-**Připravil:** Claude Code Review Agent
-**Kontakt:** Pro otázky vytvořte GitHub Issue
-**Verze dokumentu:** 1.0.0
+**Prepared by:** Claude Code Review Agent
+**Contact:** For questions, create a GitHub Issue
+**Document version:** 1.0.0

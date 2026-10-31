@@ -1,113 +1,113 @@
-﻿# Bezpečnostní analýza DeskShare
+﻿# DeskShare Security Analysis
 
-## Současný bezpečnostní model
+## Current security model
 
-### ✅ Co je již implementováno:
+### ✅ What is already implemented:
 
-1. **Passkey autentizace (45 sekund TTL)**
-   - Generována z `ServerId` (MAC adresa) + timestamp
-   - SHA256 hash pro nepředvídatelnost
-   - Krátká životnost (45s) omezuje útočné okno
+1. **Passkey authentication (45 seconds TTL)**
+   - Generated from `ServerId` (MAC address) + timestamp
+   - SHA256 hash for unpredictability
+   - Short lifetime (45s) limits the attack window
 
-2. **Server ID z MAC adresy**
-   - Stabilní identifikátor (nemění se při restartu)
-   - Unikátní pro každý stroj
-   - Použito jako seed pro passkey
+2. **Server ID from the MAC address**
+   - Stable identifier (does not change on restart)
+   - Unique for each machine
+   - Used as a seed for the passkey
 
 3. **Rate limiting**
-   - 120 vstupů/sekundu
-   - Ochrana proti flooding útokům
+   - 120 inputs/second
+   - Protection against flooding attacks
 
-4. **Input validace**
-   - Kontrola rozsahů souřadnic (0.0-1.0)
-   - Validace key codes
-   - Ochrana proti injection
+4. **Input validation**
+   - Coordinate range checks (0.0-1.0)
+   - Key code validation
+   - Protection against injection
 
 5. **Session timeout**
-   - 30 minut nečinnosti
-   - Auto-revokace autorizace
+   - 30 minutes of inactivity
+   - Auto-revocation of authorization
 
-## 🔴 Bezpečnostní problémy
+## 🔴 Security issues
 
-### Problém 1: **MAC adresa NENÍ bezpečný identifikátor**
+### Issue 1: **The MAC address is NOT a secure identifier**
 
-**Proč MAC adresa NEpomůže:**
+**Why the MAC address will NOT help:**
 
 ```
-❌ MÝTUS: "MAC adresa je tajná a lze ji použít pro autentizaci"
+❌ MYTH: "The MAC address is secret and can be used for authentication"
 
-✅ REALITA: MAC adresa je VEŘEJNÁ a lze ji snadno zjistit:
+✅ REALITY: The MAC address is PUBLIC and easy to find out:
 
-1. ARP Request (lokální síť):
+1. ARP Request (local network):
    $ arp -a
    Interface: 192.168.1.100
      Internet Address      Physical Address      Type
-     192.168.1.1          00-11-22-33-44-55     dynamic  ← MAC adresa routeru
-     192.168.1.50         AA-BB-CC-DD-EE-FF     dynamic  ← MAC serveru
+     192.168.1.1          00-11-22-33-44-55     dynamic  ← router MAC address
+     192.168.1.50         AA-BB-CC-DD-EE-FF     dynamic  ← server MAC
 
-2. DHCP Logs (správce sítě):
-   DHCP Server vidí všechny MAC adresy při přidělování IP
+2. DHCP Logs (network administrator):
+   DHCP Server sees all MAC addresses when assigning IPs
 
-3. Network Sniffing (útočník ve stejné síti):
-   Wireshark, tcpdump → okamžitě vidí všechny MAC adresy
+3. Network Sniffing (attacker on the same network):
+   Wireshark, tcpdump → instantly see all MAC addresses
 
 4. WebRTC ICE Candidates:
-   Obsahují lokální IP adresy, které lze mapovat na MAC adresy
+   They contain local IP addresses that can be mapped to MAC addresses
 
 5. JavaScript API (browser):
-   navigator.mediaDevices.enumerateDevices() může odhalit device IDs
+   navigator.mediaDevices.enumerateDevices() can reveal device IDs
 ```
 
-### Problém 2: **Replay útoky**
+### Issue 2: **Replay attacks**
 
-**Scénář útoku:**
+**Attack scenario:**
 
 ```
-1. Útočník odposlouchává síť (WiFi sniffing, ARP spoofing)
-2. Zachytí WebSocket komunikaci mezi klientem a serverem
-3. Zkopíruje platné zprávy (včetně passkey)
-4. Přehraje je ve vlastním spojení
+1. The attacker eavesdrops on the network (WiFi sniffing, ARP spoofing)
+2. Captures the WebSocket communication between the client and the server
+3. Copies valid messages (including the passkey)
+4. Replays them in their own connection
 
-Příklad zachycené zprávy:
+Example of a captured message:
 {
   "type": "authenticate",
-  "serverId": "AABBCCDDEEFF",  ← Zjištěno z ARP
-  "passkey": "A3F7K9M2P",      ← Zachyceno z komunikace
-  "clientId": "112233445566"    ← MAC útočníka
+  "serverId": "AABBCCDDEEFF",  ← Found via ARP
+  "passkey": "A3F7K9M2P",      ← Captured from the communication
+  "clientId": "112233445566"    ← Attacker's MAC
 }
 
-5. SignalingServer přijme zprávu → úspěšná autentizace!
+5. SignalingServer accepts the message → successful authentication!
 ```
 
-### Problém 3: **Man-in-the-Middle (MITM)**
+### Issue 3: **Man-in-the-Middle (MITM)**
 
-**Současný stav:**
+**Current state:**
 
 ```
 ┌────────┐    ws://         ┌───────────┐    ws://      ┌────────┐
 │ Client │◄─────────────────┤ Attacker  │◄──────────────┤ Server │
-└────────┘  nezašifrováno   │  Proxy    │ nezašifrováno└────────┘
+└────────┘  unencrypted     │  Proxy    │ unencrypted  └────────┘
                              └───────────┘
                                    ↓
-                        Útočník vidí VŠE:
+                        Attacker sees EVERYTHING:
                         - Server ID
                         - Passkey
                         - ICE candidates
                         - SDP offers/answers
 ```
 
-### Problém 4: **Session Hijacking**
+### Issue 4: **Session Hijacking**
 
-**Útočník může:**
+**The attacker can:**
 
 ```
-1. Zachytit ClientId legitimního klienta
-2. Vytvořit vlastní WebSocket spojení se stejným ClientId
-3. SignalingServer nerozliší, kdo je skutečný klient
-4. Útočník přebírá kontrolu nad sesssion
+1. Capture the ClientId of a legitimate client
+2. Create their own WebSocket connection with the same ClientId
+3. SignalingServer cannot tell who the real client is
+4. The attacker takes over control of the session
 ```
 
-### Problém 5: **DoS útoky na SignalingServer**
+### Issue 5: **DoS attacks on SignalingServer**
 
 ```
 for i in {1..10000}; do
@@ -115,23 +115,23 @@ for i in {1..10000}; do
     -d '{"serverId":"FAKE", "passkey":"FAKE123"}'
 done
 
-→ SignalingServer zahlcen falešnými registracemi
-→ Legitimní servery se nemohou registrovat
+→ SignalingServer flooded with fake registrations
+→ Legitimate servers cannot register
 ```
 
-## 🛡️ Doporučená vylepšení
+## 🛡️ Recommended improvements
 
-### Úroveň 1: **OKAMŽITĚ IMPLEMENTOVAT** (kritické)
+### Level 1: **IMPLEMENT IMMEDIATELY** (critical)
 
 #### 1.1 WSS (WebSocket Secure) - HTTPS/TLS
 
 **Implementace:**
 
 ```bash
-# Získání certifikátu (Let's Encrypt)
+# Obtaining a certificate (Let's Encrypt)
 sudo certbot certonly --standalone -d signaling.yourserver.com
 
-# Konfigurace Kestrel (SignalingServer/appsettings.json)
+# Kestrel configuration (SignalingServer/appsettings.json)
 {
   "Kestrel": {
     "Endpoints": {
@@ -147,19 +147,19 @@ sudo certbot certonly --standalone -d signaling.yourserver.com
 }
 ```
 
-**Výhody:**
-- ✅ Šifrování veškeré komunikace
-- ✅ Ochrana proti odposlouchávání
-- ✅ Ochrana proti MITM útokům
-- ✅ Browser automaticky vyžaduje WSS pro WebRTC
+**Benefits:**
+- ✅ Encryption of all communication
+- ✅ Protection against eavesdropping
+- ✅ Protection against MITM attacks
+- ✅ The browser automatically requires WSS for WebRTC
 
-**Nutnost:** ⚠️ **KRITICKÁ** - bez TLS je aplikace NEBEZPEČNÁ
+**Necessity:** ⚠️ **CRITICAL** - without TLS the application is UNSAFE
 
 ---
 
 #### 1.2 HMAC Request Signing
 
-**Problém MAC adresy vyřešen pomocí HMAC:**
+**The MAC address problem solved with HMAC:**
 
 ```csharp
 // src/Core/Auth/RequestSigningService.cs
@@ -169,12 +169,12 @@ public sealed class RequestSigningService
     private const int SignatureValiditySeconds = 60;
 
     /// <summary>
-    /// Vytvoří digitální podpis requestu pomocí HMAC-SHA256.
+    /// Creates a digital signature of the request using HMAC-SHA256.
     /// </summary>
     /// <param name="serverId">Server ID (public)</param>
-    /// <param name="passkey">Passkey (secret - sdílený po zobrazení na serveru)</param>
-    /// <param name="timestamp">Timestamp requestu</param>
-    /// <param name="nonce">Jedinečný identifikátor requestu (ochrana proti replay)</param>
+    /// <param name="passkey">Passkey (secret - shared after being displayed on the server)</param>
+    /// <param name="timestamp">Request timestamp</param>
+    /// <param name="nonce">Unique request identifier (replay protection)</param>
     /// <returns>HMAC signature</returns>
     public static string SignRequest(
         string serverId,
@@ -182,19 +182,19 @@ public sealed class RequestSigningService
         DateTime timestamp,
         string nonce)
     {
-        // Kombinace dat pro podepsání
+        // Combination of data to sign
         string message = $"{serverId}|{timestamp:O}|{nonce}";
 
-        // HMAC-SHA256 s passkey jako klíčem
+        // HMAC-SHA256 with the passkey as the key
         using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(passkey));
         byte[] hashBytes = hmac.ComputeHash(Encoding.UTF8.GetBytes(message));
 
-        // Base64 pro přenos
+        // Base64 for transport
         return Convert.ToBase64String(hashBytes);
     }
 
     /// <summary>
-    /// Ověří platnost podpisu requestu.
+    /// Verifies the validity of the request signature.
     /// </summary>
     public static bool ValidateSignature(
         string serverId,
@@ -203,16 +203,16 @@ public sealed class RequestSigningService
         string nonce,
         string signature)
     {
-        // Kontrola časové validity (max 60 sekund starý)
+        // Time validity check (max 60 seconds old)
         if (Math.Abs((DateTime.UtcNow - timestamp).TotalSeconds) > SignatureValiditySeconds)
         {
             return false;
         }
 
-        // Přepočítat očekávaný podpis
+        // Recompute the expected signature
         string expectedSignature = SignRequest(serverId, passkey, timestamp, nonce);
 
-        // Konstantní časové porovnání (ochrana proti timing attacks)
+        // Constant-time comparison (protection against timing attacks)
         return CryptographicOperations.FixedTimeEquals(
             Convert.FromBase64String(expectedSignature),
             Convert.FromBase64String(signature));
@@ -220,14 +220,14 @@ public sealed class RequestSigningService
 }
 ```
 
-**Použití v klientovi:**
+**Usage in the client:**
 
 ```csharp
 // RemoteDesktop.Desktop/Services/ClientManager.cs
 
 public async Task<bool> AuthenticateAsync(string serverId, string passkey)
 {
-    var nonce = Guid.NewGuid().ToString(); // Jedinečný ID pro tento request
+    var nonce = Guid.NewGuid().ToString(); // Unique ID for this request
     var timestamp = DateTime.UtcNow;
 
     var signature = RequestSigningService.SignRequest(
@@ -236,27 +236,27 @@ public async Task<bool> AuthenticateAsync(string serverId, string passkey)
     var authRequest = new ClientAuthenticationMessage
     {
         ServerId = serverId,
-        Passkey = passkey,  // Stále posíláme pro zpětnou kompatibilitu
+        Passkey = passkey,  // We still send it for backward compatibility
         ClientId = _clientId,
         Timestamp = timestamp,
         Nonce = nonce,
-        Signature = signature  // ← Nový field
+        Signature = signature  // ← New field
     };
 
-    // Poslat na SignalingServer
+    // Send to SignalingServer
     var response = await _httpClient.PostAsJsonAsync("/authenticate", authRequest);
     // ...
 }
 ```
 
-**Ověření na serveru:**
+**Verification on the server:**
 
 ```csharp
 // SignalingServer/Services/ConnectionManager.cs
 
 public ClientAuthenticationResponse AuthenticateClient(ClientAuthenticationMessage auth)
 {
-    // 1. Kontrola signature PŘED kontrolou passkey
+    // 1. Check the signature BEFORE checking the passkey
     if (!string.IsNullOrEmpty(auth.Signature))
     {
         if (!RequestSigningService.ValidateSignature(
@@ -277,7 +277,7 @@ public ClientAuthenticationResponse AuthenticateClient(ClientAuthenticationMessa
         }
     }
 
-    // 2. Kontrola nonce (ochrana proti replay)
+    // 2. Nonce check (replay protection)
     if (_usedNonces.Contains(auth.Nonce))
     {
         _logger.LogWarning("Replay attack detected - nonce already used | ServerId: {ServerId}",
@@ -290,29 +290,29 @@ public ClientAuthenticationResponse AuthenticateClient(ClientAuthenticationMessa
         };
     }
 
-    // Uložit nonce (s TTL 60 sekund)
+    // Store the nonce (with a TTL of 60 seconds)
     _usedNonces.Add(auth.Nonce, DateTime.UtcNow.AddSeconds(60));
 
-    // 3. Pokračovat s normální validací passkey
+    // 3. Continue with the normal passkey validation
     // ...
 }
 
-// Nonce cache s automatickým vypršením
+// Nonce cache with automatic expiry
 private readonly ConcurrentDictionary<string, DateTime> _usedNonces = new();
 ```
 
-**Výhody HMAC:**
-- ✅ Ochrana proti replay útokům (nonce)
-- ✅ Ochrana proti tampering (signature)
-- ✅ Časová validita (timestamp)
-- ✅ Passkey slouží jako shared secret
-- ✅ Žádná potřeba ukládat hesla na serveru
+**Benefits of HMAC:**
+- ✅ Replay attack protection (nonce)
+- ✅ Tampering protection (signature)
+- ✅ Time validity (timestamp)
+- ✅ The passkey serves as a shared secret
+- ✅ No need to store passwords on the server
 
 ---
 
 #### 1.3 Connection Fingerprinting
 
-**Místo MAC adresy použít TLS Certificate Pinning:**
+**Instead of the MAC address, use TLS Certificate Pinning:**
 
 ```csharp
 // src/Core/Auth/DeviceFingerprintService.cs
@@ -320,13 +320,13 @@ private readonly ConcurrentDictionary<string, DateTime> _usedNonces = new();
 public sealed class DeviceFingerprintService
 {
     /// <summary>
-    /// Generuje stabilní fingerprint zařízení bez použití MAC adresy.
+    /// Generates a stable device fingerprint without using the MAC address.
     /// </summary>
     public static string GenerateDeviceFingerprint()
     {
         var components = new List<string>
         {
-            // 1. Machine GUID (Windows Registry - stabilní)
+            // 1. Machine GUID (Windows Registry - stable)
             GetMachineGuid(),
 
             // 2. CPU ID
@@ -342,7 +342,7 @@ public sealed class DeviceFingerprintService
             GetSystemDriveSerial()
         };
 
-        // Hash kombinace
+        // Hash of the combination
         var combined = string.Join("|", components.Where(c => !string.IsNullOrEmpty(c)));
         var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(combined));
 
@@ -364,7 +364,7 @@ public sealed class DeviceFingerprintService
         }
         else if (OperatingSystem.IsLinux())
         {
-            // /etc/machine-id nebo /var/lib/dbus/machine-id
+            // /etc/machine-id or /var/lib/dbus/machine-id
             if (File.Exists("/etc/machine-id"))
                 return File.ReadAllText("/etc/machine-id").Trim();
         }
@@ -389,27 +389,27 @@ public sealed class DeviceFingerprintService
         return string.Empty;
     }
 
-    // Další metody pro CPU ID, Motherboard Serial, atd.
-    // (WMI queries na Windows, dmidecode na Linux, ioreg na macOS)
+    // More methods for CPU ID, Motherboard Serial, etc.
+    // (WMI queries on Windows, dmidecode on Linux, ioreg on macOS)
 }
 ```
 
-**Výhody:**
-- ✅ Stabilnější než MAC adresa (nemění se při změně síťovky)
-- ✅ Těžší na podvržení (potřeba znát více HW parametrů)
-- ✅ Multiplatformní (Windows/Linux/macOS)
+**Benefits:**
+- ✅ More stable than the MAC address (does not change when the network card is replaced)
+- ✅ Harder to spoof (requires knowing more HW parameters)
+- ✅ Cross-platform (Windows/Linux/macOS)
 
-**Nevýhody:**
-- ⚠️ Stále lze obejít (virtuální stroje, HW emulace)
-- ⚠️ Mění se při reinstalaci OS nebo výměně HW
+**Drawbacks:**
+- ⚠️ Can still be bypassed (virtual machines, HW emulation)
+- ⚠️ Changes after an OS reinstall or HW replacement
 
 ---
 
-### Úroveň 2: **DOPORUČENO** (silná bezpečnost)
+### Level 2: **RECOMMENDED** (strong security)
 
 #### 2.1 TLS Client Certificates (mTLS)
 
-**Nejsilnější autentizace:**
+**Strongest authentication:**
 
 ```
 ┌────────┐              ┌──────────────┐
@@ -432,29 +432,29 @@ public sealed class DeviceFingerprintService
      │                         │
 ```
 
-**Generování klientských certifikátů:**
+**Generating client certificates:**
 
 ```bash
-# 1. Vytvoření CA (Certificate Authority)
+# 1. Creating the CA (Certificate Authority)
 openssl genrsa -out ca.key 4096
 openssl req -new -x509 -days 3650 -key ca.key -out ca.crt \
   -subj "/CN=RemoteDesktop CA"
 
-# 2. Vytvoření klientského certifikátu
+# 2. Creating the client certificate
 openssl genrsa -out client.key 2048
 openssl req -new -key client.key -out client.csr \
   -subj "/CN=Client-$CLIENT_ID"
 
-# 3. Podepsání CA
+# 3. Signing with the CA
 openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key \
   -CAcreateserial -out client.crt -days 365
 
-# 4. Export do PKCS12 (pro Windows/Browser)
+# 4. Export to PKCS12 (for Windows/Browser)
 openssl pkcs12 -export -out client.pfx \
   -inkey client.key -in client.crt -certfile ca.crt
 ```
 
-**Konfigurace SignalingServer:**
+**SignalingServer configuration:**
 
 ```csharp
 // Program.cs
@@ -465,18 +465,18 @@ builder.WebHost.ConfigureKestrel(options =>
         httpsOptions.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
         httpsOptions.CheckCertificateRevocation = true;
 
-        // Validace klientského certifikátu
+        // Client certificate validation
         httpsOptions.ClientCertificateValidation = (cert, chain, errors) =>
         {
             if (errors != SslPolicyErrors.None)
                 return false;
 
-            // Kontrola, že certifikát je vydán naší CA
+            // Check that the certificate was issued by our CA
             var issuer = cert.Issuer;
             if (!issuer.Contains("RemoteDesktop CA"))
                 return false;
 
-            // Kontrola expirace
+            // Check expiration
             if (cert.NotAfter < DateTime.Now)
                 return false;
 
@@ -486,7 +486,7 @@ builder.WebHost.ConfigureKestrel(options =>
 });
 ```
 
-**Použití v klientovi:**
+**Usage in the client:**
 
 ```csharp
 // Load client certificate
@@ -500,25 +500,25 @@ var httpClient = new HttpClient(handler)
     BaseAddress = new Uri("https://signaling.yourserver.com")
 };
 
-// Nyní všechny requesty jsou autentizovány certifikátem
+// All requests are now authenticated by the certificate
 ```
 
-**Výhody:**
-- ✅ Nejsilnější autentizace (standardní v banking, enterprise)
-- ✅ Certifikát = klíč k serveru (nelze uhodnout)
-- ✅ Revokace certifikátů (CRL, OCSP)
-- ✅ Browser nativní podpora
+**Benefits:**
+- ✅ Strongest authentication (standard in banking, enterprise)
+- ✅ The certificate = the key to the server (cannot be guessed)
+- ✅ Certificate revocation (CRL, OCSP)
+- ✅ Native browser support
 
-**Nevýhody:**
-- ⚠️ Složitější deployment (distribuce certifikátů)
-- ⚠️ Potřeba PKI infrastruktury (CA management)
-- ⚠️ User experience (import certifikátu do browseru)
+**Drawbacks:**
+- ⚠️ More complex deployment (certificate distribution)
+- ⚠️ Requires PKI infrastructure (CA management)
+- ⚠️ User experience (importing the certificate into the browser)
 
 ---
 
-#### 2.2 JWT Tokens pro Session Management
+#### 2.2 JWT Tokens for Session Management
 
-**Místo plaintext ClientId používat JWT:**
+**Use JWT instead of a plaintext ClientId:**
 
 ```csharp
 // src/Core/Auth/TokenService.cs
@@ -592,15 +592,15 @@ public sealed class TokenService
 7. Server validates token (no need to check passkey again)
 ```
 
-**Výhody:**
-- ✅ Stateless (server nemusí ukládat session state)
-- ✅ Self-contained (token obsahuje všechny claims)
+**Benefits:**
+- ✅ Stateless (the server does not need to store session state)
+- ✅ Self-contained (the token contains all claims)
 - ✅ Standard (RFC 7519)
 - ✅ Expiration built-in
 
 ---
 
-### Úroveň 3: **ENTERPRISE** (maximální bezpečnost)
+### Level 3: **ENTERPRISE** (maximum security)
 
 #### 3.1 Multi-Factor Authentication (MFA)
 
@@ -659,7 +659,7 @@ app.Use(async (context, next) =>
 #### 3.3 Hardware Security Keys (FIDO2/WebAuthn)
 
 ```javascript
-// Browser podporuje WebAuthn
+// The browser supports WebAuthn
 const credential = await navigator.credentials.create({
     publicKey: {
         challenge: new Uint8Array(32), // From server
@@ -682,109 +682,109 @@ const credential = await navigator.credentials.create({
 
 ---
 
-## 📊 Porovnání bezpečnostních úrovní
+## 📊 Comparison of security levels
 
-| Metoda | Úroveň | Ochrana proti | Složitost | Cena |
+| Method | Level | Protects against | Complexity | Cost |
 |--------|--------|---------------|-----------|------|
-| **Passkey only** | 🔴 Nízká | - | Snadné | €0 |
-| **+ WSS/TLS** | 🟡 Střední | MITM, Sniffing | Střední | €0-50/rok |
-| **+ HMAC Signing** | 🟢 Dobrá | Replay, Tampering | Střední | €0 |
-| **+ Device Fingerprint** | 🟢 Dobrá | MAC spoofing | Střední | €0 |
-| **+ Client Certificates** | 🔵 Velmi dobrá | Session hijacking | Vyšší | €0-200/rok |
-| **+ JWT Tokens** | 🔵 Velmi dobrá | Session replay | Střední | €0 |
-| **+ MFA (TOTP)** | 🟣 Excelentní | Credential theft | Vyšší | €0 |
-| **+ IP Whitelist** | 🟣 Excelentní | Remote attacks | Nízká | €0 |
-| **+ FIDO2/WebAuthn** | 🟣 Nejvyšší | All attacks | Vysoká | €20-50/key |
+| **Passkey only** | 🔴 Low | - | Easy | €0 |
+| **+ WSS/TLS** | 🟡 Medium | MITM, Sniffing | Medium | €0-50/year |
+| **+ HMAC Signing** | 🟢 Good | Replay, Tampering | Medium | €0 |
+| **+ Device Fingerprint** | 🟢 Good | MAC spoofing | Medium | €0 |
+| **+ Client Certificates** | 🔵 Very good | Session hijacking | Higher | €0-200/year |
+| **+ JWT Tokens** | 🔵 Very good | Session replay | Medium | €0 |
+| **+ MFA (TOTP)** | 🟣 Excellent | Credential theft | Higher | €0 |
+| **+ IP Whitelist** | 🟣 Excellent | Remote attacks | Low | €0 |
+| **+ FIDO2/WebAuthn** | 🟣 Highest | All attacks | High | €20-50/key |
 
 ---
 
-## ✅ Doporučená implementace (krok za krokem)
+## ✅ Recommended implementation (step by step)
 
-### Fáze 1: KRITICKÉ (implementovat OKAMŽITĚ)
+### Phase 1: CRITICAL (implement IMMEDIATELY)
 
-1. ✅ **WSS/TLS** - Šifrování veškeré komunikace
-   - Získat Let's Encrypt certifikát
-   - Nakonfigurovat Kestrel pro HTTPS
-   - Změnit všechny URL z `ws://` na `wss://`
+1. ✅ **WSS/TLS** - Encryption of all communication
+   - Obtain a Let's Encrypt certificate
+   - Configure Kestrel for HTTPS
+   - Change all URLs from `ws://` to `wss://`
 
-2. ✅ **HMAC Request Signing** - Ochrana proti replay
-   - Implementovat `RequestSigningService`
-   - Přidat `Signature`, `Timestamp`, `Nonce` do `ClientAuthenticationMessage`
-   - Validovat na serveru před autorizací
+2. ✅ **HMAC Request Signing** - Replay protection
+   - Implement `RequestSigningService`
+   - Add `Signature`, `Timestamp`, `Nonce` to `ClientAuthenticationMessage`
+   - Validate on the server before authorization
 
-3. ✅ **Nonce Cache** - Prevence replay útoků
-   - Ukládat použité nonce s TTL 60s
-   - Zamítnout duplicitní requesty
+3. ✅ **Nonce Cache** - Replay attack prevention
+   - Store used nonces with a TTL of 60s
+   - Reject duplicate requests
 
-### Fáze 2: DOPORUČENÉ (během měsíce)
+### Phase 2: RECOMMENDED (within a month)
 
-4. ✅ **Device Fingerprint** - Lepší identifikace zařízení
-   - Nahradit MAC adresu kombinací HW identifikátorů
-   - Multiplatformní implementace
+4. ✅ **Device Fingerprint** - Better device identification
+   - Replace the MAC address with a combination of HW identifiers
+   - Cross-platform implementation
 
-5. ✅ **Rate Limiting na SignalingServer**
-   - Limity na `/register`, `/authenticate` endpointy
-   - IP-based throttling (max 10 pokusů/minutu)
+5. ✅ **Rate Limiting on SignalingServer**
+   - Limits on the `/register`, `/authenticate` endpoints
+   - IP-based throttling (max 10 attempts/minute)
 
 6. ✅ **Audit Logging**
-   - Logovat všechny autentizační pokusy
-   - Ukládat IP adresy, timestamps, výsledky
-   - Retention 90 dní
+   - Log all authentication attempts
+   - Store IP addresses, timestamps, results
+   - Retention 90 days
 
-### Fáze 3: PRODUKCE (před nasazením)
+### Phase 3: PRODUCTION (before deployment)
 
-7. ✅ **Client Certificates (volitelné)**
-   - Pro high-security prostředí
+7. ✅ **Client Certificates (optional)**
+   - For high-security environments
    - Corporate deployment
 
 8. ✅ **JWT Tokens**
    - Session management
-   - Stateless autentizace
+   - Stateless authentication
 
 9. ✅ **Monitoring & Alerting**
-   - Neúspěšné autentizace > 5/hod → alert
-   - Nonce replay detekce → block IP
-   - Rate limit překročení → alert
+   - Failed authentications > 5/hour → alert
+   - Nonce replay detection → block IP
+   - Rate limit exceeded → alert
 
 ---
 
-## 🎯 Závěr
+## 🎯 Conclusion
 
-### Odpověď na vaši otázku:
+### Answer to your question:
 
-> **"Pomůže přidat MAC adresu do requestu?"**
+> **"Will adding the MAC address to the request help?"**
 
-**❌ NE** - MAC adresa:
-- Je veřejná (viditelná v síti)
-- Lze snadno zjistit (ARP, DHCP)
-- Lze podvrhnout (MAC spoofing)
-- Nepřidává žádnou bezpečnost
+**❌ NO** - the MAC address:
+- Is public (visible on the network)
+- Is easy to find out (ARP, DHCP)
+- Can be spoofed (MAC spoofing)
+- Adds no security
 
-### ✅ CO SKUTEČNĚ POMŮŽE:
+### ✅ WHAT WILL ACTUALLY HELP:
 
-1. **WSS/TLS** (nejvyšší priorita) - šifrování
-2. **HMAC Signing** - ochrana integrity
-3. **Nonce** - ochrana proti replay
-4. **Device Fingerprint** - lepší identifikace (ale ne primární autentizace)
-5. **Client Certificates** - pro enterprise použití
+1. **WSS/TLS** (top priority) - encryption
+2. **HMAC Signing** - integrity protection
+3. **Nonce** - replay protection
+4. **Device Fingerprint** - better identification (but not primary authentication)
+5. **Client Certificates** - for enterprise use
 
-### 🚀 Začněte s:
+### 🚀 Start with:
 
 ```bash
-# 1. Nainstalovat certbot
+# 1. Install certbot
 sudo snap install certbot --classic
 
-# 2. Získat certifikát
+# 2. Obtain a certificate
 sudo certbot certonly --standalone -d signaling.yourserver.com
 
-# 3. Nakonfigurovat appsettings.json
-# 4. Změnit ws:// na wss://
-# 5. Implementovat HMAC signing
-# 6. Testovat
+# 3. Configure appsettings.json
+# 4. Change ws:// to wss://
+# 5. Implement HMAC signing
+# 6. Test
 ```
 
-**Bezpečnost není o jednom kouzelném řešení, ale o vrstvách ochrany (defense-in-depth).**
+**Security is not about one magic solution, but about layers of protection (defense-in-depth).**
 
 ---
 
-**Otázky?** Rád vám pomůžu s implementací konkrétních částí!
+**Questions?** I'll gladly help you with implementing specific parts!

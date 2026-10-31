@@ -1,28 +1,28 @@
 ﻿# Run Guide - DeskShare
 
-Kompletní návod na spuštění, konfiguraci a debugging DeskShare aplikace.
+Complete guide to running, configuring and debugging the DeskShare application.
 
-## 📋 Obsah
+## 📋 Contents
 
-1. [Požadavky](#1-požadavky)
-2. [Instalace a Build](#2-instalace-a-build)
-3. [Spuštění komponent](#3-spuštění-komponent)
-4. [Konfigurace](#4-konfigurace)
+1. [Requirements](#1-requirements)
+2. [Installation and Build](#2-installation-and-build)
+3. [Running the components](#3-running-the-components)
+4. [Configuration](#4-configuration)
 5. [Debugging](#5-debugging)
 6. [Troubleshooting](#6-troubleshooting)
 7. [Performance tuning](#7-performance-tuning)
 
-## 1. Požadavky
+## 1. Requirements
 
-### Systémové požadavky
+### System requirements
 
 #### ScreenSenderApp (Sender)
 
-- **OS**: Windows 10 (1903+) nebo Windows 11
+- **OS**: Windows 10 (1903+) or Windows 11
 - **CPU**: Intel/AMD 4+ cores, 2.5+ GHz
-- **RAM**: 4GB+ (8GB doporučeno)
+- **RAM**: 4GB+ (8GB recommended)
 - **GPU**: DirectX 11 compatible (Desktop Duplication API)
-- **.NET**: .NET 8 SDK nebo novější
+- **.NET**: .NET 8 SDK or newer
 
 #### SignalingServer
 
@@ -33,23 +33,23 @@ Kompletní návod na spuštění, konfiguraci a debugging DeskShare aplikace.
 #### WebClient
 
 - **Browser**: Chrome 90+, Edge 90+, Firefox 88+, Safari 14.1+
-- **WebRTC**: Musí být podporováno (všechny moderní browsery)
+- **WebRTC**: Must be supported (all modern browsers)
 
-### Software požadavky
+### Software requirements
 
 ```bash
-# Ověření .NET SDK
+# Verify .NET SDK
 dotnet --version
-# Očekáváno: 8.0.x nebo novější
+# Expected: 8.0.x or newer
 
-# Ověření Git
+# Verify Git
 git --version
 
-# Volitelné: Docker pro coturn
+# Optional: Docker for coturn
 docker --version
 ```
 
-## 2. Instalace a Build
+## 2. Installation and Build
 
 ### 2.1 Clone repository
 
@@ -64,41 +64,41 @@ cd DeskShare
 dotnet restore
 ```
 
-### 2.3 Build celého solution
+### 2.3 Build the whole solution
 
 ```bash
 # Debug build
 dotnet build
 
-# Release build (optimalizované)
+# Release build (optimized)
 dotnet build -c Release
 ```
 
-### 2.4 Ověření buildu
+### 2.4 Verifying the build
 
 ```bash
 dotnet build --no-incremental
 ```
 
-Očekávaný výstup:
+Expected output:
 ```
 Build succeeded.
     0 Warning(s)
     0 Error(s)
 ```
 
-## 3. Spuštění komponent
+## 3. Running the components
 
-### 3.1 Spuštění SignalingServer
+### 3.1 Running SignalingServer
 
-#### Vývoj (Development)
+#### Development
 
 ```bash
 cd src/SignalingServer
 dotnet run
 ```
 
-Výstup:
+Output:
 ```
 info: Microsoft.Hosting.Lifetime[14]
       Now listening on: http://localhost:5000
@@ -106,76 +106,76 @@ info: Microsoft.Hosting.Lifetime[0]
       Application started. Press Ctrl+C to shut down.
 ```
 
-#### Produkce (Production)
+#### Production
 
 ```bash
 cd src/SignalingServer
 dotnet run -c Release --urls "https://0.0.0.0:443"
 ```
 
-**Poznámka**: Pro HTTPS v produkci je potřeba certifikát:
+**Note**: HTTPS in production requires a certificate:
 
 ```bash
-# Generovat dev certifikát
+# Generate a dev certificate
 dotnet dev-certs https --trust
 
-# Nebo použít vlastní certifikát v appsettings.json
+# Or use your own certificate in appsettings.json
 ```
 
-### 3.2 Spuštění WebClient
+### 3.2 Running WebClient
 
-WebClient je statická HTML/JS aplikace. Lze spustit několika způsoby:
+WebClient is a static HTML/JS application. It can be run in several ways:
 
-#### Způsob 1: Jednoduchý HTTP server (Python)
+#### Option 1: Simple HTTP server (Python)
 
 ```bash
 cd src/WebClient
 python -m http.server 8080
 ```
 
-Otevřete: `http://localhost:8080`
+Open: `http://localhost:8080`
 
-#### Způsob 2: VS Code Live Server
+#### Option 2: VS Code Live Server
 
-1. Nainstalujte "Live Server" extension
-2. Otevřete `src/WebClient/index.html`
-3. Klikněte "Go Live" v status baru
+1. Install the "Live Server" extension
+2. Open `src/WebClient/index.html`
+3. Click "Go Live" in the status bar
 
-#### Způsob 3: Přímo v browseru
+#### Option 3: Directly in the browser
 
-Otevřete `file:///C:/GIT/DeskShare/src/WebClient/index.html` v Chrome/Edge.
+Open `file:///C:/GIT/DeskShare/src/WebClient/index.html` in Chrome/Edge.
 
-⚠️ **WebSocket může vyžadovat HTTP server (ne file://).**
+⚠️ **WebSocket may require an HTTP server (not file://).**
 
-### 3.3 Spuštění ScreenSenderApp
+### 3.3 Running ScreenSenderApp
 
-⚠️ **DŮLEŽITÉ**: WebRTC integrace zatím není implementována. Následující je plánovaný postup:
+⚠️ **IMPORTANT**: WebRTC integration is not implemented yet. The following is the planned procedure:
 
 ```bash
 cd src/ScreenSenderApp
 dotnet run
 
-# Nebo s parametry
+# Or with parameters
 dotnet run -- --adapter 0 --output 0 --fps 30
 ```
 
-**Očekávané parametry** (budoucí):
+**Expected parameters** (future):
 
-- `--adapter <N>` - Index grafického adaptéru (0 = primární)
-- `--output <N>` - Index monitoru (0 = primární)
-- `--fps <N>` - Cílový framerate (default: 30)
-- `--signaling <URL>` - URL signaling serveru
+- `--adapter <N>` - Graphics adapter index (0 = primary)
+- `--output <N>` - Monitor index (0 = primary)
+- `--fps <N>` - Target framerate (default: 30)
+- `--signaling <URL>` - Signaling server URL
 
-### 3.4 Docker setup pro coturn (TURN server)
+### 3.4 Docker setup for coturn (TURN server)
 
 ```bash
 cd docker/coturn
 
-# Vytvořit docker-compose.yml (viz níže)
+# Create docker-compose.yml (see below)
 docker-compose up -d
 ```
 
-**docker-compose.yml** (vytvořit):
+**docker-compose.yml** (create):
 
 ```yaml
 version: '3.8'
@@ -189,7 +189,7 @@ services:
     restart: unless-stopped
 ```
 
-**turnserver.conf** (vytvořit):
+**turnserver.conf** (create):
 
 ```ini
 # TURN server config
@@ -211,11 +211,11 @@ verbose
 log-file=/var/log/turnserver.log
 ```
 
-## 4. Konfigurace
+## 4. Configuration
 
-### 4.1 SignalingServer konfigurace
+### 4.1 SignalingServer configuration
 
-**appsettings.json** (volitelné):
+**appsettings.json** (optional):
 
 ```json
 {
@@ -236,23 +236,23 @@ log-file=/var/log/turnserver.log
 }
 ```
 
-**Environment proměnné**:
+**Environment variables**:
 
 ```bash
 export ASPNETCORE_ENVIRONMENT=Development
 export ASPNETCORE_URLS="http://localhost:5000"
 ```
 
-### 4.2 WebClient konfigurace
+### 4.2 WebClient configuration
 
-Upravte `src/WebClient/client.js`:
+Edit `src/WebClient/client.js`:
 
 ```javascript
 const config = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        // Pro produkci přidat TURN:
+        // For production add TURN:
         {
             urls: 'turn:your-turn-server.com:3478',
             username: 'testuser',
@@ -262,13 +262,13 @@ const config = {
 };
 ```
 
-Upravte default signaling URL v `index.html`:
+Edit the default signaling URL in `index.html`:
 
 ```html
 <input type="text" id="signalingUrl" value="wss://your-server.com/signal" />
 ```
 
-### 4.3 ScreenSenderApp konfigurace (budoucí)
+### 4.3 ScreenSenderApp configuration (future)
 
 **appsettings.json**:
 
@@ -296,13 +296,13 @@ Upravte default signaling URL v `index.html`:
 
 ### 5.1 Visual Studio 2022
 
-1. Otevřete `DeskShare.sln`
-2. Nastavte startup projekty:
+1. Open `DeskShare.sln`
+2. Set the startup projects:
    - Right-click Solution -> Properties
    - Multiple startup projects
    - SignalingServer: Start
    - ScreenSenderApp: Start
-3. F5 pro debug
+3. F5 to debug
 
 ### 5.2 VS Code
 
@@ -338,7 +338,7 @@ Upravte default signaling URL v `index.html`:
 
 #### SignalingServer logs
 
-Defaultně loguje do konzole. Pro file logging přidat do `appsettings.json`:
+Logs to the console by default. For file logging add to `appsettings.json`:
 
 ```json
 {
@@ -356,9 +356,9 @@ Defaultně loguje do konzole. Pro file logging přidat do `appsettings.json`:
 
 #### Browser console (WebClient)
 
-1. Otevřete DevTools (F12)
+1. Open DevTools (F12)
 2. Console tab
-3. Sledujte WebSocket messages a WebRTC events
+3. Watch the WebSocket messages and WebRTC events
 
 ```javascript
 // Enable verbose logging
@@ -367,16 +367,16 @@ localStorage.debug = '*';
 
 ### 5.4 Network debugging
 
-#### Wireshark pro WebRTC
+#### Wireshark for WebRTC
 
-1. Spusťte Wireshark
-2. Filtr: `udp.port == 49152:65535` (RTP packets)
+1. Start Wireshark
+2. Filter: `udp.port == 49152:65535` (RTP packets)
 3. Analyze -> Decode As -> RTP
 
 #### Chrome WebRTC internals
 
-1. Otevřete `chrome://webrtc-internals`
-2. Sledujte:
+1. Open `chrome://webrtc-internals`
+2. Watch:
    - PeerConnection stats
    - ICE candidates
    - Bitrate graphs
@@ -384,42 +384,42 @@ localStorage.debug = '*';
 
 ## 6. Troubleshooting
 
-### 6.1 DesktopDuplicator selhává
+### 6.1 DesktopDuplicator fails
 
-**Symptom**: `Initialize()` vrací `false`
+**Symptom**: `Initialize()` returns `false`
 
-**Možné příčiny**:
+**Possible causes**:
 
-1. **Žádná GPU/adaptér**
+1. **No GPU/adapter**
    ```
-   Solution: Zkontrolujte Device Manager -> Display adapters
+   Solution: Check Device Manager -> Display adapters
    ```
 
-2. **Desktop Duplication není podporováno**
+2. **Desktop Duplication is not supported**
    ```
-   Solution: Aktualizujte grafické ovladače
+   Solution: Update the graphics drivers
    Minimum: Windows 10 1903+
    ```
 
-3. **Aplikace běží jako service (Session 0)**
+3. **The application runs as a service (Session 0)**
    ```
-   Solution: Desktop Duplication vyžaduje interaktivní session (Session 1+)
+   Solution: Desktop Duplication requires an interactive session (Session 1+)
    ```
 
 ### 6.2 WebSocket connection failed
 
-**Symptom**: WebClient hlásí "WebSocket error"
+**Symptom**: WebClient reports "WebSocket error"
 
-**Řešení**:
+**Solution**:
 
-1. Ověřte, že SignalingServer běží:
+1. Verify that SignalingServer is running:
    ```bash
    curl http://localhost:5000/health
    ```
 
-2. Zkontrolujte CORS policy
+2. Check the CORS policy
    ```
-   SignalingServer musí mít AllowAnyOrigin v CORS policy
+   SignalingServer must have AllowAnyOrigin in the CORS policy
    ```
 
 3. Firewall
@@ -430,28 +430,28 @@ localStorage.debug = '*';
 
 ### 6.3 WebRTC connection stuck on "Connecting"
 
-**Možné příčiny**:
+**Possible causes**:
 
-1. **Žádné ICE candidates**
-   - Zkontrolujte chrome://webrtc-internals
-   - Měly by být viditelné `host`, `srflx` nebo `relay` candidates
+1. **No ICE candidates**
+   - Check chrome://webrtc-internals
+   - `host`, `srflx` or `relay` candidates should be visible
 
-2. **NAT/Firewall blokuje UDP**
-   - Potřebujete TURN server pro fallback
-   - Nebo nastavte port forwarding
+2. **NAT/Firewall blocks UDP**
+   - You need a TURN server as a fallback
+   - Or set up port forwarding
 
-3. **ICE candidates se nevyměňují**
-   - Zkontrolujte signaling logs
-   - Měly se vyměnit IceCandidate messages
+3. **ICE candidates are not being exchanged**
+   - Check the signaling logs
+   - IceCandidate messages should have been exchanged
 
 ### 6.4 Performance issues
 
-**Symptom**: Nízký FPS, vysoká latence
+**Symptom**: Low FPS, high latency
 
-**Diagnostika**:
+**Diagnostics**:
 
 ```csharp
-// Přidat do capture loop
+// Add to the capture loop
 var sw = Stopwatch.StartNew();
 capturer.TryAcquireFrame(out var frame);
 Console.WriteLine($"Capture: {sw.ElapsedMilliseconds}ms");
@@ -460,29 +460,29 @@ converter.Convert(frame);
 Console.WriteLine($"Convert: {sw.ElapsedMilliseconds}ms");
 ```
 
-**Optimalizace**:
+**Optimizations**:
 
-1. Snížit rozlišení (720p místo 1080p)
-2. Snížit FPS (20 místo 30)
-3. Build v Release mode
-4. Zavřít ostatní GPU-intensive aplikace
+1. Reduce the resolution (720p instead of 1080p)
+2. Reduce FPS (20 instead of 30)
+3. Build in Release mode
+4. Close other GPU-intensive applications
 
 ## 7. Performance tuning
 
-### 7.1 Capture optimalizace
+### 7.1 Capture optimization
 
 ```csharp
-// Použít nižší timeout pro vyšší responsiveness
+// Use a lower timeout for higher responsiveness
 const int AcquireTimeoutMs = 50; // Default: 100
 
-// Nebo vyšší pro nižší CPU usage
+// Or a higher one for lower CPU usage
 const int AcquireTimeoutMs = 200;
 ```
 
-### 7.2 WebRTC bitrate control (budoucí)
+### 7.2 WebRTC bitrate control (future)
 
 ```javascript
-// V WebClient
+// In WebClient
 const offerOptions = {
     offerToReceiveVideo: true,
     offerToReceiveAudio: false
@@ -500,9 +500,9 @@ const constraints = {
 };
 ```
 
-### 7.3 Conversion optimalizace
+### 7.3 Conversion optimization
 
-**Build s aggressive inlining**:
+**Build with aggressive inlining**:
 
 ```xml
 <PropertyGroup>
@@ -512,7 +512,7 @@ const constraints = {
 </PropertyGroup>
 ```
 
-**CPU affinity** (omezit na specifické cores):
+**CPU affinity** (restrict to specific cores):
 
 ```csharp
 Process.GetCurrentProcess().ProcessorAffinity = new IntPtr(0x0F); // Cores 0-3
@@ -533,7 +533,7 @@ dotnet-gcdump collect -p <PID>
 
 ---
 
-**Další kroky**:
+**Next steps**:
 - [Architecture Guide](architecture.md)
 - [API Documentation](api.md) (TODO)
 - [README](../README.md)

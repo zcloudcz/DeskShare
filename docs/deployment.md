@@ -1,133 +1,133 @@
-# Hromadné nasazení DeskShare (MSI)
+# DeskShare bulk deployment (MSI)
 
-Pro IT správce: `DeskShare-x64.msi` instaluje DeskShare **pro celý počítač** (`%ProgramFiles%\DeskShare\App`), tiše,
-s přednastavenou konfigurací a volitelně se službou pro nepřetržitý přístup (unattended). Najdete ho v každém vydání
-na https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-x64.msi.
+For IT admins: `DeskShare-x64.msi` installs DeskShare **machine-wide** (`%ProgramFiles%\DeskShare\App`), silently,
+with preconfigured settings and optionally with a service for unattended access. You can find it in every release
+at https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-x64.msi.
 
-> MSI je zatím **nepodepsané**. SmartScreen i některá pravidla v Intune/AppLocker podepsaný balíček očekávají, před
-> plošným nasazením ho podepište vlastním certifikátem (`signtool sign` na MSI, ideálně i na `DeskShare*.exe`).
+> The MSI is **not signed** yet. SmartScreen and some Intune/AppLocker rules expect a signed package, so before
+> rolling it out widely, sign it with your own certificate (`signtool sign` on the MSI, ideally on `DeskShare*.exe` too).
 
-Uživatelský instalátor (`DeskShare-win-Setup.exe`, Velopack) zůstává beze změny a aktualizuje se sám. MSI se **neaktualizuje
-samo**: novou verzi nasadíte novým MSI (viz [Aktualizace](#aktualizace)).
+The per-user installer (`DeskShare-win-Setup.exe`, Velopack) stays unchanged and updates itself. The MSI **does not update
+itself**: roll out a new version with a new MSI (see [Updates](#updates)).
 
-## Vlastnosti MSI
+## MSI properties
 
-| Vlastnost | Výchozí | Význam |
+| Property | Default | Meaning |
 |---|---|---|
-| `SIGNALING_URL` | `wss://app.deskshare.zcloud.cz/signal` | Adresa signaling serveru (musí být `ws://` nebo `wss://`). |
-| `ENABLE_UNATTENDED` | `0` | `1` = nainstaluje službu `DeskShareService` (nepřetržitý přístup, běží jako SYSTEM). |
-| `ALLOW_REMOTE_CONTROL` | `0` | Ovládání klávesnicí a myší. |
-| `ALLOW_CLIPBOARD` | `0` | Sdílení schránky. |
-| `ALLOW_FILES` | `0` | Příjem souborů od diváka. |
-| `ALLOW_PRIVACY_SCREEN` | `0` | Privacy screen (lokální monitor černý). |
-| `DISABLE_AUTOUPDATE` | `1` | `1` = aplikace se nikdy sama neaktualizuje přes Velopack. |
+| `SIGNALING_URL` | `wss://app.deskshare.zcloud.cz/signal` | Signaling server address (must be `ws://` or `wss://`). |
+| `ENABLE_UNATTENDED` | `0` | `1` = installs the `DeskShareService` service (unattended access, runs as SYSTEM). |
+| `ALLOW_REMOTE_CONTROL` | `0` | Keyboard and mouse control. |
+| `ALLOW_CLIPBOARD` | `0` | Clipboard sharing. |
+| `ALLOW_FILES` | `0` | Receiving files from the viewer. |
+| `ALLOW_PRIVACY_SCREEN` | `0` | Privacy screen (local monitor goes black). |
+| `DISABLE_AUTOUPDATE` | `1` | `1` = the app never updates itself via Velopack. |
 
-`ALLOW_*`: `1` = zapnuto a **zamčeno**, `0` = vypnuto a **zamčeno**, jakákoli jiná hodnota (např. `user`) = nenastaveno,
-rozhoduje uživatel. Zamčené volby jsou v aplikaci šedé s poznámkou „Set by your administrator“.
+`ALLOW_*`: `1` = enabled and **locked**, `0` = disabled and **locked**, any other value (e.g. `user`) = not set,
+the user decides. Locked options are grayed out in the app with the note “Set by your administrator”.
 
-## Tichá instalace
+## Silent installation
 
 ```cmd
-:: výchozí: bez služby, vše zamčeno na vypnuto, bez autoupdate
+:: default: no service, everything locked to off, no autoupdate
 msiexec /i DeskShare-x64.msi /qn /l*v C:\Windows\Temp\deskshare-install.log
 
-:: vlastní signaling + služba pro nepřetržitý přístup
+:: custom signaling + service for unattended access
 msiexec /i DeskShare-x64.msi /qn SIGNALING_URL=wss://signal.firma.cz/signal ENABLE_UNATTENDED=1
 
-:: ovládání povolit, schránku a soubory nechat na uživateli
+:: allow control, leave clipboard and files up to the user
 msiexec /i DeskShare-x64.msi /qn ALLOW_REMOTE_CONTROL=1 ALLOW_CLIPBOARD=user ALLOW_FILES=user
 ```
 
-Instalace vyžaduje administrátorská práva (SYSTEM z Intune/SCCM/GPO je v pořádku). Zdroj MSI musí být dostupný
-SYSTEM účtu (UNC share s právem čtení pro počítače, ne jen pro uživatele).
+Installation requires administrator rights (SYSTEM from Intune/SCCM/GPO is fine). The MSI source must be accessible
+to the SYSTEM account (a UNC share with read permission for computers, not just for users).
 
-## Aktualizace
+## Updates
 
-Nainstalujte novější MSI (stejný `UpgradeCode`, starou verzi nahradí automaticky, a to v jedné transakci: při chybě
-se vrátí stará verze). Starší verze než nainstalovaná se odmítne.
+Install a newer MSI (same `UpgradeCode`, it replaces the old version automatically, in a single transaction: on error
+the old version is restored). A version older than the installed one is rejected.
 
-**Nastavení se pamatují.** Hodnoty vlastností z poslední instalace jsou uložené v `HKLM\SOFTWARE\DeskShare\Msi`. Upgrade,
-oprava (`msiexec /fvomus DeskShare-x64.msi`) i znovunasazení bez argumentů je proto zachovají; vlastnost zadaná na příkazové
-řádce vždy přepíše uloženou hodnotu.
+**Settings are remembered.** Property values from the last installation are stored in `HKLM\SOFTWARE\DeskShare\Msi`. An upgrade,
+a repair (`msiexec /fvomus DeskShare-x64.msi`) and a redeployment without arguments therefore preserve them; a property given on the command
+line always overrides the stored value.
 
 ```cmd
 msiexec /i DeskShare-x64-novejsi.msi /qn
 msiexec /i DeskShare-x64-novejsi.msi /qn SIGNALING_URL=wss://novy.firma.cz/signal
 ```
 
-**Změna konfigurace** = spuštění téhož MSI znovu s novými vlastnostmi (`msiexec /i DeskShare-x64.msi /qn SIGNALING_URL=...`).
-`policy.json` i uložené hodnoty v registru se přepíšou při každém běhu, ne jen při první instalaci.
+**Changing the configuration** = running the same MSI again with new properties (`msiexec /i DeskShare-x64.msi /qn SIGNALING_URL=...`).
+`policy.json` and the stored registry values are overwritten on every run, not just on the first installation.
 
-**Služba (`ENABLE_UNATTENDED`).** Odebrání služby bez odinstalace aplikace:
-`msiexec /i DeskShare-x64.msi REMOVE=Unattended ENABLE_UNATTENDED=0 /qn` (feature `Unattended` zmizí a MSI zavolá
-`DeskShare.Service.exe uninstall`). Při upgradu s `ENABLE_UNATTENDED=0` se služba z předchozí verze automaticky neodstraní;
-nejdřív proveďte krok výše na staré verzi.
+**Service (`ENABLE_UNATTENDED`).** Removing the service without uninstalling the app:
+`msiexec /i DeskShare-x64.msi REMOVE=Unattended ENABLE_UNATTENDED=0 /qn` (the `Unattended` feature disappears and the MSI calls
+`DeskShare.Service.exe uninstall`). During an upgrade with `ENABLE_UNATTENDED=0` the service from the previous version is not removed automatically;
+run the step above on the old version first.
 
-**Selhání je bezpečné.** Při chybě instalace se vrátí předchozí `policy.json` a nová služba (která dřív neexistovala) se odstraní.
+**Failure is safe.** If the installation fails, the previous `policy.json` is restored and the new service (which did not exist before) is removed.
 
-## Odinstalace
+## Uninstallation
 
 ```cmd
 msiexec /x DeskShare-x64.msi /qn
 ```
 
-Odstraní aplikaci, `policy.json` a (pokud byla nainstalována) službu `DeskShareService`. Ponechá `%ProgramData%\DeskShare`
-(ID serveru a tajný klíč, stejně jako při vypnutí služby v aplikaci), aby se po reinstalaci zachovala identita počítače.
-Bez původního souboru MSI: `msiexec /x {ProductCode} /qn` (ProductCode je v `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`,
-položka s názvem DeskShare).
+Removes the app, `policy.json` and (if it was installed) the `DeskShareService` service. Keeps `%ProgramData%\DeskShare`
+(server ID and secret key, same as when the service is disabled in the app), so the computer identity is preserved after reinstalling.
+Without the original MSI file: `msiexec /x {ProductCode} /qn` (ProductCode is in `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`,
+the entry named DeskShare).
 
-## Intune (Win32 app, doporučeno)
+## Intune (Win32 app, recommended)
 
-Typ „Line-of-business app“ neumí předat vlastní vlastnosti MSI, proto použijte Win32 app.
+The “Line-of-business app” type cannot pass custom MSI properties, so use a Win32 app.
 
-1. Zabalte MSI nástrojem [Microsoft Win32 Content Prep Tool](https://learn.microsoft.com/mem/intune/apps/apps-win32-prepare):
-   `IntuneWinAppUtil.exe -c <složka_s_msi> -s DeskShare-x64.msi -o <výstup>`.
-2. Intune > Apps > Windows > Add > **Windows app (Win32)**, nahrajte `.intunewin`.
+1. Package the MSI with the [Microsoft Win32 Content Prep Tool](https://learn.microsoft.com/mem/intune/apps/apps-win32-prepare):
+   `IntuneWinAppUtil.exe -c <folder_with_msi> -s DeskShare-x64.msi -o <output>`.
+2. Intune > Apps > Windows > Add > **Windows app (Win32)**, upload the `.intunewin`.
 3. Install command:
    `msiexec /i "DeskShare-x64.msi" /qn SIGNALING_URL=wss://signal.firma.cz/signal ENABLE_UNATTENDED=1`
 4. Uninstall command: `msiexec /x "DeskShare-x64.msi" /qn`
 5. Install behavior: **System**. Restart behavior: No specific action.
-6. Detection rule: **MSI**, Product code = ProductCode z MSI **dané verze** (po nové verzi aktualizujte), nebo robustněji
-   rule typu **File**: cesta `%ProgramFiles%\DeskShare\App`, soubor `DeskShare.exe`, metoda *File or folder exists*
-   (případně *Version* `>=` požadovaná verze, pokud má detekce vynutit upgrade).
-7. Přiřaďte skupině zařízení (Required).
+6. Detection rule: **MSI**, Product code = the ProductCode from the MSI of the **given version** (update it after a new version), or more robustly
+   a rule of type **File**: path `%ProgramFiles%\DeskShare\App`, file `DeskShare.exe`, method *File or folder exists*
+   (optionally *Version* `>=` the required version, if the detection should force an upgrade).
+7. Assign to a device group (Required).
 
 ## Group Policy (software installation)
 
-GPO „Software Installation“ neumí předat vlastní vlastnosti ani transformaci vytvořit bez dalšího nástroje. Možnosti:
+The GPO “Software Installation” cannot pass custom properties, nor create a transform without an additional tool. Options:
 
-- **MST transform**: vytvořte transform (např. Orca / `wix`), který změní tabulku `Property` (`SIGNALING_URL`,
-  `ENABLE_UNATTENDED`, `ALLOW_*`), a v GPO ho přidejte na záložce *Modifications*. GPO přiřazuje MSI **počítačům**
+- **MST transform**: create a transform (e.g. Orca / `wix`) that changes the `Property` table (`SIGNALING_URL`,
+  `ENABLE_UNATTENDED`, `ALLOW_*`), and add it in the GPO on the *Modifications* tab. The GPO assigns the MSI to **computers**
   (Computer Configuration > Policies > Software Settings > Software installation > New > Package > *Assigned*).
-- **Startup script** v GPO (jednodušší, nepotřebuje transform):
+- **Startup script** in the GPO (simpler, needs no transform):
   `msiexec /i "\\server\share\DeskShare-x64.msi" /qn SIGNALING_URL=wss://signal.firma.cz/signal ENABLE_UNATTENDED=1`.
-  Spouští se jako SYSTEM při startu počítače; skript by měl nejdřív zkontrolovat, zda už není nainstalováno.
+  It runs as SYSTEM at computer startup; the script should first check whether it is already installed.
 
 ## SCCM / PDQ Deploy
 
-Install: `msiexec /i DeskShare-x64.msi /qn <vlastnosti>`, uninstall: `msiexec /x DeskShare-x64.msi /qn`, spustit jako
-SYSTEM. Detekce: existence souboru `%ProgramFiles%\DeskShare\App\DeskShare.exe` (SCCM) nebo MSI Product Code (PDQ).
+Install: `msiexec /i DeskShare-x64.msi /qn <properties>`, uninstall: `msiexec /x DeskShare-x64.msi /qn`, run as
+SYSTEM. Detection: existence of the file `%ProgramFiles%\DeskShare\App\DeskShare.exe` (SCCM) or the MSI Product Code (PDQ).
 
-## Co MSI vytvoří
+## What the MSI creates
 
-- `%ProgramFiles%\DeskShare\App\` aplikace (self-contained, nevyžaduje .NET) a zástupce v nabídce Start pro všechny uživatele.
-- `%ProgramFiles%\DeskShare\App\service\`: instalační zdroj služby. Při `ENABLE_UNATTENDED=1` MSI spustí
-  `DeskShare.Service.exe install` (stejná logika jako tlačítko „Enable“ v aplikaci: kopie do `%ProgramFiles%\DeskShare\Service`,
-  `%ProgramData%\DeskShare` s právy jen pro SYSTEM a Administrators, SAS politika, potvrzení startu přes `status.json`).
-  Pokud instalace služby selže, selže celé MSI a vrátí se zpět. Odinstalace MSI zavolá `DeskShare.Service.exe uninstall`.
-- `%ProgramData%\DeskShare.Policy\policy.json`: politika počítače (níže).
+- `%ProgramFiles%\DeskShare\App\` the app (self-contained, does not require .NET) and a Start menu shortcut for all users.
+- `%ProgramFiles%\DeskShare\App\service\`: the service installation source. With `ENABLE_UNATTENDED=1` the MSI runs
+  `DeskShare.Service.exe install` (same logic as the “Enable” button in the app: copy to `%ProgramFiles%\DeskShare\Service`,
+  `%ProgramData%\DeskShare` with permissions only for SYSTEM and Administrators, SAS policy, start confirmation via `status.json`).
+  If the service installation fails, the whole MSI fails and is rolled back. Uninstalling the MSI calls `DeskShare.Service.exe uninstall`.
+- `%ProgramData%\DeskShare.Policy\policy.json`: machine policy (below).
 
 ### policy.json
 
-Složka `%ProgramData%\DeskShare.Policy` má DACL: SYSTEM a Administrators plný přístup, Users jen čtení (aplikace běžícího
-uživatele musí politiku přečíst; `%ProgramData%\DeskShare` tak použít nejde, je jen pro SYSTEM a Administrators).
-Aplikace i služba politiku **přijmou jen když je důvěryhodná**: složka a soubor patří SYSTEM/Administrators, složka má
-chráněné (nedědičné) DACL, nikdo kromě SYSTEM/Administrators nemá právo zápisu a nejde o junction/symlink. Jinak se politika
-ignoruje a do logu přijde varování. Instalace služby navíc takovou cizí složku přejmenuje na `DeskShare.Policy.untrusted-*`.
-Při ruční úpravě tedy soubor upravujte jako administrátor a neměňte práva složky.
+The `%ProgramData%\DeskShare.Policy` folder has a DACL: SYSTEM and Administrators full access, Users read-only (the app of the logged-in
+user must be able to read the policy; `%ProgramData%\DeskShare` therefore cannot be used, it is only for SYSTEM and Administrators).
+The app and the service **accept the policy only when it is trusted**: the folder and file belong to SYSTEM/Administrators, the folder has a
+protected (non-inherited) DACL, nobody except SYSTEM/Administrators has write permission, and it is not a junction/symlink. Otherwise the policy is
+ignored and a warning is logged. The service installation also renames such a foreign folder to `DeskShare.Policy.untrusted-*`.
+When editing manually, therefore, edit the file as an administrator and do not change the folder permissions.
 
-Hodnota, která je v souboru, **má přednost** před nastavením uživatele i před `appsettings.json` / `unattended.json`
-(platí pro aplikaci i pro službu/agenta). Chybějící klíč = rozhoduje uživatel. Poškozený soubor se ignoruje (varování v logu).
+A value that is in the file **takes precedence** over the user setting and over `appsettings.json` / `unattended.json`
+(applies to the app as well as to the service/agent). A missing key = the user decides. A corrupted file is ignored (warning in the log).
 
 ```json
 {
@@ -142,11 +142,11 @@ Hodnota, která je v souboru, **má přednost** před nastavením uživatele i p
 }
 ```
 
-Soubor lze upravit i ručně (jako administrátor) bez přeinstalace; změna se projeví po restartu aplikace / služby
+The file can also be edited manually (as an administrator) without reinstalling; the change takes effect after the app / service restarts
 (`Restart-Service DeskShareService`).
 
-## Aktualizace přes Velopack vs. MSI
+## Updates via Velopack vs. MSI
 
-Aplikace spuštěná z `%ProgramFiles%\DeskShare\App` nikdy nevolá Velopack (ani neprovádí kontrolu aktualizací); `Updates.Disabled`
-navíc vypne kontrolu i u jiných instalací na stejném počítači. Instalace přes MSI a přes `DeskShare-win-Setup.exe` na jednom
-počítači nemíchejte.
+An app launched from `%ProgramFiles%\DeskShare\App` never calls Velopack (nor does it check for updates); `Updates.Disabled`
+additionally turns off the check for other installations on the same computer too. Do not mix installations via MSI and via `DeskShare-win-Setup.exe` on one
+computer.

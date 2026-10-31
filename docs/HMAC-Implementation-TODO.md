@@ -3,36 +3,36 @@
 
 # HMAC + Nonce Implementation - TODO
 
-## 📐 Architektura řešení
+## 📐 Solution architecture
 
-### Struktura projektu (3 nové třídy v Core)
+### Project structure (3 new classes in Core)
 
 ```
 RemoteDesktop.Core/
 ├── Auth/
-│   ├── AuthenticationService.cs          (existující)
-│   ├── RequestSigningService.cs          ← NOVÁ (HMAC signing/validation)
-│   ├── NonceCache.cs                     ← NOVÁ (nonce storage + cleanup)
-│   ├── ClientAuthenticationMessage.cs    (existující - rozšířit)
-│   ├── ServerRegistrationMessage.cs      (existující - rozšířit)
+│   ├── AuthenticationService.cs          (existing)
+│   ├── RequestSigningService.cs          ← NEW (HMAC signing/validation)
+│   ├── NonceCache.cs                     ← NEW (nonce storage + cleanup)
+│   ├── ClientAuthenticationMessage.cs    (existing - extend)
+│   ├── ServerRegistrationMessage.cs      (existing - extend)
 │   └── ...
 ```
 
-**Proč v Core, ne extra projekt?**
-- ✅ Sdíleno mezi SignalingServer (validace) a Desktop (signing)
-- ✅ Logicky patří k autentizaci
-- ✅ Žádné extra dependencies (pouze System.Security.Cryptography)
-- ✅ Jednodušší deployment
+**Why in Core, not a separate project?**
+- ✅ Shared between SignalingServer (validation) and Desktop (signing)
+- ✅ Logically belongs to authentication
+- ✅ No extra dependencies (only System.Security.Cryptography)
+- ✅ Simpler deployment
 
 ---
 
 ## 📋 TODO Tasks
 
-### ✅ Task 1: Vytvoření RequestSigningService.cs
+### ✅ Task 1: Creating RequestSigningService.cs
 
-**Soubor:** `src/Core/Auth/RequestSigningService.cs`
+**File:** `src/Core/Auth/RequestSigningService.cs`
 
-**Co implementovat:**
+**What to implement:**
 
 ```csharp
 using System.Security.Cryptography;
@@ -95,20 +95,20 @@ public sealed class RequestSigningService
 }
 ```
 
-**Kritéria dokončení:**
-- [ ] Metoda `SignRequest()` generuje HMAC-SHA256 podpis
-- [ ] Metoda `ValidateSignature()` ověřuje podpis
-- [ ] Validace timestamp (max 60s old)
-- [ ] Constant-time comparison pro prevenci timing attacks
-- [ ] XML dokumentace pro všechny public metody
+**Completion criteria:**
+- [ ] The `SignRequest()` method generates an HMAC-SHA256 signature
+- [ ] The `ValidateSignature()` method verifies the signature
+- [ ] Timestamp validation (max 60s old)
+- [ ] Constant-time comparison to prevent timing attacks
+- [ ] XML documentation for all public methods
 
 ---
 
-### ✅ Task 2: Vytvoření NonceCache.cs
+### ✅ Task 2: Creating NonceCache.cs
 
-**Soubor:** `src/Core/Auth/NonceCache.cs`
+**File:** `src/Core/Auth/NonceCache.cs`
 
-**Co implementovat:**
+**What to implement:**
 
 ```csharp
 using System.Collections.Concurrent;
@@ -187,32 +187,32 @@ public sealed class NonceCacheStatistics
 }
 ```
 
-**Kritéria dokončení:**
-- [ ] Thread-safe implementace (ConcurrentDictionary)
-- [ ] Metoda `TryUseNonce()` detekuje duplicity
-- [ ] Automatický cleanup pomocí Timer
-- [ ] Statistics API pro monitoring
-- [ ] Proper disposal (stop timer)
+**Completion criteria:**
+- [ ] Thread-safe implementation (ConcurrentDictionary)
+- [ ] The `TryUseNonce()` method detects duplicates
+- [ ] Automatic cleanup using a Timer
+- [ ] Statistics API for monitoring
+- [ ] Proper disposal (stop the timer)
 
 ---
 
-### ✅ Task 3: Rozšíření ClientAuthenticationMessage
+### ✅ Task 3: Extending ClientAuthenticationMessage
 
-**Soubor:** `src/Core/Auth/ClientAuthenticationMessage.cs`
+**File:** `src/Core/Auth/ClientAuthenticationMessage.cs`
 
-**Co přidat:**
+**What to add:**
 
 ```csharp
 namespace RemoteDesktop.Core.Auth;
 
 public sealed class ClientAuthenticationMessage
 {
-    // Existující fields
+    // Existing fields
     public required string ServerId { get; set; }
     public required string Passkey { get; set; }
     public required string ClientId { get; set; }
 
-    // ← NOVÉ FIELDS PRO HMAC
+    // ← NEW FIELDS FOR HMAC
     /// <summary>
     /// Request timestamp (UTC). Used for signature validation.
     /// </summary>
@@ -231,24 +231,24 @@ public sealed class ClientAuthenticationMessage
 }
 ```
 
-**Kritéria dokončení:**
-- [ ] Přidány 3 nové properties (Timestamp, Nonce, Signature)
-- [ ] Signature je nullable (pro zpětnou kompatibilitu)
-- [ ] XML dokumentace
-- [ ] Stejné změny pro `ServerRegistrationMessage` (pokud potřeba)
+**Completion criteria:**
+- [ ] 3 new properties added (Timestamp, Nonce, Signature)
+- [ ] Signature is nullable (for backward compatibility)
+- [ ] XML documentation
+- [ ] The same changes for `ServerRegistrationMessage` (if needed)
 
 ---
 
-### ✅ Task 4: Update SignalingServer - Validace HMAC
+### ✅ Task 4: Update SignalingServer - HMAC validation
 
-**Soubor:** `src/SignalingServer/Services/ConnectionManager.cs`
+**File:** `src/SignalingServer/Services/ConnectionManager.cs`
 
-**Co upravit v metodě `AuthenticateClient()`:**
+**What to change in the `AuthenticateClient()` method:**
 
 ```csharp
 public ClientAuthenticationResponse AuthenticateClient(ClientAuthenticationMessage auth)
 {
-    // ← NOVÁ SEKCE: HMAC VALIDATION (PŘED passkey check)
+    // ← NEW SECTION: HMAC VALIDATION (BEFORE the passkey check)
 
     // 1. Check if signature is provided (new clients)
     if (!string.IsNullOrEmpty(auth.Signature))
@@ -298,48 +298,48 @@ public ClientAuthenticationResponse AuthenticateClient(ClientAuthenticationMessa
             auth.ServerId);
     }
 
-    // POKRAČOVAT s existující validací (passkey check, session check, etc.)
+    // CONTINUE with the existing validation (passkey check, session check, etc.)
     // ...
 }
 ```
 
-**Co ještě přidat do ConnectionManager:**
+**What else to add to ConnectionManager:**
 
 ```csharp
 public sealed class ConnectionManager
 {
-    // Přidat dependency
+    // Add dependency
     private readonly NonceCache _nonceCache;
 
     public ConnectionManager(ILogger<ConnectionManager> logger)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        _nonceCache = new NonceCache(); // ← NOVÝ
+        _nonceCache = new NonceCache(); // ← NEW
         // ...
     }
 
     public void Dispose()
     {
-        _nonceCache?.Dispose(); // ← Přidat cleanup
+        _nonceCache?.Dispose(); // ← Add cleanup
         // ...
     }
 }
 ```
 
-**Kritéria dokončení:**
-- [ ] HMAC validace PŘED passkey check
+**Completion criteria:**
+- [ ] HMAC validation BEFORE the passkey check
 - [ ] Nonce replay detection
-- [ ] Fallback pro legacy klienty (bez signature)
-- [ ] Logování všech pokusů (úspěch/failure)
+- [ ] Fallback for legacy clients (without signature)
+- [ ] Logging of all attempts (success/failure)
 - [ ] NonceCache dependency injection
 
 ---
 
-### ✅ Task 5: Update Desktop - Signing requestů
+### ✅ Task 5: Update Desktop - Signing requests
 
-**Soubor:** `src/RemoteDesktop.Desktop/Services/ClientManager.cs` (nebo kde děláte autentizaci)
+**File:** `src/RemoteDesktop.Desktop/Services/ClientManager.cs` (or wherever you do authentication)
 
-**Co upravit:**
+**What to change:**
 
 ```csharp
 private async Task<bool> AuthenticateWithSignalingServerAsync(
@@ -349,7 +349,7 @@ private async Task<bool> AuthenticateWithSignalingServerAsync(
 {
     try
     {
-        // ← NOVÉ: Generování HMAC signature
+        // ← NEW: HMAC signature generation
 
         var nonce = Guid.NewGuid().ToString(); // Unique request ID
         var timestamp = DateTime.UtcNow;
@@ -370,9 +370,9 @@ private async Task<bool> AuthenticateWithSignalingServerAsync(
             ServerId = serverId,
             Passkey = passkey,
             ClientId = _clientId,
-            Timestamp = timestamp,      // ← NOVÝ
-            Nonce = nonce,              // ← NOVÝ
-            Signature = signature       // ← NOVÝ
+            Timestamp = timestamp,      // ← NEW
+            Nonce = nonce,              // ← NEW
+            Signature = signature       // ← NEW
         };
 
         // Send to SignalingServer
@@ -407,20 +407,20 @@ private async Task<bool> AuthenticateWithSignalingServerAsync(
 }
 ```
 
-**Kritéria dokončení:**
-- [ ] Generování nonce (Guid.NewGuid())
-- [ ] Aktuální timestamp (DateTime.UtcNow)
-- [ ] HMAC signature pomocí RequestSigningService
-- [ ] Naplnění nových fields v ClientAuthenticationMessage
-- [ ] Logování pro debugging
+**Completion criteria:**
+- [ ] Nonce generation (Guid.NewGuid())
+- [ ] Current timestamp (DateTime.UtcNow)
+- [ ] HMAC signature using RequestSigningService
+- [ ] Populating the new fields in ClientAuthenticationMessage
+- [ ] Logging for debugging
 
 ---
 
-### ✅ Task 6: Unit testy
+### ✅ Task 6: Unit tests
 
-**Soubor:** `tests/UnitTests/Auth/RequestSigningServiceTests.cs` (NOVÝ)
+**File:** `tests/UnitTests/Auth/RequestSigningServiceTests.cs` (NEW)
 
-**Co testovat:**
+**What to test:**
 
 ```csharp
 using RemoteDesktop.Core.Auth;
@@ -510,7 +510,7 @@ public class RequestSigningServiceTests
 }
 ```
 
-**Soubor:** `tests/UnitTests/Auth/NonceCacheTests.cs` (NOVÝ)
+**File:** `tests/UnitTests/Auth/NonceCacheTests.cs` (NEW)
 
 ```csharp
 public class NonceCacheTests
@@ -541,26 +541,26 @@ public class NonceCacheTests
 }
 ```
 
-**Kritéria dokončení:**
-- [ ] Testy pro SignRequest (generování)
-- [ ] Testy pro ValidateSignature (validace)
-- [ ] Testy pro tampering detection
-- [ ] Testy pro timestamp expiration
-- [ ] Testy pro nonce replay detection
-- [ ] Testy pro thread safety
+**Completion criteria:**
+- [ ] Tests for SignRequest (generation)
+- [ ] Tests for ValidateSignature (validation)
+- [ ] Tests for tampering detection
+- [ ] Tests for timestamp expiration
+- [ ] Tests for nonce replay detection
+- [ ] Tests for thread safety
 - [ ] Code coverage > 90%
 
 ---
 
-### ✅ Task 7: Dokumentace
+### ✅ Task 7: Documentation
 
-**Co aktualizovat:**
+**What to update:**
 
-1. **`docs/Security-Analysis.md`** - Přidat sekci "HMAC Implementation Status"
-2. **`README.md`** - Zmínit HMAC security
-3. **`docs/security-best-practices.md`** - Přidat HMAC best practices
+1. **`docs/Security-Analysis.md`** - Add the section "HMAC Implementation Status"
+2. **`README.md`** - Mention HMAC security
+3. **`docs/security-best-practices.md`** - Add HMAC best practices
 
-**Příklad pro README:**
+**Example for README:**
 
 ```markdown
 ## Security Features
@@ -576,109 +576,109 @@ public class NonceCacheTests
 ✅ **Session Timeout** - 30-minute inactivity limit
 ```
 
-**Kritéria dokončení:**
+**Completion criteria:**
 - [ ] Security-Analysis.md updated
 - [ ] README.md security section updated
 - [ ] HMAC usage examples documented
-- [ ] Migration guide pro existující deploymenty
+- [ ] Migration guide for existing deployments
 
 ---
 
-## 🎯 Acceptance Criteria (celkově)
+## 🎯 Acceptance Criteria (overall)
 
-### Funkční požadavky:
-- [ ] Nové klienty používají HMAC signature
-- [ ] SignalingServer validuje signature
-- [ ] Replay útoky jsou blokovány (duplicitní nonce)
-- [ ] Staré klienty fungují (fallback bez signature)
-- [ ] Expirované requesty jsou odmítnuty (> 60s)
+### Functional requirements:
+- [ ] New clients use the HMAC signature
+- [ ] SignalingServer validates the signature
+- [ ] Replay attacks are blocked (duplicate nonce)
+- [ ] Old clients keep working (fallback without signature)
+- [ ] Expired requests are rejected (> 60s)
 
-### Non-funkční požadavky:
-- [ ] Zero dependencies navíc (pouze System.Security.Cryptography)
-- [ ] Thread-safe implementace
-- [ ] Performance: < 1ms overhead na request
-- [ ] Memory: NonceCache limitován (auto-cleanup)
-- [ ] Logování všech security events
+### Non-functional requirements:
+- [ ] Zero extra dependencies (only System.Security.Cryptography)
+- [ ] Thread-safe implementation
+- [ ] Performance: < 1ms overhead per request
+- [ ] Memory: NonceCache is bounded (auto-cleanup)
+- [ ] Logging of all security events
 
-### Testování:
-- [ ] Unit testy proběhly (>90% coverage)
+### Testing:
+- [ ] Unit tests passed (>90% coverage)
 - [ ] Integration test: signed request → server validation
 - [ ] Negative test: replay attack → blocked
 - [ ] Negative test: tampered request → rejected
-- [ ] Performance test: 100 requestů/s bez problémů
+- [ ] Performance test: 100 requests/s without problems
 
 ---
 
-## 📊 Odhad práce
+## 📊 Effort estimate
 
-| Task | Složitost | Odhad času |
+| Task | Complexity | Estimated time |
 |------|-----------|------------|
-| Task 1: RequestSigningService | Střední | 1-2 hodiny |
-| Task 2: NonceCache | Střední | 1-2 hodiny |
-| Task 3: Rozšíření messages | Snadné | 30 minut |
-| Task 4: SignalingServer update | Střední | 1 hodina |
-| Task 5: Desktop update | Snadné | 1 hodina |
-| Task 6: Unit testy | Střední | 2-3 hodiny |
-| Task 7: Dokumentace | Snadné | 1 hodina |
-| **CELKEM** | | **8-11 hodin** |
+| Task 1: RequestSigningService | Medium | 1-2 hours |
+| Task 2: NonceCache | Medium | 1-2 hours |
+| Task 3: Extending messages | Easy | 30 minutes |
+| Task 4: SignalingServer update | Medium | 1 hour |
+| Task 5: Desktop update | Easy | 1 hour |
+| Task 6: Unit tests | Medium | 2-3 hours |
+| Task 7: Documentation | Easy | 1 hour |
+| **TOTAL** | | **8-11 hours** |
 
 ---
 
-## 🚀 Doporučené pořadí implementace
+## 🚀 Recommended implementation order
 
-1. **Task 1** - RequestSigningService (základ všeho)
-2. **Task 2** - NonceCache (potřebný pro validaci)
-3. **Task 3** - Rozšíření messages (API kontrakt)
-4. **Task 6** - Unit testy pro Task 1 & 2 (verify logic)
+1. **Task 1** - RequestSigningService (the foundation of everything)
+2. **Task 2** - NonceCache (needed for validation)
+3. **Task 3** - Extending messages (API contract)
+4. **Task 6** - Unit tests for Tasks 1 & 2 (verify logic)
 5. **Task 4** - SignalingServer update (server-side)
 6. **Task 5** - Desktop update (client-side)
-7. **Task 6** - Integration testy (end-to-end)
-8. **Task 7** - Dokumentace
+7. **Task 6** - Integration tests (end-to-end)
+8. **Task 7** - Documentation
 
 ---
 
 ## ✅ Definition of Done
 
-**Task je hotový když:**
-- [ ] Kód je napsaný a builduje bez warningů
-- [ ] Unit testy proběhly (green)
-- [ ] XML dokumentace pro všechny public API
-- [ ] Logování na důležitých místech
-- [ ] Code review (pokud pracujete v týmu)
-- [ ] Manual test (zkusit autentizaci end-to-end)
+**A task is done when:**
+- [ ] The code is written and builds without warnings
+- [ ] Unit tests passed (green)
+- [ ] XML documentation for all public APIs
+- [ ] Logging in the important places
+- [ ] Code review (if you work in a team)
+- [ ] Manual test (try authentication end-to-end)
 
-**Celá feature je hotová když:**
-- [ ] Všech 7 tasků je completed
-- [ ] Integration testy proběhly
-- [ ] Dokumentace aktualizována
-- [ ] No regression (staré funkce fungují)
+**The whole feature is done when:**
+- [ ] All 7 tasks are completed
+- [ ] Integration tests passed
+- [ ] Documentation updated
+- [ ] No regression (old features still work)
 - [ ] Performance impact < 5%
 
 ---
 
-## 🐛 Možné problémy a řešení
+## 🐛 Possible problems and solutions
 
-### Problém: "Časový posun mezi klientem a serverem"
-**Řešení:** Zvětšit SignatureValiditySeconds z 60s na 120s (pro tolerance)
+### Problem: "Clock skew between client and server"
+**Solution:** Increase SignatureValiditySeconds from 60s to 120s (for tolerance)
 
-### Problém: "NonceCache roste do nekonečna"
-**Řešení:** Cleanup timer (každých 30s) odstraní nonce starší než TTL
+### Problem: "NonceCache grows without bound"
+**Solution:** The cleanup timer (every 30s) removes nonces older than the TTL
 
 ### Problém: "High memory usage"
-**Řešení:** Limitovat max velikost NonceCache (např. 10000 nonces)
+**Solution:** Limit the max size of NonceCache (e.g. 10000 nonces)
 
 ### Problém: "Backward compatibility"
-**Řešení:** Signature je nullable - staré klienty neposílají, server akceptuje
+**Solution:** Signature is nullable - old clients do not send it, the server accepts that
 
 ---
 
-## 📞 Potřebujete pomoc?
+## 📞 Need help?
 
-Pokud narazíte na problém při některém tasku:
-1. Zkontrolujte Security-Analysis.md pro referenční implementaci
-2. Zkuste napsat unit test nejdřív (TDD approach)
-3. Napište mi otázku - rád pomohu s konkrétním problémem!
+If you run into a problem with any task:
+1. Check Security-Analysis.md for the reference implementation
+2. Try writing a unit test first (TDD approach)
+3. Write me a question - I am happy to help with a specific problem!
 
 ---
 
-**Ready to start? Začněte s Task 1! 🚀**
+**Ready to start? Begin with Task 1! 🚀**
