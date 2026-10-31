@@ -1,42 +1,42 @@
 ﻿# Azure Deployment Guide - SignalingServer
 
-Kompletní návod pro nasazení DeskShare SignalingServer jako Azure Function.
+Complete guide for deploying DeskShare SignalingServer as an Azure Function.
 
-## Obsah
+## Contents
 
-1. [Úvod](#úvod)
-2. [Architektura řešení](#architektura-řešení)
-3. [Předpoklady](#předpoklady)
-4. [Vytvoření Azure Function projektu](#vytvoření-azure-function-projektu)
-5. [Migrace kódu](#migrace-kódu)
-6. [Konfigurace Azure Resources](#konfigurace-azure-resources)
-7. [Nasazení](#nasazení)
-8. [Cenové úvahy](#cenové-úvahy)
-9. [Monitoring a Diagnostika](#monitoring-a-diagnostika)
-10. [Alternativní řešení](#alternativní-řešení)
+1. [Introduction](#introduction)
+2. [Solution architecture](#solution-architecture)
+3. [Prerequisites](#prerequisites)
+4. [Creating the Azure Function project](#creating-the-azure-function-project)
+5. [Code migration](#code-migration)
+6. [Azure Resources configuration](#azure-resources-configuration)
+7. [Deployment](#deployment)
+8. [Cost considerations](#cost-considerations)
+9. [Monitoring and Diagnostics](#monitoring-and-diagnostics)
+10. [Alternative solutions](#alternative-solutions)
 
 ---
 
-## Úvod
+## Introduction
 
-SignalingServer je klíčová součást DeskShare, která zajišťuje:
-- WebSocket komunikaci mezi klienty
+SignalingServer is a key part of DeskShare that provides:
+- WebSocket communication between clients
 - WebRTC signaling (SDP exchange, ICE candidates)
-- Autentizaci a správu sessions
-- Koordinaci P2P spojení
+- Authentication and session management
+- Coordination of the P2P connection
 
-**Proč Azure Functions?**
-- ✅ Automatické škálování
-- ✅ Pay-per-execution model (levnější než neustále běžící VM)
-- ✅ Integrovaný monitoring (Application Insights)
-- ✅ Globální dostupnost (Azure CDN)
-- ⚠️ **Ale:** WebSocket podporuje pouze Premium/Dedicated plány
+**Why Azure Functions?**
+- ✅ Automatic scaling
+- ✅ Pay-per-execution model (cheaper than an always-running VM)
+- ✅ Integrated monitoring (Application Insights)
+- ✅ Global availability (Azure CDN)
+- ⚠️ **But:** WebSocket is supported only by Premium/Dedicated plans
 
 ---
 
-## Architektura řešení
+## Solution architecture
 
-### Současná architektura (ASP.NET Core)
+### Current architecture (ASP.NET Core)
 
 ```
 ┌─────────────────┐         WebSocket          ┌──────────────────┐
@@ -87,24 +87,24 @@ SignalingServer je klíčová součást DeskShare, která zajišťuje:
                     └───────────────────┘
 ```
 
-**Klíčové změny:**
-1. **Azure SignalR Service** namísto přímých WebSocket spojení
-2. **Azure Table Storage** nebo **CosmosDB** pro perzistenci session dat
-3. **HTTP Triggers** pro /register a /authenticate endpointy
-4. **SignalR Bindings** pro WebSocket komunikaci
+**Key changes:**
+1. **Azure SignalR Service** instead of direct WebSocket connections
+2. **Azure Table Storage** or **CosmosDB** for persisting session data
+3. **HTTP Triggers** for the /register and /authenticate endpoints
+4. **SignalR Bindings** for WebSocket communication
 
 ---
 
-## Předpoklady
+## Prerequisites
 
 ### 1. Azure Subscription
-- Aktivní Azure předplatné
-- Resource Group pro projekt
+- Active Azure subscription
+- Resource Group for the project
 
-### 2. Vývojové nástroje
+### 2. Development tools
 ```bash
 # .NET 8 SDK
-dotnet --version  # 8.0 nebo vyšší
+dotnet --version  # 8.0 or higher
 
 # Azure Functions Core Tools
 npm install -g azure-functions-core-tools@4 --unsafe-perm true
@@ -115,32 +115,32 @@ az login
 ```
 
 ### 3. Visual Studio / VS Code
-- Visual Studio 2022 s Azure Development workload, nebo
-- VS Code s rozšířením "Azure Functions"
+- Visual Studio 2022 with the Azure Development workload, or
+- VS Code with the "Azure Functions" extension
 
 ---
 
-## Vytvoření Azure Function projektu
+## Creating the Azure Function project
 
-### Krok 1: Vytvoření projektu
+### Step 1: Creating the project
 
 ```bash
-# Navigace do složky projektu
+# Navigating to the project folder
 cd C:\GIT\DeskShare\src
 
-# Vytvoření nového Azure Functions projektu
+# Creating a new Azure Functions project
 func init SignalingServerAzure --worker-runtime dotnet-isolated --target-framework net8.0
 
 cd SignalingServerAzure
 ```
 
-### Krok 2: Přidání NuGet balíčků
+### Step 2: Adding NuGet packages
 
 ```bash
 # SignalR Service binding
 dotnet add package Microsoft.Azure.WebJobs.Extensions.SignalRService
 
-# Azure Storage pro session management
+# Azure Storage for session management
 dotnet add package Azure.Data.Tables
 
 # Logging
@@ -150,7 +150,7 @@ dotnet add package Microsoft.Extensions.Logging.ApplicationInsights
 dotnet add reference ../Core/RemoteDesktop.Core.csproj
 ```
 
-Upravte `SignalingServerAzure.csproj`:
+Edit `SignalingServerAzure.csproj`:
 
 ```xml
 <Project Sdk="Microsoft.NET.Sdk">
@@ -189,9 +189,9 @@ Upravte `SignalingServerAzure.csproj`:
 
 ---
 
-## Migrace kódu
+## Code migration
 
-### 1. Struktura projektu
+### 1. Project structure
 
 ```
 SignalingServerAzure/
@@ -205,7 +205,7 @@ SignalingServerAzure/
 │   └── HealthFunction.cs            # GET /api/health
 ├── Services/
 │   ├── SessionStorageService.cs     # Azure Table Storage
-│   ├── ConnectionService.cs         # Wrapper nad SignalR
+│   ├── ConnectionService.cs         # Wrapper over SignalR
 │   └── StatisticsService.cs         # Metrics tracking
 ├── Models/
 │   └── TableEntities.cs             # Azure Table entity models
@@ -763,26 +763,26 @@ await host.RunAsync();
 
 ---
 
-## Konfigurace Azure Resources
+## Azure Resources configuration
 
-### 1. Vytvoření Resource Group
+### 1. Creating the Resource Group
 
 ```bash
 az login
 
-# Vytvoření resource group
+# Creating the resource group
 az group create \
   --name rg-remotedesktop-prod \
   --location westeurope
 
-# Nebo pomocí Azure Portal:
+# Or using the Azure Portal:
 # https://portal.azure.com > Create Resource Group
 ```
 
 ### 2. Azure SignalR Service
 
 ```bash
-# Vytvoření SignalR Service (Free tier pro vývoj)
+# Creating the SignalR Service (Free tier for development)
 az signalr create \
   --name signalr-remotedesktop \
   --resource-group rg-remotedesktop-prod \
@@ -790,25 +790,25 @@ az signalr create \
   --unit-count 1 \
   --service-mode Default
 
-# Pro produkci použijte Standard tier:
+# For production use the Standard tier:
 # --sku Standard_S1 --unit-count 1
 
-# Získání connection string
+# Getting the connection string
 az signalr key list \
   --name signalr-remotedesktop \
   --resource-group rg-remotedesktop-prod \
   --query primaryConnectionString -o tsv
 ```
 
-**Cenová tier:**
-- **Free F1**: 20 souběžných spojení, vhodné pro dev/test
-- **Standard S1**: 1000 spojení, €42/měsíc
-- **Premium P1**: 1000 spojení + Redis cache, €420/měsíc
+**Pricing tier:**
+- **Free F1**: 20 concurrent connections, suitable for dev/test
+- **Standard S1**: 1000 connections, €42/month
+- **Premium P1**: 1000 connections + Redis cache, €420/month
 
-### 3. Storage Account (pro session data)
+### 3. Storage Account (for session data)
 
 ```bash
-# Vytvoření storage account
+# Creating the storage account
 az storage account create \
   --name stremotedesktop \
   --resource-group rg-remotedesktop-prod \
@@ -816,17 +816,17 @@ az storage account create \
   --sku Standard_LRS \
   --kind StorageV2
 
-# Získání connection string
+# Getting the connection string
 az storage account show-connection-string \
   --name stremotedesktop \
   --resource-group rg-remotedesktop-prod \
   --query connectionString -o tsv
 ```
 
-### 4. Function App (Premium Plan pro WebSocket)
+### 4. Function App (Premium Plan for WebSocket)
 
 ```bash
-# Vytvoření App Service Plan (Premium EP1)
+# Creating the App Service Plan (Premium EP1)
 az functionapp plan create \
   --name plan-remotedesktop-functions \
   --resource-group rg-remotedesktop-prod \
@@ -834,7 +834,7 @@ az functionapp plan create \
   --sku EP1 \
   --is-linux false
 
-# Vytvoření Function App
+# Creating the Function App
 az functionapp create \
   --name func-remotedesktop-signaling \
   --resource-group rg-remotedesktop-prod \
@@ -844,7 +844,7 @@ az functionapp create \
   --runtime-version 8 \
   --functions-version 4
 
-# Konfigurace Application Settings
+# Configuring Application Settings
 az functionapp config appsettings set \
   --name func-remotedesktop-signaling \
   --resource-group rg-remotedesktop-prod \
@@ -853,22 +853,22 @@ az functionapp config appsettings set \
     "APPINSIGHTS_INSTRUMENTATIONKEY=<application-insights-key>"
 ```
 
-**Cenový plán:**
-- **Consumption**: Nepodporuje WebSocket ❌
-- **Premium EP1**: 1 vCore, 3.5 GB RAM, ~€125/měsíc ✅
-- **Dedicated (App Service)**: Začíná na ~€50/měsíc (B1), podporuje WebSocket ✅
+**Pricing plan:**
+- **Consumption**: Does not support WebSocket ❌
+- **Premium EP1**: 1 vCore, 3.5 GB RAM, ~€125/month ✅
+- **Dedicated (App Service)**: Starts at ~€50/month (B1), supports WebSocket ✅
 
 ### 5. Application Insights
 
 ```bash
-# Vytvoření Application Insights
+# Creating Application Insights
 az monitor app-insights component create \
   --app appinsights-remotedesktop \
   --location westeurope \
   --resource-group rg-remotedesktop-prod \
   --application-type web
 
-# Získání instrumentation key
+# Getting the instrumentation key
 az monitor app-insights component show \
   --app appinsights-remotedesktop \
   --resource-group rg-remotedesktop-prod \
@@ -877,34 +877,34 @@ az monitor app-insights component show \
 
 ---
 
-## Nasazení
+## Deployment
 
-### Metoda 1: Visual Studio
+### Method 1: Visual Studio
 
-1. **Publish profil:**
-   - Pravý klik na projekt → **Publish**
+1. **Publish profile:**
+   - Right-click the project → **Publish**
    - **Target**: Azure → Azure Function App (Windows)
-   - Vyberte `func-remotedesktop-signaling`
+   - Select `func-remotedesktop-signaling`
    - **Deployment type**: Publish (generates pubxml)
 
 2. **Deploy:**
-   - Klikněte **Publish**
-   - VS automaticky build & deploy
+   - Click **Publish**
+   - VS automatically builds & deploys
 
-### Metoda 2: Azure Functions Core Tools
+### Method 2: Azure Functions Core Tools
 
 ```bash
-# Build projektu
+# Building the project
 dotnet build --configuration Release
 
-# Publikace do Azure
+# Publishing to Azure
 cd src/SignalingServerAzure
 func azure functionapp publish func-remotedesktop-signaling
 ```
 
 ### Metoda 3: GitHub Actions CI/CD
 
-Vytvořte `.github/workflows/azure-functions-deploy.yml`:
+Create `.github/workflows/azure-functions-deploy.yml`:
 
 ```yaml
 name: Deploy SignalingServer to Azure Functions
@@ -958,7 +958,7 @@ jobs:
         publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
 ```
 
-**Získání Publish Profile:**
+**Getting the Publish Profile:**
 ```bash
 az functionapp deployment list-publishing-profiles \
   --name func-remotedesktop-signaling \
@@ -966,53 +966,53 @@ az functionapp deployment list-publishing-profiles \
   --xml
 ```
 
-Uložte jako GitHub Secret: `AZURE_FUNCTIONAPP_PUBLISH_PROFILE`
+Save it as a GitHub Secret: `AZURE_FUNCTIONAPP_PUBLISH_PROFILE`
 
 ---
 
-## Cenové úvahy
+## Cost considerations
 
-### Měsíční náklady (odhad pro 100 aktivních uživatelů)
+### Monthly costs (estimate for 100 active users)
 
-| Služba | Tier | Cena/měsíc | Poznámka |
+| Service | Tier | Cost/month | Note |
 |--------|------|------------|----------|
 | **Azure Functions** | Premium EP1 | €125 | Always-on, WebSocket support |
 | **Azure SignalR** | Standard S1 | €42 | 1000 connections, 1M messages/day |
 | **Storage Account** | Standard LRS | €2 | 100GB transactions + 5GB storage |
 | **Application Insights** | Pay-as-you-go | €5-10 | 5GB data/month |
-| **Bandwidth (Egress)** | Standard | €10-20 | První 100GB zdarma, pak €0.081/GB |
-| **CELKEM** | | **€184-199** | |
+| **Bandwidth (Egress)** | Standard | €10-20 | First 100GB free, then €0.081/GB |
+| **TOTAL** | | **€184-199** | |
 
-### Optimalizace nákladů:
+### Cost optimization:
 
-1. **Použít Consumption Plan + Azure Container Instances pro WebSocket**
-   - Functions na Consumption (~€5/měsíc)
-   - ACI s vlastním SignalR serverem (~€30/měsíc)
-   - **Úspora: ~€90/měsíc**
+1. **Use Consumption Plan + Azure Container Instances for WebSocket**
+   - Functions on Consumption (~€5/month)
+   - ACI with its own SignalR server (~€30/month)
+   - **Savings: ~€90/month**
 
-2. **Použít Azure App Service místo Functions**
-   - B1 Basic tier (~€50/měsíc) podporuje WebSocket
-   - **Úspora: ~€75/měsíc**
-   - Ale: Žádné auto-scaling
+2. **Use Azure App Service instead of Functions**
+   - B1 Basic tier (~€50/month) supports WebSocket
+   - **Savings: ~€75/month**
+   - But: No auto-scaling
 
-3. **Self-hosted SignalingServer na VM**
-   - B2s VM (2 vCPU, 4GB RAM) = €35/měsíc
-   - Vyžaduje správu, monitoring, updates
-   - **Úspora: ~€150/měsíc**
+3. **Self-hosted SignalingServer on a VM**
+   - B2s VM (2 vCPU, 4GB RAM) = €35/month
+   - Requires administration, monitoring, updates
+   - **Savings: ~€150/month**
 
-### Doporučení:
-- **Pro vývoj:** Free tier všude = €0
-- **Pro malý provoz (<50 users):** App Service B1 = ~€50-70/měsíc
-- **Pro produkci (100+ users):** Functions Premium + SignalR = ~€180/měsíc
-- **Pro enterprise:** Zvažte self-hosted řešení na VM
+### Recommendations:
+- **For development:** Free tier everywhere = €0
+- **For low traffic (<50 users):** App Service B1 = ~€50-70/month
+- **For production (100+ users):** Functions Premium + SignalR = ~€180/month
+- **For enterprise:** Consider a self-hosted solution on a VM
 
 ---
 
-## Monitoring a Diagnostika
+## Monitoring and Diagnostics
 
 ### 1. Application Insights Queries
 
-**Sledování session registrations:**
+**Monitoring session registrations:**
 ```kusto
 traces
 | where message contains "Server registered"
@@ -1020,7 +1020,7 @@ traces
 | order by timestamp desc
 ```
 
-**Autentizační failures:**
+**Authentication failures:**
 ```kusto
 traces
 | where severityLevel >= 2 and message contains "Authentication failed"
@@ -1042,7 +1042,7 @@ dependencies
 
 ### 2. Health Endpoint
 
-Vytvořte `HealthFunction.cs`:
+Create `HealthFunction.cs`:
 
 ```csharp
 [Function("Health")]
@@ -1077,7 +1077,7 @@ az monitor metrics alert create \
 ### 3. Logging Best Practices
 
 ```csharp
-// Strukturovaný logging
+// Structured logging
 _logger.LogInformation(
     "Client {Action} | ServerId: {ServerId} | ClientId: {ClientId} | Duration: {Duration}ms",
     "authenticated",
@@ -1098,17 +1098,17 @@ telemetryClient.TrackEvent("ClientConnected", new Dictionary<string, string>
 
 ---
 
-## Alternativní řešení
+## Alternative solutions
 
-### Řešení 1: Azure Container Instances + ASP.NET Core
+### Solution 1: Azure Container Instances + ASP.NET Core
 
-**Výhody:**
-- Přímá migrace současného kódu (minimal changes)
-- Plná kontrola nad WebSocket implementací
-- Levnější než Functions Premium (~€30/měsíc)
+**Benefits:**
+- Direct migration of the current code (minimal changes)
+- Full control over the WebSocket implementation
+- Cheaper than Functions Premium (~€30/month)
 
-**Postup:**
-1. Dockerizace SignalingServer:
+**Procedure:**
+1. Dockerizing SignalingServer:
 
 ```dockerfile
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
@@ -1134,7 +1134,7 @@ COPY --from=publish /app/publish .
 ENTRYPOINT ["dotnet", "RemoteDesktop.SignalingServer.dll"]
 ```
 
-2. Nasazení do ACI:
+2. Deployment to ACI:
 
 ```bash
 az container create \
@@ -1151,15 +1151,15 @@ az container create \
 
 3. URL: `http://signaling-remotedesktop.westeurope.azurecontainer.io`
 
-**Nevýhody:**
-- Manuální škálování (single instance)
-- Žádná built-in load balancing
+**Drawbacks:**
+- Manual scaling (single instance)
+- No built-in load balancing
 
 ---
 
-### Řešení 2: Azure Kubernetes Service (AKS)
+### Solution 2: Azure Kubernetes Service (AKS)
 
-Pro velmi velký provoz (1000+ concurrent users):
+For very high traffic (1000+ concurrent users):
 
 ```yaml
 apiVersion: apps/v1
@@ -1205,65 +1205,65 @@ spec:
     app: signaling-server
 ```
 
-**Výhody:**
+**Benefits:**
 - Auto-scaling (HPA based on CPU/memory)
 - High availability (multiple replicas)
 - Azure Monitor integration
 
-**Nevýhody:**
-- Složitější setup
-- Dražší (~€150+/měsíc pro malý cluster)
+**Drawbacks:**
+- More complex setup
+- More expensive (~€150+/month for a small cluster)
 
 ---
 
-### Řešení 3: Hybrid (Self-hosted + Azure)
+### Solution 3: Hybrid (Self-hosted + Azure)
 
-**Architektura:**
-- SignalingServer na vlastním serveru/VM (levný VPS ~€5/měsíc)
-- Azure CDN pro static assets (WebClient)
-- Azure DNS pro custom domain
-- Cloudflare jako reverse proxy (free WebSocket proxying)
+**Architecture:**
+- SignalingServer on your own server/VM (cheap VPS ~€5/month)
+- Azure CDN for static assets (WebClient)
+- Azure DNS for custom domain
+- Cloudflare as a reverse proxy (free WebSocket proxying)
 
-**Výhody:**
-- Velmi nízké náklady (<€10/měsíc)
-- Plná kontrola
+**Benefits:**
+- Very low costs (<€10/month)
+- Full control
 
-**Nevýhody:**
-- Vyžaduje DevOps znalosti
-- Žádná SLA od Azure
+**Drawbacks:**
+- Requires DevOps knowledge
+- No SLA from Azure
 
 ---
 
-## Závěr
+## Conclusion
 
-### Doporučené řešení podle use-case:
+### Recommended solution by use case:
 
-| Scénář | Řešení | Měsíční náklady |
+| Scenario | Solution | Monthly cost |
 |--------|--------|-----------------|
-| **Vývoj/Testing** | Azure Functions Free + SignalR Free | €0 |
-| **Malý projekt (<50 users)** | Azure App Service B1 | €50-70 |
-| **Střední projekt (50-200 users)** | Functions Premium + SignalR Standard | €180-200 |
-| **Velký projekt (200+ users)** | AKS + SignalR Premium | €300-500 |
-| **Budget řešení** | Azure Container Instances | €30-50 |
+| **Development/Testing** | Azure Functions Free + SignalR Free | €0 |
+| **Small project (<50 users)** | Azure App Service B1 | €50-70 |
+| **Medium project (50-200 users)** | Functions Premium + SignalR Standard | €180-200 |
+| **Large project (200+ users)** | AKS + SignalR Premium | €300-500 |
+| **Budget solution** | Azure Container Instances | €30-50 |
 | **Self-hosted** | VPS + Cloudflare | €5-15 |
 
 ### Next Steps:
 
-1. ✅ Vytvořte Azure account a resource group
-2. ✅ Implementujte SessionStorageService a Functions
-3. ✅ Otestujte lokálně s Azure Storage Emulator
-4. ✅ Nasaďte do Azure (začněte s Free tier)
-5. ✅ Nastavte monitoring (Application Insights)
-6. ✅ Optimalizujte náklady podle skutečného provozu
+1. ✅ Create an Azure account and resource group
+2. ✅ Implement SessionStorageService and Functions
+3. ✅ Test locally with the Azure Storage Emulator
+4. ✅ Deploy to Azure (start with the Free tier)
+5. ✅ Set up monitoring (Application Insights)
+6. ✅ Optimize costs based on actual usage
 
 ---
 
-**Dokumentace:**
+**Documentation:**
 - [Azure Functions .NET Isolated](https://learn.microsoft.com/en-us/azure/azure-functions/dotnet-isolated-process-guide)
 - [Azure SignalR Service](https://learn.microsoft.com/en-us/azure/azure-signalr/)
 - [Azure Table Storage](https://learn.microsoft.com/en-us/azure/storage/tables/)
 - [Application Insights](https://learn.microsoft.com/en-us/azure/azure-monitor/app/app-insights-overview)
 
-**Podpora:**
+**Support:**
 - GitHub Issues: https://github.com/your-repo/issues
 - Azure Support: https://portal.azure.com/#blade/Microsoft_Azure_Support/HelpAndSupportBlade

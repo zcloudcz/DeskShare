@@ -1,15 +1,15 @@
-﻿# Architektura DeskShare
+﻿# DeskShare Architecture
 
-## 1. Přehled architektury
+## 1. Architecture overview
 
-DeskShare je postavena na **čisté architektuře** s důrazem na:
+DeskShare is built on a **clean architecture** with an emphasis on:
 
-- **Separation of Concerns** - každá komponenta má jasně definovanou zodpovědnost
-- **Dependency Injection** - všechny závislosti jsou explicitní a testovatelné
-- **Interface-based design** - možnost pluginů a mockování pro testy
-- **Performance-first** - kritické sekce optimalizovány (unsafe code, SIMD-ready)
+- **Separation of Concerns** - each component has a clearly defined responsibility
+- **Dependency Injection** - all dependencies are explicit and testable
+- **Interface-based design** - support for plugins and mocking in tests
+- **Performance-first** - critical sections are optimized (unsafe code, SIMD-ready)
 
-## 2. Komponenty systému
+## 2. System components
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -44,9 +44,9 @@ DeskShare je postavena na **čisté architektuře** s důrazem na:
 
 ### 3.1 DesktopDuplicator (ICapturer)
 
-**Zodpovědnost**: Efektivní zachytávání obrazovky pomocí DXGI Desktop Duplication API.
+**Responsibility**: Efficient screen capture using the DXGI Desktop Duplication API.
 
-**Implementační detaily**:
+**Implementation details**:
 
 ```
 1. Initialize()
@@ -65,21 +65,21 @@ DeskShare je postavena na **čisté architektuře** s důrazem na:
    └─ Release DXGI frame for next capture
 ```
 
-**Performance charakteristiky**:
+**Performance characteristics**:
 - ⚡ GPU-based copy (near zero CPU overhead)
 - 🔄 Only captures on screen changes (event-driven)
 - 📦 Direct memory mapping (no extra allocations)
 
-**Optimalizace**:
+**Optimizations**:
 - Staging texture reuse (no per-frame allocation)
-- Timeout handling pro throttling
-- Fallback při chybách (reinitializace)
+- Timeout handling for throttling
+- Fallback on errors (reinitialization)
 
 ### 3.2 PixelConverter (IFrameConverter)
 
-**Zodpovědnost**: Konverze BGRA (32bpp) -> I420 (YUV 4:2:0 planar).
+**Responsibility**: Conversion of BGRA (32bpp) -> I420 (YUV 4:2:0 planar).
 
-**Algoritmus**: ITU-R BT.601 standard
+**Algorithm**: ITU-R BT.601 standard
 
 ```
 Y = ( 66R + 129G +  25B + 128) >> 8 + 16
@@ -87,25 +87,25 @@ U = (-38R -  74G + 112B + 128) >> 8 + 128
 V = (112R -  94G -  18B + 128) >> 8 + 128
 ```
 
-**Implementace**:
-- ✅ Unsafe pointer arithmetic pro přímý memory access
-- ✅ Fixed-point matematika místo floating-point
-- ✅ 2x2 subsampling pro U/V plány (4:2:0)
-- 🔜 SIMD vectorization (AVX2) - Fáze 2
+**Implementation**:
+- ✅ Unsafe pointer arithmetic for direct memory access
+- ✅ Fixed-point math instead of floating-point
+- ✅ 2x2 subsampling for the U/V planes (4:2:0)
+- 🔜 SIMD vectorization (AVX2) - Phase 2
 
-**Performance profil**:
+**Performance profile**:
 - 1080p frame (~8MB BGRA): ~5-10ms conversion time
-- Cíl: <3ms s SIMD optimalizací
+- Target: <3ms with SIMD optimization
 
-## 4. Signaling architektura
+## 4. Signaling architecture
 
 ### 4.1 SignalingServer (ASP.NET Core)
 
-**Zodpovědnost**: WebSocket relay pro SDP/ICE zprávy mezi peers.
+**Responsibility**: WebSocket relay for SDP/ICE messages between peers.
 
 **Endpoints**:
 - `GET /` - Info endpoint
-- `GET /health` - Health check s počtem spojení
+- `GET /health` - Health check with the connection count
 - `WS /signal` - WebSocket signaling endpoint
 
 **Message routing**:
@@ -128,17 +128,17 @@ Client A                SignalingServer              Client B
 ```
 
 **ConnectionManager**:
-- `ConcurrentDictionary<string, WebSocket>` pro thread-safe routing
-- Automatic cleanup při disconnect
-- Broadcast support (pro multi-viewer budoucnost)
+- `ConcurrentDictionary<string, WebSocket>` for thread-safe routing
+- Automatic cleanup on disconnect
+- Broadcast support (for a multi-viewer future)
 
-## 5. WebRTC pipeline (Plánováno)
+## 5. WebRTC pipeline (Planned)
 
 ### 5.1 VideoSource (IVideoSource)
 
-**Zodpovědnost**: Push I420 frames do WebRTC peer connection.
+**Responsibility**: Push I420 frames into the WebRTC peer connection.
 
-**Komponenty**:
+**Components**:
 
 ```
 IVideoSource
@@ -148,10 +148,10 @@ IVideoSource
     └─ Statistics tracking
 ```
 
-**Backpressure strategie**:
-1. Token bucket algorithm pro frame rate limiting
-2. Drop frames když WebRTC buffer je plný
-3. Emit statistics pro adaptive bitrate
+**Backpressure strategy**:
+1. Token bucket algorithm for frame rate limiting
+2. Drop frames when the WebRTC buffer is full
+3. Emit statistics for adaptive bitrate
 
 ### 5.2 PeerConnection lifecycle
 
@@ -199,18 +199,18 @@ Main Thread (UI)
        └─ Loop: Dequeue I420 -> PushFrame
 ```
 
-**Synchronizace**:
-- `BlockingCollection<T>` pro producer/consumer queues
-- Bounded capacity pro backpressure
-- CancellationToken pro graceful shutdown
+**Synchronization**:
+- `BlockingCollection<T>` for producer/consumer queues
+- Bounded capacity for backpressure
+- CancellationToken for graceful shutdown
 
 ### 6.2 SignalingServer threads
 
-- **Kestrel thread pool** pro HTTP/WebSocket handling
-- **ConnectionManager** je thread-safe (ConcurrentDictionary)
-- Async/await pattern všude
+- **Kestrel thread pool** for HTTP/WebSocket handling
+- **ConnectionManager** is thread-safe (ConcurrentDictionary)
+- Async/await pattern everywhere
 
-## 7. Error handling strategie
+## 7. Error handling strategy
 
 ### 7.1 DesktopDuplicator
 
@@ -233,17 +233,17 @@ catch (SharpGenException ex) when (ex.Result == DXGI_ERROR_WAIT_TIMEOUT)
 
 ### 7.2 SignalingServer
 
-- **Graceful degradation** - jeden broken connection neovlivní ostatní
-- **Structured logging** (Serilog) pro diagnostiku
-- **Health endpoint** pro monitoring
+- **Graceful degradation** - one broken connection does not affect the others
+- **Structured logging** (Serilog) for diagnostics
+- **Health endpoint** for monitoring
 
 ### 7.3 WebRTC
 
-- **ICE restart** při connection failure
-- **Automatic reconnection** s exponential backoff
-- **RTCP feedback** pro congestion control
+- **ICE restart** on connection failure
+- **Automatic reconnection** with exponential backoff
+- **RTCP feedback** for congestion control
 
-## 8. Bezpečnostní architektura
+## 8. Security architecture
 
 ### 8.1 Signaling security
 
@@ -252,16 +252,16 @@ Development: ws://localhost:5000
 Production:  wss://server.com:443 (WSS only)
 ```
 
-**Authentication** (Fáze 3):
-- JWT tokens pro client identification
-- Certificate pinning pro WSS
+**Authentication** (Phase 3):
+- JWT tokens for client identification
+- Certificate pinning for WSS
 - Rate limiting per IP
 
 ### 8.2 Media security
 
-- **DTLS** - TLS pro DataChannel
-- **SRTP** - Encrypted RTP pro video/audio
-- **Automatic** - WebRTC handles natively
+- **DTLS** - TLS for DataChannel
+- **SRTP** - Encrypted RTP for video/audio
+- **Automatic** - WebRTC handles it natively
 
 ### 8.3 Input control security
 
@@ -280,27 +280,27 @@ User clicks "Allow Remote Control"
        └─ Disable input processing
 ```
 
-## 9. Testovací strategie
+## 9. Testing strategy
 
-### 9.1 Unit testy
+### 9.1 Unit tests
 
-- **PixelConverter**: Validate známé RGB->YUV konverze
+- **PixelConverter**: Validate known RGB->YUV conversions
 - **ConnectionManager**: Mock WebSocket, verify routing
 - **SignalingMessage**: Serialization/deserialization
 
-### 9.2 Integrační testy
+### 9.2 Integration tests
 
 - **E2E capture pipeline**: DesktopDuplicator -> PixelConverter
 - **Signaling flow**: Two mock clients exchange messages
 - **Performance benchmarks**: Conversion speed, memory usage
 
-### 9.3 Smoke testy
+### 9.3 Smoke tests
 
-- **DesktopDuplicator.Initialize()** nehodí výjimku
-- **SignalingServer** odpovídá na /health
-- **WebClient** načte bez errors
+- **DesktopDuplicator.Initialize()** does not throw an exception
+- **SignalingServer** responds to /health
+- **WebClient** loads without errors
 
-## 10. Deployment architektura
+## 10. Deployment architecture
 
 ```
 ┌────────────────────────────────────────────────────┐
@@ -323,17 +323,17 @@ User clicks "Allow Remote Control"
          └─────────┘      └─────────────┘
 ```
 
-**Komponenty**:
+**Components**:
 - **Nginx/Traefik**: Reverse proxy + TLS
-- **SignalingServer**: Stateless, horizontálně škálovatelný
-- **coturn**: TURN/STUN servers pro NAT traversal
-- **Redis** (budoucí): Shared state pro multi-instance signaling
+- **SignalingServer**: Stateless, horizontally scalable
+- **coturn**: TURN/STUN servers for NAT traversal
+- **Redis** (future): Shared state for multi-instance signaling
 
 ## 11. Monitoring & Observability
 
-### 11.1 Metriky (OpenTelemetry - Fáze 4)
+### 11.1 Metrics (OpenTelemetry - Phase 4)
 
-- Capture FPS, latence, dropped frames
+- Capture FPS, latency, dropped frames
 - WebRTC bitrate, packet loss, RTT
 - Signaling connections, messages/sec
 
