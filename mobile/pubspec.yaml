@@ -65,6 +65,8 @@ dev_dependencies:
 
 # The following section is specific to Flutter packages.
 flutter:
+  # Android has two flavors (full / play, see android/app/build.gradle.kts); plain `flutter run` uses full.
+  default-flavor: full
 
   # The following line ensures that the Material Icons font is
   # included with your application, so that you can use the icons in

@@ -8,9 +8,14 @@ import '../core/ids.dart';
 import 'sender_session.dart';
 
 /// "Share this phone": Server ID, rotating passkey, remote-control toggle, Start/Stop.
+/// False in the Google Play build (--dart-define=DESKSHARE_REMOTE_CONTROL=false): that build ships without the
+/// Accessibility service, which Play allows only for accessibility tools, so the phone can be watched, not controlled.
+const remoteControlAvailable = bool.fromEnvironment('DESKSHARE_REMOTE_CONTROL', defaultValue: true);
+
 class SenderScreen extends StatefulWidget {
-  const SenderScreen({super.key, required this.services});
+  const SenderScreen({super.key, required this.services, this.remoteControl = remoteControlAvailable});
   final AppServices services;
+  final bool remoteControl;
 
   @override
   State<SenderScreen> createState() => _SenderScreenState();
@@ -112,15 +117,17 @@ class _SenderScreenState extends State<SenderScreen> with WidgetsBindingObserver
           footer: sharing ? _countdown() : 'Start sharing to get a passkey. It changes every $passkeyValiditySeconds seconds.',
         ),
         const SizedBox(height: 12),
-        Card(
-          child: SwitchListTile(
-            key: const Key('control-switch'),
-            title: const Text('Allow remote control'),
-            subtitle: const Text('The viewer can tap, swipe and scroll on this phone. Off: view only.'),
-            value: _session.controlRequested,
-            onChanged: sharing || busy ? null : _onControlToggle,
+        // Hidden in the Play build; controlRequested then stays false, so the accessibility card never shows either.
+        if (widget.remoteControl)
+          Card(
+            child: SwitchListTile(
+              key: const Key('control-switch'),
+              title: const Text('Allow remote control'),
+              subtitle: const Text('The viewer can tap, swipe and scroll on this phone. Off: view only.'),
+              value: _session.controlRequested,
+              onChanged: sharing || busy ? null : _onControlToggle,
+            ),
           ),
-        ),
         if (needsAccessibility)
           Card(
             key: const Key('accessibility-warning'),

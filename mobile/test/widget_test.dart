@@ -1,5 +1,6 @@
 import 'package:deskshare/app.dart';
 import 'package:deskshare/core/signaling_api.dart';
+import 'package:deskshare/sender/sender_screen.dart';
 import 'package:deskshare/settings_screen.dart';
 import 'package:deskshare/viewer/viewer_session.dart';
 import 'package:flutter/material.dart';
@@ -110,6 +111,20 @@ void main() {
       await tester.pumpAndSettle();
       expect(device.settingsOpened, 1);
       expect(find.byKey(const Key('accessibility-warning')), findsOneWidget);
+    });
+
+    testWidgets('Play build (no remote control) offers view-only sharing', (tester) async {
+      final sender = FakeSender();
+      await tester.pumpWidget(MaterialApp(
+          home: SenderScreen(services: await fakeServices(sender: sender), remoteControl: false)));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('control-switch')), findsNothing);
+      expect(find.byKey(const Key('accessibility-warning')), findsNothing);
+      await tester.tap(find.byKey(const Key('start-stop')));
+      await tester.pump();
+      expect(sender.starts, 1);
+      expect(sender.controlRequested, isFalse);
     });
 
     testWidgets('no warning when the accessibility service is already on', (tester) async {
