@@ -1,37 +1,37 @@
 # DeskShare
 
-Vysokovýkonná aplikace pro streamování pracovních ploch a oken na Windows pomocí WebRTC s důrazem na nízkou latenci, čistý kód a plné pokrytí testy.
+High-performance application for streaming desktops and windows on Windows via WebRTC, focused on low latency, clean code and full test coverage.
 
-## ⬇️ Stažení
+## ⬇️ Download
 
 - Web: **https://deskshare.zcloud.cz** (CZ/EN)
-- Windows instalátor: [DeskShare-win-Setup.exe](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Setup.exe) (Velopack, automatické aktualizace)
-- Přenosná verze: [DeskShare-win-Portable.zip](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Portable.zip)
-- Hromadné nasazení (MSI pro Intune/GPO/SCCM, nepodepsané): [DeskShare-x64.msi](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-x64.msi), viz [docs/deployment.md](docs/deployment.md)
-- Web viewer (bez instalace): https://app.deskshare.zcloud.cz/webclient/index.html
-- macOS (Apple Silicon, beta, jen prohlížení): [DeskShare-osx-Setup.pkg](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-osx-Setup.pkg) (podepsáno + notarizováno)
-- Linux x64 (beta, jen prohlížení): [DeskShare.AppImage](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare.AppImage)
+- Windows installer: [DeskShare-win-Setup.exe](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Setup.exe) (Velopack, automatic updates)
+- Portable version: [DeskShare-win-Portable.zip](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Portable.zip)
+- Bulk deployment (MSI for Intune/GPO/SCCM, unsigned): [DeskShare-x64.msi](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-x64.msi), see [docs/deployment.md](docs/deployment.md)
+- Web viewer (no installation): https://app.deskshare.zcloud.cz/webclient/index.html
+- macOS (Apple Silicon, beta, view only): [DeskShare-osx-Setup.pkg](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-osx-Setup.pkg) (signed + notarized)
+- Linux x64 (beta, view only): [DeskShare.AppImage](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare.AppImage)
 
-Hostovaný signaling server běží na `app.deskshare.zcloud.cz` (Azure App Service, nasazení přes
-`.github/workflows/deploy-signaling.yml`). Vydání vzniká pushnutím tagu `vX.Y.Z` (`release.yml`).
+The hosted signaling server runs at `app.deskshare.zcloud.cz` (Azure App Service, deployed via
+`.github/workflows/deploy-signaling.yml`). A release is created by pushing a `vX.Y.Z` tag (`release.yml`).
 
-## 🎯 Přehled
+## 🎯 Overview
 
-DeskShare je moderní .NET 8 aplikace pro vzdálené sdílení obrazovky, která využívá:
+DeskShare is a modern .NET 8 application for remote screen sharing that uses:
 
-- **DXGI Desktop Duplication API** pro efektivní zachytávání obrazovky na GPU
-- **SIPSorcery** pro WebRTC peer-to-peer streamování s nízkou latencí
-- **WebSocket signaling** pro výměnu SDP/ICE kandidátů
-- **I420 pixel conversion** s AVX2 SIMD optimalizacemi
-- **Serilog** pro strukturované logování
-- **VP8 video encoding** s VideoEncoderEndPoint
+- **DXGI Desktop Duplication API** for efficient GPU-based screen capture
+- **SIPSorcery** for low-latency WebRTC peer-to-peer streaming
+- **WebSocket signaling** for exchanging SDP/ICE candidates
+- **I420 pixel conversion** with AVX2 SIMD optimizations
+- **Serilog** for structured logging
+- **VP8 video encoding** with VideoEncoderEndPoint
 
-## ✨ Klíčové vlastnosti
+## ✨ Key Features
 
-- ✅ Nízká latence (<150ms end-to-end v LAN při 720p/30fps)
-- ✅ Efektivní GPU-based screen capture pomocí DXGI
-- ✅ Čistá architektura s plnou podporou DI a testování
-- ✅ Bezpečný přenos (WSS/HTTPS pro signaling, DTLS/SRTP pro media)
+- ✅ Low latency (<150ms end-to-end on LAN at 720p/30fps)
+- ✅ Efficient GPU-based screen capture using DXGI
+- ✅ Clean architecture with full DI and testing support
+- ✅ Secure transport (WSS/HTTPS for signaling, DTLS/SRTP for media)
 - ✅ **HMAC-SHA256 request signing** with nonce-based replay attack prevention
 - ✅ **Progressive Web App (PWA)** support for WebClient
 - ✅ **Real-time WebRTC statistics** (bitrate, FPS, packet loss, latency)
@@ -39,7 +39,7 @@ DeskShare je moderní .NET 8 aplikace pro vzdálené sdílení obrazovky, která
 - ✅ **Fullscreen mode** for WebClient
 - ✅ **Quality presets** (Low/Medium/High/Ultra) via appsettings.json
 - ✅ **Clean English code comments** for junior developers
-- ✅ Kompletní XML dokumentace
+- ✅ Complete XML documentation
 
 ## 🆕 Recent Updates (November 2025)
 
@@ -156,39 +156,39 @@ DeskShare je moderní .NET 8 aplikace pro vzdálené sdílení obrazovky, která
      - Enable/disable control button
    - **Comprehensive unit tests** (29 tests, 100% pass rate)
 
-## 📁 Struktura projektu
+## 📁 Project Structure
 
 ```
 DeskShare/
 ├── src/
-│   ├── Common/                      # Sdílené modely a rozhraní
-│   │   ├── Models/                  # Datové modely (Frame, VideoFrame, SignalingMessage)
-│   │   └── Interfaces/              # Abstrakce (ICapturer, IFrameConverter, IVideoSource)
-│   ├── ScreenSenderApp/             # Headless CLI sender nad DeskShare.Core.ScreenSenderService
+│   ├── Common/                      # Shared models and interfaces
+│   │   ├── Models/                  # Data models (Frame, VideoFrame, SignalingMessage)
+│   │   └── Interfaces/              # Abstractions (ICapturer, IFrameConverter, IVideoSource)
+│   ├── ScreenSenderApp/             # Headless CLI sender on top of DeskShare.Core.ScreenSenderService
 │   ├── SignalingServer/             # ASP.NET Core WebSocket signaling server
-│   │   └── Services/                # ConnectionManager pro routing zpráv
-│   └── WebClient/                   # HTML/JS klient pro příjem streamu
+│   │   └── Services/                # ConnectionManager for message routing
+│   └── WebClient/                   # HTML/JS client for receiving the stream
 ├── tests/
-│   ├── UnitTests/                   # Unit testy
-│   └── IntegrationTests/            # Integrační testy
+│   ├── UnitTests/                   # Unit tests
+│   └── IntegrationTests/            # Integration tests
 ├── docs/
-│   ├── architecture.md              # Architektura a design rozhodnutí
-│   └── run-guide.md                 # Návod na spuštění a konfiguraci
+│   ├── architecture.md              # Architecture and design decisions
+│   └── run-guide.md                 # Run and configuration guide
 └── docker/
-    └── coturn/                      # Docker setup pro TURN server
+    └── coturn/                      # Docker setup for the TURN server
 ```
 
-## 🚀 Rychlý start
+## 🚀 Quick Start
 
-### Požadavky
+### Requirements
 
-- **.NET 8 SDK** nebo novější
-- **Windows 10/11** (Desktop Duplication API je Windows-only)
-- **Visual Studio 2022** nebo **VS Code** (volitelné)
+- **.NET 8 SDK** or newer
+- **Windows 10/11** (Desktop Duplication API is Windows-only)
+- **Visual Studio 2022** or **VS Code** (optional)
 
-### ⚡ Nejrychlejší způsob (Demo Mode)
+### ⚡ Fastest Way (Demo Mode)
 
-Použijte demo launcher pro okamžité spuštění:
+Use the demo launcher to start instantly:
 
 **Windows (PowerShell):**
 ```powershell
@@ -201,13 +201,13 @@ chmod +x demo.sh
 ./demo.sh
 ```
 
-Demo launcher automaticky:
-- ✅ Zkontroluje .NET 8 SDK
-- ✅ Sestaví projekt (Release)
-- ✅ Spustí SignalingServer
-- ✅ Otevře prohlížeč s demo rozhraním
+The demo launcher automatically:
+- ✅ Checks the .NET 8 SDK
+- ✅ Builds the project (Release)
+- ✅ Starts SignalingServer
+- ✅ Opens the browser with the demo interface
 
-### 📋 Manuální start
+### 📋 Manual Start
 
 #### 1. Clone repository
 
@@ -216,35 +216,35 @@ git clone https://github.com/your-username/DeskShare.git
 cd DeskShare
 ```
 
-#### 2. Build projektu
+#### 2. Build the project
 
 ```bash
 dotnet build
 ```
 
-#### 3. Spuštění Signaling Serveru
+#### 3. Run the Signaling Server
 
 ```bash
 cd src/SignalingServer
 dotnet run
 ```
 
-Server běží na `http://localhost:5000`
+The server runs at `http://localhost:5000`
 
 **Endpoints:**
 - WebSocket signaling: `ws://localhost:5000/signal`
 - Health check: `http://localhost:5000/health`
 - Statistics: `http://localhost:5000/statistics`
 
-#### 4. Otevření WebClient
+#### 4. Open the WebClient
 
-Otevřete `src/WebClient/index.html` v moderním prohlížeči (Chrome, Edge, Firefox).
+Open `src/WebClient/index.html` in a modern browser (Chrome, Edge, Firefox).
 
-Nebo navštivte demo rozhraní: **http://localhost:5000** (po spuštění SignalingServer)
+Or visit the demo interface: **http://localhost:5000** (after starting SignalingServer)
 
-#### 5. Konfigurace
+#### 5. Configuration
 
-Upravte `src/ScreenSenderApp/appsettings.json`:
+Edit `src/ScreenSenderApp/appsettings.json`:
 
 ```json
 {
@@ -259,20 +259,20 @@ Upravte `src/ScreenSenderApp/appsettings.json`:
 }
 ```
 
-#### 6. Spuštění Screen Sender
+#### 6. Run the Screen Sender
 
 ```bash
 cd src/ScreenSenderApp
 dotnet run
 ```
 
-Nebo s parametry z příkazové řádky:
+Or with command-line parameters:
 
 ```bash
 dotnet run -- --Capture:AdapterIndex=0 --Capture:OutputIndex=0 --Capture:TargetFps=30
 ```
 
-Použití WebRTCSession:
+Using WebRTCSession:
 
 ```csharp
 using var session = new WebRTCSession();
@@ -296,34 +296,34 @@ if (capturer.Initialize())
 }
 ```
 
-## 📱 Mobilní aplikace (Flutter)
+## 📱 Mobile App (Flutter)
 
-Složka [`mobile/`](mobile/README.md): aplikace DeskShare pro Android a iOS (`cz.zcloud.deskshare`).
-- **Connect to computer** (Android + iOS): Server ID + passkey, zobrazení vzdálené plochy, pinch-zoom, ovládání dotykem (tap = klik, dva prsty = pravý klik, tah = drag) a klávesnice.
-- **Share this phone** (Android): sdílení obrazovky telefonu (MediaProjection), volitelné vzdálené ovládání přes Accessibility službu. iOS sdílení (ReplayKit Broadcast Extension) zatím není, ovládání iOS Apple neumožňuje.
+The [`mobile/`](mobile/README.md) folder: DeskShare app for Android and iOS (`cz.zcloud.deskshare`).
+- **Connect to computer** (Android + iOS): Server ID + passkey, remote desktop display, pinch-zoom, touch control (tap = click, two fingers = right click, swipe = drag) and keyboard.
+- **Share this phone** (Android): sharing the phone screen (MediaProjection), optional remote control via an Accessibility service. iOS sharing (ReplayKit Broadcast Extension) is not available yet, and Apple does not allow control on iOS.
 
-Build a testy: `cd mobile && flutter analyze && flutter test && flutter build apk --debug`.
+Build and tests: `cd mobile && flutter analyze && flutter test && flutter build apk --debug`.
 
-## 📚 Dokumentace
+## 📚 Documentation
 
-- **[Architecture Guide](docs/architecture.md)** - Detailní architektura a design patterns
-- **[Run Guide](docs/run-guide.md)** - Komplexní návod na spuštění a konfiguraci
-- **[API Documentation](docs/api.md)** - Signaling API a modely zpráv
+- **[Architecture Guide](docs/architecture.md)** - Detailed architecture and design patterns
+- **[Run Guide](docs/run-guide.md)** - Comprehensive run and configuration guide
+- **[API Documentation](docs/api.md)** - Signaling API and message models
 - **[Remote Control Usage Guide](docs/remote-control-guide.md)** - Comprehensive remote control documentation
 - **[Troubleshooting Guide](docs/troubleshooting.md)** - Solutions to common issues
 - **[Security Best Practices](docs/security-best-practices.md)** - Production security guidelines
 - **[Telemetry & Monitoring Guide](docs/telemetry-guide.md)** - OpenTelemetry, Prometheus, Grafana setup
 - **[Deployment Guide](docs/deployment-guide.md)** - Portable deployment, distribution, production setup
 
-## 🧪 Testování
+## 🧪 Testing
 
-Spuštění všech testů:
+Run all tests:
 
 ```bash
 dotnet test
 ```
 
-**Aktuální výsledky testů:**
+**Current test results:**
 
 ```
 ✅ Unit Tests:       317/317 PASSED (0 failed)
@@ -332,7 +332,7 @@ dotnet test
 ✅ TOTAL:            323/323 PASSED (100%)
 ```
 
-**Pokryté oblasti:**
+**Covered areas:**
 - ✅ Frame and VideoFrame models
 - ✅ SignalingMessage serialization
 - ✅ PixelConverter BGRA→I420 conversion
@@ -346,99 +346,99 @@ dotnet test
 - ✅ WebSocketSignaler connectivity
 - ✅ Pipeline construction
 
-**Linux E2E test (Docker):** skutečný headless sender na virtuálním X displeji (Xvfb), signaling server a .NET viewer. Ověřuje video, ovládání myší, psaní z klávesnice (xterm), vypnuté ovládání a odmítnutí špatného passkey. Vyžaduje Docker:
+**Linux E2E test (Docker):** a real headless sender on a virtual X display (Xvfb), a signaling server and a .NET viewer. It verifies video, mouse control, keyboard typing (xterm), disabled control and rejection of a wrong passkey. Requires Docker:
 
 ```bash
 docker compose -f docker-compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e
-# jen jeden test: E2E_FILTER=FullyQualifiedName~RemoteControlEnabled docker compose -f docker-compose.e2e.yml up --build ...
+# just one test: E2E_FILTER=FullyQualifiedName~RemoteControlEnabled docker compose -f docker-compose.e2e.yml up --build ...
 ```
 
-**Výkonnostní měření (FPS, latence, časy odesílatele)** při 1280x720 a 1920x1080 běží ve stejném E2E; jen ty spustíš přes `E2E_FILTER=FullyQualifiedName~LinuxE2EPerfTests`. Report skončí v `TestResults/e2e/perf.md` a `perf.json` (v CI jako artefakt `e2e-perf` a v souhrnu jobu). Prahy jsou záměrně hrubé (720p: FPS >= 10, medián latence <= 1000 ms); 1080p se jen reportuje.
+**Performance measurements (FPS, latency, sender timings)** at 1280x720 and 1920x1080 run in the same E2E; to run only those, use `E2E_FILTER=FullyQualifiedName~LinuxE2EPerfTests`. The report ends up in `TestResults/e2e/perf.md` and `perf.json` (in CI as the `e2e-perf` artifact and in the job summary). The thresholds are intentionally coarse (720p: FPS >= 10, median latency <= 1000 ms); 1080p is only reported.
 
-**Linux Wayland E2E (Docker):** sender v čistě Wayland session (headless sway, bez `DISPLAY`) snímá přes ScreenCast portál (xdg-desktop-portal-wlr) a PipeWire. Před E2E pustí linuxové unit testy `WaylandPortal*` (práva a symlinky u restore tokenu). Ověřuje video, uložený restore token a to, že zapnuté ovládání bez RemoteDesktop portálu nerozbije streamování. Pohyb myši na Waylandu se v kontejneru neověřuje (wlr portál RemoteDesktop nemá, GNOME/KDE vyžadují potvrzovací dialog); mapování vstupu pokrývají unit testy `WaylandPortalTests`.
+**Linux Wayland E2E (Docker):** the sender in a pure Wayland session (headless sway, no `DISPLAY`) captures via the ScreenCast portal (xdg-desktop-portal-wlr) and PipeWire. Before the E2E it runs the Linux unit tests `WaylandPortal*` (permissions and symlinks for the restore token). It verifies video, the saved restore token, and that enabled control without a RemoteDesktop portal does not break streaming. Mouse movement on Wayland is not verified in the container (the wlr portal has no RemoteDesktop, GNOME/KDE require a confirmation dialog); input mapping is covered by the `WaylandPortalTests` unit tests.
 
 ```bash
 docker compose -f docker-compose.e2e-wayland.yml up --build --abort-on-container-exit --exit-code-from e2e-wayland
 ```
 
-**Wayland na desktopu:** v Wayland session (`XDG_SESSION_TYPE=wayland`) sender použije xdg-desktop-portal (ScreenCast + RemoteDesktop, jeden dialog; další spuštění díky restore tokenu v `~/.config/DeskShare/wayland-restore-token` bez dialogu, pokud to backend umí). Snímky čte přes systémový GStreamer, AppImage ho nebalí: nainstaluj `gstreamer1.0-pipewire gstreamer1.0-plugins-base` (Debian/Ubuntu), `pipewire-gstreamer gstreamer1-plugins-base` (Fedora), `gst-plugin-pipewire gst-plugins-base` (Arch). X11 session běží beze změny přes x11grab/XTest.
+**Wayland on the desktop:** in a Wayland session (`XDG_SESSION_TYPE=wayland`) the sender uses xdg-desktop-portal (ScreenCast + RemoteDesktop, one dialog; later runs need no dialog thanks to the restore token in `~/.config/DeskShare/wayland-restore-token`, if the backend supports it). It reads frames through the system GStreamer, which the AppImage does not bundle: install `gstreamer1.0-pipewire gstreamer1.0-plugins-base` (Debian/Ubuntu), `pipewire-gstreamer gstreamer1-plugins-base` (Fedora), `gst-plugin-pipewire gst-plugins-base` (Arch). An X11 session runs unchanged via x11grab/XTest.
 
-Testy jsou ve `tests/IntegrationTests/E2E` a bez `DESKSHARE_E2E=1` se přeskakují, takže běžné `dotnet test` je neovlivní. V CI běží joby `linux-e2e` a `linux-wayland-e2e` (`.github/workflows/build-test.yml`).
+The tests live in `tests/IntegrationTests/E2E` and are skipped without `DESKSHARE_E2E=1`, so a regular `dotnet test` is not affected. The `linux-e2e` and `linux-wayland-e2e` jobs run in CI (`.github/workflows/build-test.yml`).
 
-Performance benchmarky (budoucí):
+Performance benchmarks (future):
 
 ```bash
 dotnet run --project benchmarks -c Release
 ```
 
-## 🏗️ Aktuální stav implementace
+## 🏗️ Current Implementation Status
 
-### ✅ Fáze 1: Základní WebRTC streaming (100% hotovo)
+### ✅ Phase 1: Basic WebRTC Streaming (100% done)
 
-- ✅ Struktura projektu a solution
-- ✅ Common projekt s rozhraními a modely
-- ✅ DesktopDuplicator s DXGI Desktop Duplication
-- ✅ PixelConverter s optimalizovanou BGRA→I420 konverzí
-- ✅ SignalingServer s WebSocket podporou a strukturovaným logováním
-- ✅ WebClient HTML/JS pro příjem streamu
-- ✅ **SIPSorceryVideoSource** s WebRTC peer-to-peer streaming
-- ✅ **VideoEncoderEndPoint** pro VP8 encoding
-- ✅ **WebRTCSession** manager pro signaling + WebRTC integraci
-- ✅ **MultiClientVideoSource** pro multiple concurrent viewers
-- ✅ **MultiClientWebRTCSession** pro broadcast streaming
-- ✅ **AdaptiveBitrateController** pro automatickou adjustaci kvality
-- ✅ **ConnectionManager** pro centralizované sledování všech klientů
-- ✅ **WindowEnumerator a WindowCapturer** pro window-specific capture
-- ✅ **323 unit a integračních testů** (100% pass rate)
-- ✅ **Comprehensive test coverage** pro všechny nové komponenty
-- ✅ **Demo & testing infrastructure** pro easy end-to-end testing
-- ✅ Kompletní XML dokumentace
-- ✅ Live performance testing s real network conditions
+- ✅ Project and solution structure
+- ✅ Common project with interfaces and models
+- ✅ DesktopDuplicator with DXGI Desktop Duplication
+- ✅ PixelConverter with optimized BGRA→I420 conversion
+- ✅ SignalingServer with WebSocket support and structured logging
+- ✅ WebClient HTML/JS for receiving the stream
+- ✅ **SIPSorceryVideoSource** with WebRTC peer-to-peer streaming
+- ✅ **VideoEncoderEndPoint** for VP8 encoding
+- ✅ **WebRTCSession** manager for signaling + WebRTC integration
+- ✅ **MultiClientVideoSource** for multiple concurrent viewers
+- ✅ **MultiClientWebRTCSession** for broadcast streaming
+- ✅ **AdaptiveBitrateController** for automatic quality adjustment
+- ✅ **ConnectionManager** for centralized tracking of all clients
+- ✅ **WindowEnumerator and WindowCapturer** for window-specific capture
+- ✅ **323 unit and integration tests** (100% pass rate)
+- ✅ **Comprehensive test coverage** for all new components
+- ✅ **Demo & testing infrastructure** for easy end-to-end testing
+- ✅ Complete XML documentation
+- ✅ Live performance testing with real network conditions
 
-### ✅ Fáze 2: Performance optimalizace (100% hotovo)
+### ✅ Phase 2: Performance Optimization (100% done)
 
-- ✅ **SimdPixelConverter** s AVX2 SIMD optimalizacemi (~3x rychlejší)
-- ✅ Producer-consumer pipeline s backpressure handlingem
-- ✅ Konfigurovatelná SIMD optimalizace
-- ✅ **ArrayPool<byte> buffer pooling** s PooledPixelConverter
-- ✅ **Multimonitor enumeration** s DXGI adapter/output listing
+- ✅ **SimdPixelConverter** with AVX2 SIMD optimizations (~3x faster)
+- ✅ Producer-consumer pipeline with backpressure handling
+- ✅ Configurable SIMD optimization
+- ✅ **ArrayPool<byte> buffer pooling** with PooledPixelConverter
+- ✅ **Multi-monitor enumeration** with DXGI adapter/output listing
 - ✅ Runtime converter selection (Basic/SIMD/Pooled)
-- ✅ **Adaptivní bitrate/FPS dle síťových podmínek**
-- ✅ **Window-based capture (HWND)** s WindowEnumerator a WindowCapturer
+- ✅ **Adaptive bitrate/FPS based on network conditions**
+- ✅ **Window-based capture (HWND)** with WindowEnumerator and WindowCapturer
 
-### ✅ Fáze 3: Remote control (100% hotovo)
+### ✅ Phase 3: Remote Control (100% done)
 
 **Server-Side (C#):**
-- ✅ **WindowsInputController** s Windows SendInput API
-- ✅ **Input validation a sanitization** (koordináty, key codes, wheel delta)
+- ✅ **WindowsInputController** with Windows SendInput API
+- ✅ **Input validation and sanitization** (coordinates, key codes, wheel delta)
 - ✅ **Rate limiting** (120 inputs/second maximum)
-- ✅ **Authorization system** s user consent requirement
-- ✅ **Session timeout** (30 minut inaktivity)
-- ✅ **Audit logging** všech input operací
+- ✅ **Authorization system** with user consent requirement
+- ✅ **Session timeout** (30 minutes of inactivity)
+- ✅ **Audit logging** of all input operations
 - ✅ **Statistics tracking** (received/applied/rejected counts)
-- ✅ **DataChannelManager** pro WebRTC data channel
-- ✅ **WebRTCSessionWithInput** s video + data integration
+- ✅ **DataChannelManager** for WebRTC data channel
+- ✅ **WebRTCSessionWithInput** with video + data integration
 - ✅ **Automatic JSON deserialization** input messages
 - ✅ **Bi-directional messaging** (send/receive)
 
 **Client-Side (JavaScript):**
-- ✅ **RemoteControl.js** module pro event capture
-- ✅ **Mouse event capture** s coordinate normalization (0-1 range)
-- ✅ **Keyboard event capture** s virtual key codes
+- ✅ **RemoteControl.js** module for event capture
+- ✅ **Mouse event capture** with coordinate normalization (0-1 range)
+- ✅ **Keyboard event capture** with virtual key codes
 - ✅ **Modifier key tracking** (Shift, Ctrl, Alt)
-- ✅ **Browser shortcut protection** (Ctrl+T, Alt+F4 zachovány)
-- ✅ **Visual indicators** pro control status
-- ✅ **Enable/disable control** button s authorization flow
+- ✅ **Browser shortcut protection** (Ctrl+T, Alt+F4 preserved)
+- ✅ **Visual indicators** for control status
+- ✅ **Enable/disable control** button with authorization flow
 - ✅ **Real-time statistics** (mouse moves, clicks, keys, dropped messages)
 
 **Testing:**
 - ✅ **Comprehensive unit tests** (29 tests, 100% pass rate)
-- ⏳ Authorization dialog s GUI (momentálně auto-approve - připraveno pro Phase 4)
+- ⏳ Authorization dialog with GUI (currently auto-approve - prepared for Phase 4)
 
-### ✅ Fáze 4: Production readiness (100% hotovo)
+### ✅ Phase 4: Production Readiness (100% done)
 
-- ✅ **Serilog** strukturované logování (Console + File)
-- ✅ **appsettings.json** konfigurace
+- ✅ **Serilog** structured logging (Console + File)
+- ✅ **appsettings.json** configuration
 - ✅ Command-line argument parsing
 - ✅ Graceful shutdown (Ctrl+C handling)
 - ✅ **Comprehensive documentation** (remote control guide, troubleshooting, security, telemetry)
@@ -458,7 +458,7 @@ dotnet run --project benchmarks -c Release
 - ⏳ WiX installer
 - ⏳ Code signing
 
-### 📋 Roadmap (Fáze 5+)
+### 📋 Roadmap (Phase 5+)
 
 - Cross-platform support (Linux, macOS)
 - Hardware encoder support (NVENC, QuickSync)
@@ -467,54 +467,54 @@ dotnet run --project benchmarks -c Release
 - Session recording
 - Plugin architecture
 
-## 🔒 Bezpečnost
+## 🔒 Security
 
 - **HMAC-SHA256 Authentication**: Cryptographically signed requests with nonce-based replay prevention
-- **Signaling**: Pouze WSS (WebSocket Secure) v produkci
-- **Media**: DTLS/SRTP enkrypce (WebRTC standardní)
-- **Autorizace**: Explicitní user consent před sdílením
-- **Audit logging**: Všechny přístupové události logované
-- **Input control**: Rate limiting a validace příkazů
+- **Signaling**: WSS (WebSocket Secure) only in production
+- **Media**: DTLS/SRTP encryption (WebRTC standard)
+- **Authorization**: Explicit user consent before sharing
+- **Audit logging**: All access events are logged
+- **Input control**: Rate limiting and command validation
 - **60-second signature validity window** for time-bounded request authentication
 
-⚠️ **VAROVÁNÍ**: Aktuální verze je určena pouze pro development/testing v důvěryhodných sítích.
+⚠️ **WARNING**: The current version is intended for development/testing in trusted networks only.
 
-## 📊 Performance metriky (cílové)
+## 📊 Performance Metrics (Targets)
 
-| Metrika | Cíl | Současný stav |
+| Metric | Target | Current status |
 |---------|-----|---------------|
-| Latence (LAN) | <150ms | Měření připraveno |
-| FPS (1080p) | 30fps | Implementace zbývá |
-| CPU usage | <10% | Optimalizace v Fázi 2 |
-| Memory | <200MB | Měření připraveno |
+| Latency (LAN) | <150ms | Measurement ready |
+| FPS (1080p) | 30fps | Implementation pending |
+| CPU usage | <10% | Optimization in Phase 2 |
+| Memory | <200MB | Measurement ready |
 
-## 🤝 Přispívání
+## 🤝 Contributing
 
-Tento projekt je v aktivním vývoji. Přispívání je vítáno!
+This project is under active development. Contributions are welcome!
 
-1. Fork repository
-2. Vytvořte feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit změny (`git commit -m 'Add AmazingFeature'`)
-4. Push do branch (`git push origin feature/AmazingFeature`)
-5. Otevřete Pull Request
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
 
-## 📄 Licence
+## 📄 License
 
-MIT License - viz [LICENSE](LICENSE) soubor.
+MIT License - see the [LICENSE](LICENSE) file.
 
-## 👨‍💻 Autor
+## 👨‍💻 Author
 
-Vytvořeno s důrazem na čistý kod, výkon a testovatelnost.
+Built with a focus on clean code, performance and testability.
 
 ## 🙏 Acknowledgments
 
-- **Vortice.Windows** - Direct3D11/DXGI wrappery pro .NET
-- **SIPSorcery** - WebRTC knihovna pro .NET
+- **Vortice.Windows** - Direct3D11/DXGI wrappers for .NET
+- **SIPSorcery** - WebRTC library for .NET
 - **SIPSorceryMedia.Encoders** - VP8/H264 video encoding
-- **Serilog** - Strukturované logování
-- **coturn** - TURN server implementace (plánováno)
+- **Serilog** - Structured logging
+- **coturn** - TURN server implementation (planned)
 
-## 📦 Použité NuGet balíčky
+## 📦 NuGet Packages Used
 
 ```
 Vortice.Windows                         (v3.9.0)
@@ -532,8 +532,8 @@ NSubstitute                             (v5.3.0)
 
 ---
 
-**Status projektu**: 🚀 Active Development
+**Project status**: 🚀 Active Development
 
-**Fáze 1:** 100% ✅ | **Fáze 2:** 100% ✅ | **Fáze 3:** 100% ✅ | **Fáze 4:** 100% ✅
+**Phase 1:** 100% ✅ | **Phase 2:** 100% ✅ | **Phase 3:** 100% ✅ | **Phase 4:** 100% ✅
 
-**Celkový pokrok:** 100% (Fáze 1-4)
+**Overall progress:** 100% (Phase 1-4)
