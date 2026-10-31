@@ -8,12 +8,14 @@ import '../core/ids.dart';
 import 'sender_session.dart';
 
 /// "Share this phone": Server ID, rotating passkey, remote-control toggle, Start/Stop.
-/// False in the Google Play build (--dart-define=DESKSHARE_REMOTE_CONTROL=false): that build ships without the
-/// Accessibility service, which Play allows only for accessibility tools, so the phone can be watched, not controlled.
-const remoteControlAvailable = bool.fromEnvironment('DESKSHARE_REMOTE_CONTROL', defaultValue: true);
+/// False in the Google Play build (Android flavor "play"): it ships without the Accessibility service, which Play
+/// allows only for accessibility tools, so the phone can be watched, not controlled. Tied to the flavor itself so a
+/// play build can never show a switch that leads to a missing service.
+final remoteControlAvailable = appFlavor != 'play';
 
 class SenderScreen extends StatefulWidget {
-  const SenderScreen({super.key, required this.services, this.remoteControl = remoteControlAvailable});
+  SenderScreen({super.key, required this.services, bool? remoteControl})
+      : remoteControl = remoteControl ?? remoteControlAvailable;
   final AppServices services;
   final bool remoteControl;
 

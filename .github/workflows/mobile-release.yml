@@ -67,7 +67,7 @@ jobs:
         run: |
           set -euo pipefail
           flutter pub get
-          flutter build appbundle --release --flavor play --dart-define=DESKSHARE_REMOTE_CONTROL=false --build-number=${{ github.run_number }}
+          flutter build appbundle --release --flavor play --build-number=${{ github.run_number }}
           flutter build apk --release --flavor full --build-number=${{ github.run_number }}
           version=$(sed -n 's/^version: \([0-9.]*\)+.*/\1/p' pubspec.yaml)
           mkdir -p ../dist
