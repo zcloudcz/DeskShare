@@ -1,0 +1,8 @@
+<!-- Google Play build: drop the Accessibility service (remote control). Play allows that permission only for
+     accessibility tools; the full build with remote control is distributed as an APK instead. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <application>
+        <service android:name=".DeskShareAccessibilityService" tools:node="remove"/>
+    </application>
+</manifest>

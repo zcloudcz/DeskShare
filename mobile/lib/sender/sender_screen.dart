@@ -8,9 +8,16 @@ import '../core/ids.dart';
 import 'sender_session.dart';
 
 /// "Share this phone": Server ID, rotating passkey, remote-control toggle, Start/Stop.
+/// False in the Google Play build (Android flavor "play"): it ships without the Accessibility service, which Play
+/// allows only for accessibility tools, so the phone can be watched, not controlled. Tied to the flavor itself so a
+/// play build can never show a switch that leads to a missing service.
+final remoteControlAvailable = appFlavor != 'play';
+
 class SenderScreen extends StatefulWidget {
-  const SenderScreen({super.key, required this.services});
+  SenderScreen({super.key, required this.services, bool? remoteControl})
+      : remoteControl = remoteControl ?? remoteControlAvailable;
   final AppServices services;
+  final bool remoteControl;
 
   @override
   State<SenderScreen> createState() => _SenderScreenState();
@@ -112,15 +119,17 @@ class _SenderScreenState extends State<SenderScreen> with WidgetsBindingObserver
           footer: sharing ? _countdown() : 'Start sharing to get a passkey. It changes every $passkeyValiditySeconds seconds.',
         ),
         const SizedBox(height: 12),
-        Card(
-          child: SwitchListTile(
-            key: const Key('control-switch'),
-            title: const Text('Allow remote control'),
-            subtitle: const Text('The viewer can tap, swipe and scroll on this phone. Off: view only.'),
-            value: _session.controlRequested,
-            onChanged: sharing || busy ? null : _onControlToggle,
+        // Hidden in the Play build; controlRequested then stays false, so the accessibility card never shows either.
+        if (widget.remoteControl)
+          Card(
+            child: SwitchListTile(
+              key: const Key('control-switch'),
+              title: const Text('Allow remote control'),
+              subtitle: const Text('The viewer can tap, swipe and scroll on this phone. Off: view only.'),
+              value: _session.controlRequested,
+              onChanged: sharing || busy ? null : _onControlToggle,
+            ),
           ),
-        ),
         if (needsAccessibility)
           Card(
             key: const Key('accessibility-warning'),
