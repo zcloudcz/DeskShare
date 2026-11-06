@@ -267,20 +267,12 @@ public partial class MainWindow : Window
             _logger.LogInformation("Server started with remote control {Status}",
                 enableRemoteControl ? "ENABLED" : "DISABLED");
 
-            // Subscribe to server events
-            _serverManager.ConnectionCountChanged += (s, count) =>
-            {
-                Dispatcher.UIThread.Invoke(() => ActiveConnectionsText.Text = count.ToString());
-            };
+            // Subscribe to server events (unsubscribe first: a restart must not add a second handler)
+            _serverManager.ConnectionCountChanged -= OnConnectionCountChanged;
+            _serverManager.ConnectionCountChanged += OnConnectionCountChanged;
+            ActiveConnectionsText.Text = _serverManager.ActiveConnections.ToString();
 
-            _serverManager.StatsUpdated += (s, stats) =>
-            {
-                Dispatcher.UIThread.Invoke(() =>
-                {
-                    ActiveConnectionsText.Text = stats.ActiveConnections.ToString();
-                });
-            };
-
+            _serverManager.PasskeyChanged -= OnPasskeyChanged;
             _serverManager.PasskeyChanged += OnPasskeyChanged;
 
             // The first passkey was raised during StartAsync, before we subscribed above; show it now
@@ -310,7 +302,7 @@ public partial class MainWindow : Window
             UpdateTabAvailability();
 
             _uptimeTimer = new System.Timers.Timer(1000);
-            _uptimeTimer.Elapsed += (s, e) => Dispatcher.UIThread.Invoke(UpdateUptime);
+            _uptimeTimer.Elapsed += (s, e) => Dispatcher.UIThread.Post(UpdateUptime);
             _uptimeTimer.Start();
 
             _logger.LogInformation("Server started successfully with ID: {ServerId}", serverId);
@@ -401,6 +393,7 @@ public partial class MainWindow : Window
             _passkeyCountdownTimer = null;
 
             _isServerRunning = false;
+            ActiveConnectionsText.Text = "0";
             UpdateServerStatus(ServerStatus.Stopped);
             ServerIdPanel.IsVisible = false;
             PasskeyPanel.IsVisible = false;
@@ -457,7 +450,7 @@ public partial class MainWindow : Window
             var button = (Button)sender!;
             var originalContent = button.Content;
             button.Content = "Copied!";
-            _ = Task.Delay(2000).ContinueWith(_ => Dispatcher.UIThread.Invoke(() => button.Content = originalContent));
+            _ = Task.Delay(2000).ContinueWith(_ => Dispatcher.UIThread.Post(() => button.Content = originalContent));
         }
         catch (Exception ex)
         {
@@ -480,7 +473,7 @@ public partial class MainWindow : Window
             var button = (Button)sender!;
             var originalContent = button.Content;
             button.Content = "Copied!";
-            _ = Task.Delay(2000).ContinueWith(_ => Dispatcher.UIThread.Invoke(() => button.Content = originalContent));
+            _ = Task.Delay(2000).ContinueWith(_ => Dispatcher.UIThread.Post(() => button.Content = originalContent));
         }
         catch (Exception ex)
         {
@@ -488,9 +481,14 @@ public partial class MainWindow : Window
         }
     }
 
+    private void OnConnectionCountChanged(object? sender, int count) =>
+        Dispatcher.UIThread.Post(() => ActiveConnectionsText.Text = count.ToString());
+
+    // Raised on the sender's rotation thread. Post, never Invoke: a blocking Invoke stalls the rotation loop
+    // (and with it every later passkey) whenever the UI thread is busy.
     private void OnPasskeyChanged(object? sender, PasskeyChangedEventArgs e)
     {
-        Dispatcher.UIThread.Invoke(() =>
+        Dispatcher.UIThread.Post(() =>
         {
             PasskeyText.Text = DeskShare.Core.Auth.AuthenticationService.FormatPasskeyForDisplay(e.Passkey);
             _currentPasskeyValidTo = e.ValidTo;
@@ -499,7 +497,7 @@ public partial class MainWindow : Window
 
             _passkeyCountdownTimer?.Stop();
             _passkeyCountdownTimer = new System.Timers.Timer(500);
-            _passkeyCountdownTimer.Elapsed += (s, args) => Dispatcher.UIThread.Invoke(UpdatePasskeyCountdown);
+            _passkeyCountdownTimer.Elapsed += (s, args) => Dispatcher.UIThread.Post(UpdatePasskeyCountdown);
             _passkeyCountdownTimer.Start();
         });
     }
@@ -535,7 +533,7 @@ public partial class MainWindow : Window
                 var button = (Button)sender!;
                 var originalContent = button.Content;
                 button.Content = "Copied!";
-                _ = Task.Delay(2000).ContinueWith(_ => Dispatcher.UIThread.Invoke(() => button.Content = originalContent));
+                _ = Task.Delay(2000).ContinueWith(_ => Dispatcher.UIThread.Post(() => button.Content = originalContent));
             }
         }
         catch (Exception ex)
@@ -1073,7 +1071,7 @@ public partial class MainWindow : Window
 
     private void OnOnlineStatusChanged(object? sender, OnlineStatusChangedEventArgs e)
     {
-        Dispatcher.UIThread.Invoke(() =>
+        Dispatcher.UIThread.Post(() =>
         {
             _logger.LogDebug("Online status changed for {ServerId}: {Status}",
                 e.ServerId, e.IsOnline?.ToString() ?? "Unknown");
