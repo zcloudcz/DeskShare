@@ -147,6 +147,9 @@ public class ScreenSenderService : IHostedService, IDisposable
     /// </summary>
     public event EventHandler<string>? ServerIdChanged;
 
+    /// <summary>Raised with the number of connected, verified viewers (0 or 1) whenever it changes.</summary>
+    public event EventHandler<int>? ViewerCountChanged;
+
     /// <summary>Raised when a file from the viewer was received and verified (the UI shows a notice).</summary>
     public event EventHandler<ReceivedFile>? FileReceived;
 
@@ -230,6 +233,9 @@ public class ScreenSenderService : IHostedService, IDisposable
 
         try
         {
+            // Stopped while registering: do not start capture just to tear it down again.
+            stoppingToken.ThrowIfCancellationRequested();
+
             // Get screen resolution
             int width, height;
             using (var tempCapturer = PlatformServiceFactory.CreateScreenCapturer(_configuration.AdapterIndex, _configuration.OutputIndex, _configuration.TargetFps, drawPointer: _pointerDrawn))
@@ -318,6 +324,7 @@ public class ScreenSenderService : IHostedService, IDisposable
                 ApplyIceServers(_webrtcSessionWithInput.VideoSource);
                 _webrtcSessionWithInput.EnableE2EBinding(_e2eKeys);
                 _safety = new SessionSafety(_webrtcSessionWithInput, _configuration, AuditLog.Default, _logger, ControlApprovalPrompt, ViewerAdmission);
+                _safety.ViewerCountChanged += count => ViewerCountChanged?.Invoke(this, count);
 
                 inputController.SetCapturedDisplay(InputRectFor(displays[currentDisplay]));
                 _webrtcSessionWithInput.DataChannel.DisplaySwitcher = new DisplaySwitchService(displays, currentDisplay, async (display, stillAllowed) =>
@@ -432,8 +439,12 @@ public class ScreenSenderService : IHostedService, IDisposable
             _pipeline?.Dispose();
             _pipeline = null;
 
-            _safety?.Dispose();
-            _safety = null;
+            if (_safety != null)
+            {
+                _safety.Dispose();
+                _safety = null;
+                ViewerCountChanged?.Invoke(this, 0); // the session is gone with its viewer
+            }
             _webrtcSessionWithInput?.Dispose();
             _webrtcSessionWithInput = null;
 

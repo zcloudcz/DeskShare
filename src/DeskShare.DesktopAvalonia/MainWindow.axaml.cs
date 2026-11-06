@@ -267,20 +267,12 @@ public partial class MainWindow : Window
             _logger.LogInformation("Server started with remote control {Status}",
                 enableRemoteControl ? "ENABLED" : "DISABLED");
 
-            // Subscribe to server events
-            _serverManager.ConnectionCountChanged += (s, count) =>
-            {
-                Dispatcher.UIThread.Post(() => ActiveConnectionsText.Text = count.ToString());
-            };
+            // Subscribe to server events (unsubscribe first: a restart must not add a second handler)
+            _serverManager.ConnectionCountChanged -= OnConnectionCountChanged;
+            _serverManager.ConnectionCountChanged += OnConnectionCountChanged;
+            ActiveConnectionsText.Text = _serverManager.ActiveConnections.ToString();
 
-            _serverManager.StatsUpdated += (s, stats) =>
-            {
-                Dispatcher.UIThread.Post(() =>
-                {
-                    ActiveConnectionsText.Text = stats.ActiveConnections.ToString();
-                });
-            };
-
+            _serverManager.PasskeyChanged -= OnPasskeyChanged;
             _serverManager.PasskeyChanged += OnPasskeyChanged;
 
             // The first passkey was raised during StartAsync, before we subscribed above; show it now
@@ -401,6 +393,7 @@ public partial class MainWindow : Window
             _passkeyCountdownTimer = null;
 
             _isServerRunning = false;
+            ActiveConnectionsText.Text = "0";
             UpdateServerStatus(ServerStatus.Stopped);
             ServerIdPanel.IsVisible = false;
             PasskeyPanel.IsVisible = false;
@@ -487,6 +480,9 @@ public partial class MainWindow : Window
             _logger.LogError(ex, "Failed to copy passkey");
         }
     }
+
+    private void OnConnectionCountChanged(object? sender, int count) =>
+        Dispatcher.UIThread.Post(() => ActiveConnectionsText.Text = count.ToString());
 
     // Raised on the sender's rotation thread. Post, never Invoke: a blocking Invoke stalls the rotation loop
     // (and with it every later passkey) whenever the UI thread is busy.

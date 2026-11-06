@@ -112,7 +112,15 @@ public sealed class FfmpegScreenCapturerTests
             Assert.Contains(frame.Data.Take(frame.Stride * frame.Height), b => b != 0);
         }
     }
+}
 
+/// <summary>Grabs the real X display, so it runs alone: in parallel with other native/display tests the grab was flaky.</summary>
+[CollectionDefinition(nameof(X11CaptureCollection), DisableParallelization = true)]
+public sealed class X11CaptureCollection { }
+
+[Collection(nameof(X11CaptureCollection))]
+public sealed class FfmpegX11CaptureTests
+{
     /// <summary>
     /// Regression: the desktop app probes the screen size from its UI thread. Disposing the probe blocked on
     /// FFmpegVideoSource.Close, whose continuation needed that same thread, and froze the Avalonia window on Linux.
