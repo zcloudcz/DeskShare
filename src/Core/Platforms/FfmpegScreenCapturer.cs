@@ -25,6 +25,7 @@ public sealed class FfmpegScreenCapturer : IScreenCapturer
     private static readonly ILogger Logger = Log.ForContext<FfmpegScreenCapturer>();
 
     private static readonly TimeSpan FirstFrameTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan CloseTimeout = TimeSpan.FromSeconds(5);
 
     private readonly int _monitorIndex;
     private readonly int _fps;
@@ -36,6 +37,7 @@ public sealed class FfmpegScreenCapturer : IScreenCapturer
     private FFmpegVideoSource? _source;
     private Frame? _latest; // guarded by _lock
     private bool _disposed; // guarded by _lock
+    private volatile bool _closing; // set before we close the source ourselves
     private bool _unsupportedFormatLogged;
     private bool _sizeMismatchLogged;
 
@@ -92,8 +94,8 @@ public sealed class FfmpegScreenCapturer : IScreenCapturer
             _source = CreateSource(monitor);
             _source.SetVideoSourceFormat(_source.GetVideoSourceFormats()[0]); // otherwise FFmpegVideoSource throws "Codec Unknown"
             _source.OnVideoSourceRawSampleFaster += OnRawSample;
-            _source.OnVideoSourceError += error => Logger.Error("[FfmpegScreenCapturer] FFmpeg error: {Error}", error);
-            _source.StartVideo().GetAwaiter().GetResult();
+            _source.OnVideoSourceError += OnSourceError;
+            _source.StartVideo().GetAwaiter().GetResult(); // completes synchronously (it only starts the decode thread)
 
             // The real frame size is only known once a frame arrives (the macOS monitor list has no rectangle,
             // and Retina displays capture more pixels than points). Width/Height are set by OnRawSample.
@@ -110,6 +112,16 @@ public sealed class FfmpegScreenCapturer : IScreenCapturer
             Logger.Error(ex, "[FfmpegScreenCapturer] Initialization failed");
             return false;
         }
+    }
+
+    private void OnSourceError(string error)
+    {
+        // Closing a live source ends the decode loop, which SIPSorcery reports as "End of file". That is our own
+        // close (e.g. the short-lived probe capturer), not a capture failure.
+        if (_closing)
+            Logger.Debug("[FfmpegScreenCapturer] FFmpeg source closed: {Error}", error);
+        else
+            Logger.Error("[FfmpegScreenCapturer] FFmpeg error: {Error}", error);
     }
 
     [DllImport("libX11.so.6")] private static extern IntPtr XOpenDisplay(IntPtr display);
@@ -281,10 +293,18 @@ public sealed class FfmpegScreenCapturer : IScreenCapturer
 
         pending?.Dispose();
 
+        _closing = true;
         try
         {
-            _source?.CloseVideo().GetAwaiter().GetResult();
-            _source?.Dispose();
+            if (_source is { } source)
+            {
+                // FFmpegVideoSource.Close awaits the decode loop without ConfigureAwait(false). Blocking on it from a
+                // thread with a SynchronizationContext (the Avalonia UI thread) deadlocks, so close on the thread pool.
+                if (Task.Run(source.CloseVideo).Wait(CloseTimeout))
+                    source.Dispose();
+                else // still decoding: freeing its native context now would crash, so leak it instead
+                    Logger.Warning("[FfmpegScreenCapturer] FFmpeg source did not close within {Timeout}", CloseTimeout);
+            }
         }
         catch (Exception ex)
         {

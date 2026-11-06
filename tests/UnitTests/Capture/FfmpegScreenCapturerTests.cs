@@ -112,6 +112,61 @@ public sealed class FfmpegScreenCapturerTests
             Assert.Contains(frame.Data.Take(frame.Stride * frame.Height), b => b != 0);
         }
     }
+
+    /// <summary>
+    /// Regression: the desktop app probes the screen size from its UI thread. Disposing the probe blocked on
+    /// FFmpegVideoSource.Close, whose continuation needed that same thread, and froze the Avalonia window on Linux.
+    /// A context that never runs posted work stands in for the busy UI thread.
+    /// </summary>
+    [LinuxX11FfmpegFact]
+    public void Capturer_OnX11_InitializeAndDispose_DoNotNeedTheCallersContext()
+    {
+        // Run on a dedicated thread that has the blocked context, like the UI thread that started sharing.
+        var probeRun = Task.Factory.StartNew(() =>
+        {
+            SynchronizationContext.SetSynchronizationContext(new NeverRunsContext());
+            using var probe = new FfmpegScreenCapturer(0, 20, LinuxX11FfmpegFactAttribute.FindFfmpegFolder(), drawPointer: false);
+            Assert.True(probe.Initialize());
+            Assert.True(probe.Width > 0 && probe.Height > 0);
+        }, TaskCreationOptions.LongRunning);
+
+        Assert.True(probeRun.Wait(TimeSpan.FromSeconds(20)), "Initialize/Dispose deadlocked on the caller's SynchronizationContext");
+    }
+
+    private sealed class NeverRunsContext : SynchronizationContext
+    {
+        public override void Post(SendOrPostCallback d, object? state) { }
+        public override void Send(SendOrPostCallback d, object? state) { }
+    }
+}
+
+/// <summary>
+/// Skips the test unless running on Linux with an X display and FFmpeg: the folder in DESKSHARE_FFMPEG_DIR (e.g. usr/bin/ffmpeg
+/// of an extracted AppImage), an "ffmpeg" folder next to the tests, or the system libraries.
+/// </summary>
+internal sealed class LinuxX11FfmpegFactAttribute : FactAttribute
+{
+    public LinuxX11FfmpegFactAttribute()
+    {
+        if (!OperatingSystem.IsLinux())
+            Skip = "X11 capture test runs on Linux only.";
+        else if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DISPLAY")))
+            Skip = "No X display (DISPLAY is not set).";
+        else if (FindFfmpegFolder() == null && !Enumerable.Range(58, 10).Any(v => System.Runtime.InteropServices.NativeLibrary.TryLoad($"libavdevice.so.{v}", out _)))
+            Skip = "FFmpeg libraries (libavdevice) not found; set DESKSHARE_FFMPEG_DIR.";
+    }
+
+    /// <summary>Folder with the FFmpeg shared libraries, or null to let FFmpeg use the system ones.</summary>
+    internal static string? FindFfmpegFolder()
+    {
+        foreach (var candidate in new[] { Environment.GetEnvironmentVariable("DESKSHARE_FFMPEG_DIR"), Path.Combine(AppContext.BaseDirectory, "ffmpeg") })
+        {
+            if (!string.IsNullOrEmpty(candidate) && Directory.Exists(candidate) && Directory.GetFiles(candidate, "libavdevice.so*").Length > 0)
+                return candidate;
+        }
+
+        return null;
+    }
 }
 
 /// <summary>Skips the test unless running on Windows with the bundled FFmpeg DLLs present.</summary>
