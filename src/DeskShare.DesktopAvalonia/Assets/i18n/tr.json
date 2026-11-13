@@ -30,6 +30,7 @@
   "connect.failed": "Bağlanılamadı. İnternetinizi kontrol edip tekrar deneyin.",
   "connect.leave": "Ayrıl",
   "control.view_only": "Diğer kişi ekranınızı görebilir. Kontrol izni verilmedi.",
+  "control.can_ask": "Diğer kişi ekranınızı görüyor ve kontrol isteyebilir. Karar sizin.",
   "control.request": "Kontrol izni iste",
   "control.wait": "İzin bekleniyor…",
   "control.title": "Kontrole izin verilsin mi?",

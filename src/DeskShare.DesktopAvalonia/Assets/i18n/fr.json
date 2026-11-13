@@ -30,6 +30,7 @@
   "connect.failed": "Connexion impossible. Vérifiez votre connexion Internet et réessayez.",
   "connect.leave": "Quitter",
   "control.view_only": "L’autre personne voit votre écran. Le contrôle n’est pas autorisé.",
+  "control.can_ask": "L’autre personne voit votre écran et peut demander à le contrôler. C’est vous qui décidez.",
   "control.request": "Demander le contrôle",
   "control.wait": "En attente d’autorisation…",
   "control.title": "Autoriser le contrôle ?",

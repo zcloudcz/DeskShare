@@ -1,6 +1,10 @@
 <Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:controls="clr-namespace:DeskShare.DesktopAvalonia.Controls" xmlns:loc="clr-namespace:DeskShare.DesktopAvalonia.Localization" x:Class="DeskShare.DesktopAvalonia.MainWindow" Title="DeskShare" Icon="/deskshare.png" Height="740" Width="1100" MinHeight="500" MinWidth="700" WindowStartupLocation="CenterScreen" Background="#F4F7FB">
     <Window.Styles>
         <!-- Modern Button Style (replaces WPF ControlTemplate with Triggers) -->
+        <Style Selector="Button">
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
         <Style Selector="Button.modernButton">
             <Setter Property="Background" Value="#0B72D9"/>
             <Setter Property="Foreground" Value="White"/>
@@ -104,8 +108,8 @@
             </Grid>
         </Border>
         <StackPanel Orientation="Horizontal" Spacing="16" Margin="30,12" Grid.Row="1">
-            <Button Content="DeskShare" Click="Home_Click"/>
-            <Button Content="{Binding [advanced.label], Source={x:Static loc:Loc.Instance}}" Click="Advanced_Click"/>
+            <Button x:Name="BackButton" IsVisible="{Binding !#HomeView.IsVisible}" Content="{Binding [nav.back], Source={x:Static loc:Loc.Instance}}" Click="Home_Click" MinHeight="40" Padding="18,8"/>
+            <Button Content="{Binding [advanced.label], Source={x:Static loc:Loc.Instance}}" Click="Advanced_Click" MinHeight="40" Padding="18,8"/>
         </StackPanel>
         <!-- ZCLOUD account bar: only shown when the signaling server offers accounts (see MainWindow.Accounts.cs) -->
         <!-- Main Tab Control -->
@@ -197,7 +201,7 @@
                                 <Border x:Name="ServerSettingsCard" Classes="card" Margin="10,20,10,10">
                                     <StackPanel>
                                         <TextBlock Text="{Binding [advanced.label], Source={x:Static loc:Loc.Instance}}" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,15" TextWrapping="Wrap"/>
-                                        <CheckBox x:Name="EnableRemoteControlCheckBox" Content="{Binding [advanced.control], Source={x:Static loc:Loc.Instance}}" Margin="0,0,0,5" FontSize="14" IsChecked="False"/>
+                                        <CheckBox x:Name="EnableRemoteControlCheckBox" Content="{Binding [advanced.control], Source={x:Static loc:Loc.Instance}}" Margin="0,0,0,5" FontSize="14" IsChecked="True"/>
                                         <TextBlock x:Name="RemoteControlWarningText" Text="{Binding [control.explain], Source={x:Static loc:Loc.Instance}}" FontSize="11" Foreground="#856404" Margin="25,0,0,15" TextWrapping="Wrap"/>
                                         <StackPanel x:Name="DisplayPanel" Margin="0,0,0,15" IsVisible="False">
                                             <TextBlock Text="{Binding [display.label], Source={x:Static loc:Loc.Instance}}" FontSize="14" Margin="0,0,0,5" TextWrapping="Wrap"/>
@@ -423,14 +427,14 @@
                         <StackPanel Spacing="24">
                             <TextBlock Text="{Binding [home.need], Source={x:Static loc:Loc.Instance}}" FontSize="26" FontWeight="Bold" TextWrapping="Wrap" Foreground="#173859"/>
                             <TextBlock Text="{Binding [home.need_hint], Source={x:Static loc:Loc.Instance}}" FontSize="18" TextWrapping="Wrap" MinHeight="64"/>
-                            <Button Content="{Binding [home.need], Source={x:Static loc:Loc.Instance}}" Classes="modernButton" Click="NeedHelp_Click" HorizontalAlignment="Stretch" MinHeight="52"/>
+                            <Button Content="{Binding [home.need], Source={x:Static loc:Loc.Instance}}" Classes="modernButton" Click="NeedHelp_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" FontSize="20" MinHeight="56"/>
                         </StackPanel>
                     </Border>
                     <Border Classes="card" Padding="28" MinHeight="260" Grid.Column="2">
                         <StackPanel Spacing="24">
                             <TextBlock Text="{Binding [home.give], Source={x:Static loc:Loc.Instance}}" FontSize="26" FontWeight="Bold" TextWrapping="Wrap" Foreground="#173859"/>
                             <TextBlock Text="{Binding [home.give_hint], Source={x:Static loc:Loc.Instance}}" FontSize="18" TextWrapping="Wrap" MinHeight="64"/>
-                            <Button Content="{Binding [home.give], Source={x:Static loc:Loc.Instance}}" Classes="modernButton" Click="HelpSomeone_Click" HorizontalAlignment="Stretch" MinHeight="52"/>
+                            <Button Content="{Binding [home.give], Source={x:Static loc:Loc.Instance}}" Classes="modernButton" Click="HelpSomeone_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" FontSize="20" MinHeight="56"/>
                         </StackPanel>
                     </Border>
                 </Grid>

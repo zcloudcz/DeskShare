@@ -30,6 +30,7 @@
   "connect.failed": "Připojení se nezdařilo. Zkontrolujte internet a zkuste to znovu.",
   "connect.leave": "Odejít",
   "control.view_only": "Druhý člověk vidí vaši obrazovku. Ovládání není povoleno.",
+  "control.can_ask": "Druhý člověk vidí vaši obrazovku a může požádat o ovládání. Rozhodujete vy.",
   "control.request": "Požádat o ovládání",
   "control.wait": "Čekáme na povolení…",
   "control.title": "Povolit ovládání?",

@@ -86,7 +86,7 @@ public partial class MainWindow : Window
         _serverManager.RemoteControlChanged += (_, allowed) => Dispatcher.UIThread.Post(() =>
         {
             _controlApproved = allowed;
-            PermissionText.Text = Loc.Instance.T(allowed ? "control.active" : "control.view_only");
+            PermissionText.Text = Loc.Instance.T(PermissionKey());
             StopControlButton.IsVisible = allowed;
         });
 
@@ -241,6 +241,7 @@ public partial class MainWindow : Window
             string? password = null;
 
             bool enableRemoteControl = EnableRemoteControlCheckBox.IsChecked == true;
+            _sessionAllowsControlRequests = DeskShare.Unattended.MachinePolicy.Current.RemoteControl ?? enableRemoteControl;
             bool enableClipboard = EnableClipboardCheckBox.IsChecked == true;
             bool enableFileReceive = EnableFileReceiveCheckBox.IsChecked == true;
             bool trustClientPermanent = TrustClientPermanentCheckBox.IsChecked == true;
@@ -268,6 +269,8 @@ public partial class MainWindow : Window
                 OnPasskeyChanged(_serverManager, initialPasskey);
 
             _isServerRunning = true;
+            _controlApproved = false;
+            PermissionText.Text = Loc.Instance.T(PermissionKey());
             _serverStartTime = DateTime.Now;
 
             UpdateServerStatus(ServerStatus.Running);
@@ -383,6 +386,8 @@ public partial class MainWindow : Window
             _passkeyCountdownTimer = null;
 
             _isServerRunning = false;
+            _controlApproved = false;
+            PermissionText.Text = Loc.Instance.T(PermissionKey());
             StopServerButton.IsVisible = false;
             ActiveConnectionsText.Text = "0";
             UpdateServerStatus(ServerStatus.Stopped);
@@ -481,7 +486,7 @@ public partial class MainWindow : Window
             {
                 _controlApproved = false;
                 StopControlButton.IsVisible = false;
-                PermissionText.Text = Loc.Instance.T("control.view_only");
+                PermissionText.Text = Loc.Instance.T(PermissionKey());
             }
             UpdateServerStatus(_isServerRunning ? ServerStatus.Running : ServerStatus.Stopped);
         });

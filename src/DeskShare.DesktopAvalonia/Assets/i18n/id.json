@@ -30,6 +30,7 @@
   "connect.failed": "Tidak dapat terhubung. Periksa internet Anda dan coba lagi.",
   "connect.leave": "Keluar",
   "control.view_only": "Orang tersebut dapat melihat layar Anda. Kendali tidak diizinkan.",
+  "control.can_ask": "Orang lain dapat melihat layar Anda dan dapat meminta untuk mengendalikannya. Anda yang memutuskan.",
   "control.request": "Minta kendali",
   "control.wait": "Menunggu izin…",
   "control.title": "Izinkan kendali?",

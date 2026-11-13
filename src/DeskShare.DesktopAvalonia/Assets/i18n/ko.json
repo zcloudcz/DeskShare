@@ -30,6 +30,7 @@
   "connect.failed": "연결하지 못했어요. 인터넷을 확인하고 다시 시도하세요.",
   "connect.leave": "나가기",
   "control.view_only": "상대방이 내 화면을 볼 수 있어요. 조작은 허용되지 않았어요.",
+  "control.can_ask": "상대방은 화면을 볼 수 있으며 제어를 요청할 수 있습니다. 결정은 사용자가 합니다.",
   "control.request": "조작 권한 요청",
   "control.wait": "허용을 기다리는 중…",
   "control.title": "조작을 허용할까요?",

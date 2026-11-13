@@ -30,6 +30,7 @@
   "connect.failed": "Could not connect. Check your internet and try again.",
   "connect.leave": "Leave",
   "control.view_only": "They can see your screen. Control is not allowed.",
+  "control.can_ask": "They can see your screen and may ask to control it. You decide.",
   "control.request": "Ask to control",
   "control.wait": "Waiting for permission…",
   "control.title": "Allow control?",

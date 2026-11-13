@@ -50,7 +50,7 @@ public partial class MainWindow
         }
         StartServerButton.Content = Loc.Instance.T("share.start");
         StopServerButton.Content = Loc.Instance.T("share.stop");
-        PermissionText.Text = Loc.Instance.T(_controlApproved ? "control.active" : "control.view_only");
+        PermissionText.Text = Loc.Instance.T(PermissionKey());
         Avalonia.Threading.Dispatcher.UIThread.Post(() => Loc.Instance.ApplyDirection(this), Avalonia.Threading.DispatcherPriority.Loaded);
         if (IsLoaded)
         {
@@ -60,6 +60,14 @@ public partial class MainWindow
             if (_account?.Available == true) UpdateAccountUi();
         }
     }
+    // Set when sharing starts: whether viewers of this session may ask for control (the checkbox, or the admin policy).
+    private bool _sessionAllowsControlRequests;
+
+    private string PermissionKey() =>
+        !_isServerRunning ? "share.ended"
+        : _controlApproved ? "control.active"
+        : _sessionAllowsControlRequests ? "control.can_ask" : "control.view_only";
+
     private void Home_Click(object? sender, RoutedEventArgs e)
     {
         HomeView.IsVisible = !_isServerRunning;

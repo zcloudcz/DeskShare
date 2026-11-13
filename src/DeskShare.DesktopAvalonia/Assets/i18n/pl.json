@@ -30,6 +30,7 @@
   "connect.failed": "Nie udało się połączyć. Sprawdź internet i spróbuj ponownie.",
   "connect.leave": "Opuść",
   "control.view_only": "Druga osoba widzi Twój ekran. Sterowanie nie jest dozwolone.",
+  "control.can_ask": "Druga osoba widzi Twój ekran i może poprosić o sterowanie. To Ty decydujesz.",
   "control.request": "Poproś o sterowanie",
   "control.wait": "Czekamy na zgodę…",
   "control.title": "Zezwolić na sterowanie?",

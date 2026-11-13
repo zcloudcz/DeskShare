@@ -33,8 +33,8 @@ public sealed class SafetyPromptDialog : Window
         Topmost = true;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
 
-        var safe = new Button { Content = safeButtonText, MinWidth = 110, Margin = new Thickness(0, 0, 10, 0) };
-        var affirmative = new Button { IsVisible = affirmativeButtonText != null, Content = affirmativeButtonText, MinWidth = 150, MinHeight = 52, Background = Brush.Parse("#0B72D9"), Foreground = Brushes.White };
+        var safe = new Button { Content = safeButtonText, MinWidth = 110, MinHeight = 52, HorizontalContentAlignment = HorizontalAlignment.Center, VerticalContentAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
+        var affirmative = new Button { HorizontalContentAlignment = HorizontalAlignment.Center, VerticalContentAlignment = VerticalAlignment.Center, IsVisible = affirmativeButtonText != null, Content = affirmativeButtonText, MinWidth = 150, MinHeight = 52, Background = Brush.Parse("#0B72D9"), Foreground = Brushes.White };
         safe.MinHeight = 52;
         Opened += (_, _) => safe.Focus();
         KeyDown += (_, e) => { if (e.Key == Avalonia.Input.Key.Escape) Close(); };

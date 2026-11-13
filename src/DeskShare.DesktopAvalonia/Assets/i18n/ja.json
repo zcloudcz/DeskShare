@@ -30,6 +30,7 @@
   "connect.failed": "接続できませんでした。インターネット接続を確認して、もう一度お試しください。",
   "connect.leave": "退出",
   "control.view_only": "相手は画面を見ることができます。操作は許可されていません。",
+  "control.can_ask": "相手はあなたの画面を見ることができ、操作をリクエストできます。決めるのはあなたです。",
   "control.request": "操作をリクエスト",
   "control.wait": "許可を待っています…",
   "control.title": "操作を許可しますか？",

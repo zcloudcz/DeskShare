@@ -30,6 +30,7 @@
   "connect.failed": "无法连接。请检查网络后重试。",
   "connect.leave": "离开",
   "control.view_only": "对方可以看到您的屏幕，但无法操控。",
+  "control.can_ask": "对方可以看到您的屏幕，并可以请求控制。由您决定。",
   "control.request": "请求操控",
   "control.wait": "正在等待许可…",
   "control.title": "允许操控吗？",

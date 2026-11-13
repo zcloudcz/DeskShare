@@ -30,6 +30,7 @@
   "connect.failed": "Keine Verbindung möglich. Prüfen Sie Ihre Internetverbindung und versuchen Sie es erneut.",
   "connect.leave": "Verlassen",
   "control.view_only": "Die andere Person sieht Ihren Bildschirm. Die Steuerung ist nicht erlaubt.",
+  "control.can_ask": "Die andere Person sieht Ihren Bildschirm und kann um die Steuerung bitten. Sie entscheiden.",
   "control.request": "Steuerung anfragen",
   "control.wait": "Warten auf Erlaubnis…",
   "control.title": "Steuerung erlauben?",
