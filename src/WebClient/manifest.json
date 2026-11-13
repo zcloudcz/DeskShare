@@ -1,12 +1,12 @@
 {
-  "name": "DeskShare Remote Desktop",
+  "name": "DeskShare",
   "short_name": "DeskShare",
-  "description": "Remote desktop viewer with WebRTC streaming and remote control",
+  "description": "DeskShare",
   "start_url": "/webclient/index.html",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#1a1a1a",
-  "theme_color": "#4a9eff",
+  "background_color": "#f4f7fb",
+  "theme_color": "#0b72d9",
   "icons": [
     {
       "src": "icons/icon-192.svg",

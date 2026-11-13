@@ -13,16 +13,22 @@
  * - The "fetch" event fires for every network request the page makes.
  */
 
-const CACHE_NAME = 'deskshare-v15';
+const CACHE_NAME = 'deskshare-v16';
 
 // Files to cache during install (the "app shell")
 const APP_SHELL_FILES = [
     '/webclient/index.html',
     '/webclient/client.js',
+    '/webclient/i18n.js',
+    '/webclient/viewer-ui.js',
     '/webclient/remote-control.js',
     '/webclient/bind-gate.js',
     '/webclient/accounts.js',
     '/webclient/mobile.css',
+    '/webclient/fonts/NotoSansArabic.ttf',
+    '/webclient/icons/icon-192.svg',
+    '/webclient/icons/viewer.svg',
+    '/webclient/icons/icon-512.svg',
     '/webclient/manifest.json'
 ];
 

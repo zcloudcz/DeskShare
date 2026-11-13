@@ -1,286 +1,535 @@
-/**
- * Mobile & Responsive Styles for DeskShare PWA
- *
- * Provides touch-friendly controls, responsive layout,
- * and mobile-optimized video viewing.
- *
- * For junior developers:
- * - Media queries (@media) apply styles only when screen matches the condition.
- * - "max-width: 768px" targets tablets and phones in portrait.
- * - "max-width: 480px" targets small phones.
- * - touch-action CSS controls how the browser handles touch gestures.
- * - -webkit-tap-highlight-color removes the blue tap flash on mobile browsers.
- */
-
-/* ============================================
-   BASE RESPONSIVE OVERRIDES
-   ============================================ */
-
-/* Tablet and smaller (portrait iPad, large phones) */
-@media (max-width: 768px) {
-    body {
-        padding: 10px;
+@font-face {
+    font-family:DeskShareArabic;
+    src:url("fonts/NotoSansArabic.ttf") format("truetype");
+    font-weight:100 900;
+    font-display:swap
+}
+:root {
+    font-family:'Segoe UI',Arial,sans-serif;
+    color:#152e4d;
+    background:#f4f7fb;
+    font-size:18px;
+    line-height:1.5;
+    --blue:#0b72d9;
+    --muted:#526b89
+}
+* {
+    box-sizing:border-box
+}
+body {
+    margin:0
+}
+button,input,select {
+    font:inherit
+}
+button,select,summary,a {
+    touch-action:manipulation
+}
+button {
+    border:0;
+    border-radius:10px;
+    background:var(--blue);
+    color:white;
+    padding:12px 20px;
+    min-height:48px;
+    font-weight:600;
+    cursor:pointer
+}
+button:hover {
+    background:#085daf
+}
+button:disabled {
+    opacity:.55;
+    cursor:default
+}
+.secondary {
+    background:#edf4fd;
+    color:#18558c;
+    border:1px solid #bbcee6
+}
+.secondary:hover {
+    background:#dceafa
+}
+a {
+    color:#0064c8;
+    text-underline-offset:2px
+}
+:focus-visible {
+    outline:3px solid #a45200;
+    outline-offset:3px
+}
+[hidden] {
+    display:none!important
+}
+.header {
+    height:100px;
+    background:white;
+    border-bottom:1px solid #d3dff0;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:20px max(24px,5vw);
+    gap:18px
+}
+.brand {
+    font-size:28px;
+    font-weight:700;
+    letter-spacing:-1px;
+    display:flex;
+    align-items:center;
+    gap:12px;
+    text-decoration:none;
+    color:#152e4d;
+    direction:ltr
+}
+.brand-icon {
+    background:var(--blue);
+    color:white;
+    width:40px;
+    height:40px;
+    display:grid;
+    place-items:center;
+    border-radius:10px;
+    letter-spacing:0
+}
+.header-actions {
+    display:flex;
+    align-items:center;
+    gap:14px;
+    flex-wrap:wrap
+}
+select {
+    min-height:52px;
+    border:1px solid #a1b9d8;
+    border-radius:11px;
+    background:white;
+    color:#173b66;
+    font-weight:600;
+    padding:10px 16px;
+    max-width:100%
+}
+.container {
+    max-width:1100px;
+    margin:30px auto;
+    padding:0
+}
+.start-layout {
+    display:grid;
+    grid-template-columns:minmax(0,1fr) 468px;
+    gap:100px
+}
+h1 {
+    font-size:40px;
+    line-height:1.2;
+    letter-spacing:-1px;
+    margin:16px 0
+}
+h2 {
+    font-size:26px;
+    line-height:1.3;
+    margin:0 0 14px
+}
+.eyebrow {
+    font-size:14px;
+    color:var(--muted);
+    letter-spacing:2px;
+    font-weight:700;
+    margin:6px 0 16px
+}
+.lead {
+    font-size:20px;
+    color:var(--muted);
+    margin:16px 0 24px
+}
+.steps {
+    padding:0;
+    list-style:none;
+    counter-reset:steps;
+    margin:22px 0 30px
+}
+.steps li {
+    counter-increment:steps;
+    position:relative;
+    padding-inline-start:49px;
+    margin:0 0 22px
+}
+.steps li:before {
+    content:counter(steps);
+    position:absolute;
+    inset-inline-start:0;
+    top:0;
+    width:34px;
+    height:34px;
+    border-radius:50%;
+    background:#e0edff;
+    color:#0064c8;
+    font-weight:700;
+    text-align:center;
+    line-height:34px
+}
+.download {
+    font-size:17px;
+    line-height:1.7;
+    margin-top:30px
+}
+.controls {
+    border:1px solid #ccdcf1;
+    background:white;
+    border-radius:21px;
+    padding:28px;
+    box-shadow:0 6px 20px #1a467a03;
+    align-self:start
+}
+.control-group {
+    margin-bottom:12px
+}
+label {
+    display:block;
+    font-weight:600;
+    margin-bottom:8px
+}
+input[type=text],input[type=password],input[type=url] {
+    width:100%;
+    min-width:0;
+    padding:12px 15px;
+    border:1px solid #8aa8ce;
+    border-radius:10px;
+    color:#173b66;
+    background:white;
+    min-height:60px
+}
+input::placeholder {
+    color:#7186a0;
+    opacity:1
+}
+.input-row {
+    display:flex;
+    gap:6px;
+    align-items:stretch
+}
+.input-row bdi {
+    flex:1;
+    min-width:0
+}
+.input-row input {
+    font-size:24px;
+    direction:ltr
+}
+.copy {
+    min-width:48px;
+    padding:8px;
+    font-size:14px;
+    max-width:95px;
+    overflow-wrap:anywhere
+}
+.hint {
+    font-size:16px;
+    color:var(--muted);
+    margin:7px 0 14px;
+    line-height:1.45
+}
+#connectBtn {
+    width:100%;
+    font-size:20px;
+    margin-top:3px
+}
+.consent {
+    font-size:14px;
+    color:var(--muted);
+    margin:18px 0 0
+}
+.status {
+    padding:12px;
+    border-radius:8px;
+    background:#e8f2ff;
+    margin-top:16px;
+    overflow-wrap:anywhere
+}
+.status.error {
+    background:#fff0ee;
+    color:#9c2920
+}
+.status.success {
+    background:#e7f5ed;
+    color:#235d3c
+}
+footer {
+    display:flex;
+    justify-content:space-between;
+    gap:24px;
+    margin-top:34px;
+    color:var(--muted);
+    font-size:16px
+}
+summary {
+    cursor:pointer;
+    color:#215b94;
+    font-weight:600;
+    min-height:48px;
+    padding:8px 0
+}
+#advanced {
+    max-width:52%
+}
+.advanced-content {
+    padding:18px;
+    background:white;
+    border:1px solid #ccdcf1;
+    border-radius:12px;
+    width:450px;
+    max-width:100%;
+    margin-bottom:20px
+}
+.checkbox {
+    display:flex;
+    align-items:center;
+    gap:10px
+}
+.checkbox input {
+    width:22px;
+    height:22px
+}
+.stats {
+    display:grid;
+    grid-template-columns:repeat(3,minmax(0,1fr));
+    gap:12px;
+    margin:12px 0
+}
+.stat-label {
+    font-size:13px;
+    color:var(--muted)
+}
+.stat-value {
+    direction:ltr;
+    unicode-bidi:isolate;
+    overflow:hidden;
+    text-overflow:ellipsis
+}
+.video-container {
+    display:none;
+    background:#000;
+    align-items:center;
+    justify-content:center;
+    min-height:200px;
+    overflow:hidden;
+    border-radius:12px;
+    margin-top:20px
+}
+video {
+    max-width:100%;
+    height:auto
+}
+.placeholder {
+    color:#ddd;
+    padding:20px
+}
+.session-tools {
+    display:none;
+    gap:8px;
+    flex-wrap:wrap
+}
+#connectionDetails {
+    display:none
+}
+#showPanelsBtn {
+    display:none
+}
+body.connected .video-container {
+    display:flex
+}
+body.connected .intro,body.connected #connectForm {
+    display:none
+}
+body.connected .start-layout {
+    display:block
+}
+body.connected .controls {
+    padding:16px
+}
+body.connected .session-tools {
+    display:flex
+}
+body.connected #connectionDetails {
+    display:block
+}
+body.connected #disconnectBtn:disabled,body.connected #fullscreenBtn:disabled,body.connected #controlBtn:disabled,body.connected #ctrlAltDelBtn:disabled {
+    display:none
+}
+body.focus .controls,body.focus footer {
+    display:none
+}
+body.focus .header {
+    height:auto;
+    min-height:64px;
+    padding:8px 18px
+}
+body.focus .container {
+    max-width:none;
+    margin:0;
+    padding:0 10px
+}
+body.focus #showPanelsBtn {
+    display:block
+}
+body.focus video {
+    max-height:calc(100dvh - 90px);
+    width:auto
+}
+body.focus .video-container {
+    margin:0;
+    min-height:calc(100dvh - 90px)
+}
+#myDevicesList {
+    list-style:none;
+    padding:0
+}
+#myDevicesList li {
+    display:flex;
+    gap:6px;
+    margin:8px 0
+}
+#myDevicesList .device-pick {
+    flex:1;
+    min-width:0;
+    text-align:start;
+    overflow-wrap:anywhere
+}
+#myDevicesList bdi {
+    display:block
+}
+#accountBar {
+    font-size:14px
+}
+#accountName {
+    overflow-wrap:anywhere
+}
+@media(max-width:1150px) {
+    .container {
+        padding:0 28px
     }
-
+    .start-layout {
+        gap:40px;
+        grid-template-columns:minmax(0,1fr) minmax(360px,468px)
+    }
     h1 {
-        font-size: 1.3rem;
-        margin: 10px 0;
-    }
-
-    /* Stack label and input vertically on mobile */
-    label {
-        display: block;
-        width: 100%;
-        margin-bottom: 5px;
-    }
-
-    input[type="text"] {
-        width: 100%;
-        box-sizing: border-box;
-        font-size: 16px; /* Prevents iOS zoom on focus */
-    }
-
-    /* Make buttons full-width and touch-friendly */
-    .control-group {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-    }
-
-    button {
-        flex: 1 1 auto;
-        min-width: 100px;
-        min-height: 44px; /* Apple's recommended minimum touch target */
-        font-size: 14px;
-        margin-right: 0;
-        -webkit-tap-highlight-color: transparent;
-    }
-
-    /* Video container takes full width */
-    .video-container {
-        min-height: 250px;
-        border-radius: 4px;
-    }
-
-    video {
-        width: 100%;
-        height: auto;
-    }
-
-    /* Stats grid: 2 columns on tablet */
-    .stats {
-        grid-template-columns: repeat(2, 1fr);
-        gap: 10px;
-        padding: 10px;
-    }
-
-    .stats-grid {
-        grid-template-columns: 1fr;
-        gap: 10px;
-    }
-
-    .stat-value {
-        font-size: 18px;
-    }
-
-    /* Keyboard shortcuts grid: single column on mobile */
-    .keyboard-shortcuts {
-        grid-template-columns: 1fr;
-    }
-
-    /* Info box adjustments */
-    .info-box {
-        padding: 10px;
-        font-size: 14px;
+        font-size:34px
     }
 }
-
-/* Small phones */
-@media (max-width: 480px) {
-    body {
-        padding: 5px;
+@media(max-width:720px) {
+    .header {
+        height:auto;
+        min-height:88px;
+        padding:16px 20px;
+        gap:12px;
+        flex-wrap:wrap
     }
-
+    .brand {
+        font-size:23px
+    }
+    .brand-icon {
+        width:34px;
+        height:34px
+    }
+    .header-actions {
+        gap:8px;
+        margin-inline-start:auto
+    }
+    .header-actions>label {
+        position:absolute;
+        width:1px;
+        height:1px;
+        overflow:hidden;
+        clip-path:inset(50%)
+    }
+    select {
+        font-size:16px;
+        min-height:48px;
+        padding:8px;
+        max-width:160px
+    }
+    .container {
+        margin:24px auto;
+        padding:0 20px
+    }
+    .start-layout {
+        display:flex;
+        flex-direction:column;
+        gap:22px
+    }
     h1 {
-        font-size: 1.1rem;
+        font-size:32px
     }
-
+    .eyebrow {
+        font-size:12px
+    }
+    .lead {
+        font-size:18px
+    }
+    .intro .steps {
+        display:none
+    }
+    .download {
+        margin:14px 0 0;
+        font-size:16px
+    }
     .controls {
-        padding: 12px;
+        width:100%;
+        padding:22px 18px;
+        border-radius:18px
     }
-
-    /* Stack buttons vertically on small screens */
-    .control-group {
-        flex-direction: column;
+    h2 {
+        font-size:24px
     }
-
-    button {
-        width: 100%;
-        min-height: 48px;
-        font-size: 15px;
+    .hint {
+        font-size:15px
     }
-
-    .video-container {
-        min-height: 200px;
+    .input-row input {
+        font-size:21px;
+        padding:12px
     }
-
-    /* Stats: single column on small phones */
+    .copy {
+        font-size:12px;
+        padding:6px;
+        max-width:78px
+    }
+    .consent {
+        font-size:14px
+    }
+    footer {
+        margin-top:22px;
+        font-size:14px;
+        flex-wrap:wrap;
+        gap:8px
+    }
+    #advanced {
+        max-width:100%;
+        width:100%
+    }
+    .advanced-content {
+        width:100%
+    }
     .stats {
-        grid-template-columns: 1fr;
+        grid-template-columns:repeat(2,minmax(0,1fr))
     }
-
-    .stat-item {
-        padding: 5px 0;
+    body.connected .session-tools button {
+        flex:1
     }
-
-    .stat-value {
-        font-size: 16px;
-    }
-
-    .stat-label {
-        font-size: 11px;
+    body.focus .header-actions {
+        max-width:100%
     }
 }
-
-/* ============================================
-   TOUCH-SPECIFIC STYLES
-   ============================================ */
-
-/* Only apply touch styles on devices that support touch */
-@media (pointer: coarse) {
-    /* Prevent text selection while controlling remote desktop */
-    .video-container.control-active {
-        user-select: none;
-        -webkit-user-select: none;
-        /* Prevent browser gestures on the video (scroll, zoom, etc.) */
-        touch-action: none;
-    }
-
-    /* Show cursor on touch devices (desktop hides it during control) */
-    .video-container.control-active video {
-        cursor: default;
-    }
-
-    /* Larger touch targets for interactive elements */
-    button {
-        min-height: 48px;
-        padding: 12px 20px;
-    }
-
-    input[type="text"] {
-        min-height: 44px;
-        padding: 10px 12px;
-    }
-
-    /* Remove hover effects on touch devices (they cause sticky states) */
-    button:hover {
-        background: #4a9eff;
-    }
-
-    button.success:hover {
-        background: #4caf50;
-    }
-
-    button.warning:hover {
-        background: #ff9800;
-    }
-
-    button:disabled:hover {
-        background: #666;
-    }
+html[lang=ar] {
+    font-family:DeskShareArabic,Arial,sans-serif
 }
-
-/* ============================================
-   LANDSCAPE ORIENTATION ON MOBILE
-   ============================================ */
-
-/* Landscape phone: maximize video area */
-@media (max-height: 500px) and (orientation: landscape) {
-    body {
-        padding: 5px;
-    }
-
-    h1 {
-        display: none; /* Hide title to save space */
-    }
-
-    .controls {
-        padding: 8px;
-        margin-bottom: 5px;
-    }
-
-    /* Compact controls in landscape */
-    .control-group {
-        display: flex;
-        flex-direction: row;
-        gap: 5px;
-    }
-
-    label {
-        display: none; /* Hide labels in landscape to save space */
-    }
-
-    input[type="text"] {
-        flex: 1;
-        min-width: 0;
-    }
-
-    button {
-        min-height: 36px;
-        padding: 6px 12px;
-        font-size: 13px;
-    }
-
-    /* Video takes most of the screen */
-    .video-container {
-        min-height: 0;
-        height: calc(100vh - 120px);
-    }
-
-    /* Hide stats in landscape to maximize video */
-    .stats,
-    .stats-grid,
-    .info-box {
-        display: none;
-    }
+html[lang=ar] h1 {
+    letter-spacing:0;
+    font-size:36px
 }
-
-/* ============================================
-   PWA STANDALONE MODE
-   ============================================ */
-
-/* When running as installed PWA (no browser chrome) */
-@media (display-mode: standalone) {
-    body {
-        /* Add safe area insets for notched phones (iPhone X+) */
-        padding-top: env(safe-area-inset-top, 10px);
-        padding-bottom: env(safe-area-inset-bottom, 10px);
-        padding-left: env(safe-area-inset-left, 10px);
-        padding-right: env(safe-area-inset-right, 10px);
-    }
-
-    /* Slightly larger video in standalone mode */
-    .video-container {
-        border-radius: 0;
-    }
+html[lang=ar] .eyebrow {
+    letter-spacing:0
 }
-
-/* ============================================
-   FULLSCREEN MODE OVERRIDES
-   ============================================ */
-
-/* When video container is in fullscreen */
-.video-container:fullscreen,
-.video-container:-webkit-full-screen {
-    background: #000;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.video-container:fullscreen video,
-.video-container:-webkit-full-screen video {
-    max-width: 100vw;
-    max-height: 100vh;
-    object-fit: contain;
+@media(max-width:720px) {
+    html[lang=ar] h1 {
+        font-size:32px
+    }
 }
