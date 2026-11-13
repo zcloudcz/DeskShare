@@ -23,6 +23,7 @@ public partial class PasskeyDialog : Window
     public PasskeyDialog()
     {
         InitializeComponent();
+        FlowDirection = Localization.Loc.Instance.Language == "ar" ? Avalonia.Media.FlowDirection.RightToLeft : Avalonia.Media.FlowDirection.LeftToRight;
 
         // Focus the passkey input when dialog opens
         Opened += (s, e) => PasskeyTextBox.Focus();

@@ -1,3 +1,4 @@
+using DeskShare.DesktopAvalonia.Localization;
 using System.Collections.ObjectModel;
 using System.Net.Http;
 using System.Net.Http.Json;
@@ -32,7 +33,7 @@ namespace DeskShare.DesktopAvalonia;
 /// - Dispatcher.Invoke() → Dispatcher.UIThread.Invoke()
 /// - Visibility.Visible/Collapsed → IsVisible = true/false
 /// - System.Windows.Clipboard.SetText() → TopLevel.GetTopLevel(this)?.Clipboard?.SetTextAsync()
-/// - MessageBox.Show() → MessageBoxManager.GetMessageBoxStandard().ShowAsync()
+/// - MessageBox.Show() → DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create().ShowAsync()
 /// - Microsoft.VisualBasic.Interaction.InputBox → PasskeyDialog
 /// - System.Windows.Media.SolidColorBrush → Avalonia.Media.SolidColorBrush
 /// - System.Windows.Media.Color.FromRgb → Avalonia.Media.Color.FromRgb
@@ -64,6 +65,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        InitializeLanguage();
         PrivacyScreenPanel.IsVisible = OperatingSystem.IsWindows(); // the overlay is Windows-only
         FillDisplayChoices();
         ApplyPolicyLocks();
@@ -81,6 +83,12 @@ public partial class MainWindow : Window
 
         // Control is never granted silently: the person at this computer approves each viewer's request (see ServerManager).
         _serverManager.ControlApprovalPrompt = AskControlApprovalAsync;
+        _serverManager.RemoteControlChanged += (_, allowed) => Dispatcher.UIThread.Post(() =>
+        {
+            _controlApproved = allowed;
+            PermissionText.Text = Loc.Instance.T(allowed ? "control.active" : "control.view_only");
+            StopControlButton.IsVisible = allowed;
+        });
 
         _connectionManager = App.ServiceProvider?.GetService<ConnectionManager>()
                   ?? throw new InvalidOperationException("ConnectionManager not available");
@@ -178,8 +186,7 @@ public partial class MainWindow : Window
             if (forced is not { } value) return;
             box.IsChecked = value;
             box.IsEnabled = false;
-            const string hint = " (Set by your administrator)";
-            if (box.Content is string text && !text.EndsWith(hint, StringComparison.Ordinal)) box.Content = text + hint;
+            box.Bind(ToolTip.TipProperty, new Avalonia.Data.Binding("[policy.managed]") { Source = Loc.Instance });
         }
         Lock(EnableRemoteControlCheckBox, policy.RemoteControl);
         Lock(EnableClipboardCheckBox, policy.Clipboard);
@@ -190,35 +197,14 @@ public partial class MainWindow : Window
 
     #region Server Mode Event Handlers
 
-    // Per-user "don't show this again" marker for the warning before sharing (a plain file: no settings store exists yet).
-    private static readonly string ShareWarningMarker = System.IO.Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RemoteDesktop.NET", "share-warning-dismissed");
-
-    /// <summary>True when sharing may go on. Anti-scam: shown before every start unless the user ticked "don't show again".</summary>
-    private async Task<bool> ConfirmShareWarningAsync()
+    /// <summary>Shows the safety step before preparing a new sharing session.</summary>
+    private Task<bool> ConfirmShareWarningAsync()
     {
-        if (System.IO.File.Exists(ShareWarningMarker))
-            return true;
-
         var dialog = new SafetyPromptDialog(
-            "Share your screen?",
-            "Only share your screen with people you know and trust. Banks, police, Microsoft or DeskShare will never ask you to install or run DeskShare. " +
-            "If someone called you unexpectedly and asked for this, stop now.",
-            "Cancel", "Start sharing", "Don't show this again");
-        var start = await dialog.ShowAndWaitAsync();
-        if (start && dialog.DontShowAgain)
-        {
-            try
-            {
-                System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(ShareWarningMarker)!);
-                System.IO.File.WriteAllText(ShareWarningMarker, "");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Could not remember that the sharing warning was dismissed");
-            }
-        }
-        return start;
+            Loc.Instance.T("safety.title"),
+            Loc.Instance.T("safety.body") + "\n\n" + Loc.Instance.T("safety.close_private"),
+            Loc.Instance.T("nav.back"), Loc.Instance.T("share.start"));
+        return dialog.ShowAndWaitAsync(this);
     }
 
     /// <summary>
@@ -229,11 +215,12 @@ public partial class MainWindow : Window
         Dispatcher.UIThread.InvokeAsync(async () =>
         {
             var dialog = new SafetyPromptDialog(
-                "Remote control request",
-                "A viewer wants to control your mouse and keyboard. Allow only if you know who it is and expect this.",
-                "Deny", "Allow");
+                Loc.Instance.T("control.title"),
+                Loc.Instance.T("control.explain") + "\n\n" + Loc.Instance.T("safety.title") + "\n" + Loc.Instance.T("safety.body"),
+                Loc.Instance.T("control.deny"), Loc.Instance.T("control.allow"));
             using var closeOnCancel = cancellationToken.Register(() => Dispatcher.UIThread.Post(dialog.Close));
-            return await dialog.ShowAndWaitAsync();
+            var allowed = await dialog.ShowAndWaitAsync(this);
+            return allowed;
         });
 
     private async void StartServer_Click(object? sender, RoutedEventArgs e)
@@ -246,7 +233,7 @@ public partial class MainWindow : Window
             _logger.LogInformation("Starting server...");
 
             StartServerButton.IsEnabled = false;
-            StartServerButton.Content = "Starting...";
+            StartServerButton.Content = Loc.Instance.T("share.preparing");
 
             string serverId = GenerateServerId();
             ServerIdText.Text = ServerIdGenerator.FormatServerIdForDisplay(serverId);
@@ -276,7 +263,7 @@ public partial class MainWindow : Window
             _serverManager.PasskeyChanged += OnPasskeyChanged;
 
             // The first passkey was raised during StartAsync, before we subscribed above; show it now
-            // instead of waiting for the next 45 s rotation.
+            // instead of waiting for the next 60 s rotation.
             if (_serverManager.CurrentPasskey is { } initialPasskey)
                 OnPasskeyChanged(_serverManager, initialPasskey);
 
@@ -290,6 +277,8 @@ public partial class MainWindow : Window
 
             StartServerButton.IsEnabled = false;
             StopServerButton.IsEnabled = true;
+            StopServerButton.IsVisible = true;
+            StartServerButton.IsVisible = false;
 
             EnableRemoteControlCheckBox.IsEnabled = false;
             EnableClipboardCheckBox.IsEnabled = false;
@@ -312,15 +301,16 @@ public partial class MainWindow : Window
             _logger.LogError(ex, "Failed to start server");
 
             // Avalonia replacement for WPF's MessageBox.Show()
-            var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                "Error",
-                $"Failed to start server: {ex.Message}",
+            var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(
+                Loc.Instance.T("error.title"),
+                Loc.Instance.T("error.title"),
                 ButtonEnum.Ok,
                 MsBoxIcon.Error);
             await msgBox.ShowWindowDialogAsync(this);
 
             StartServerButton.IsEnabled = true;
-            StartServerButton.Content = "Start Server";
+            StartServerButton.IsVisible = true;
+            StartServerButton.Content = Loc.Instance.T("share.start");
             _serverManager.FileReceived -= OnFileReceived;
             EnableRemoteControlCheckBox.IsEnabled = true;
             EnableClipboardCheckBox.IsEnabled = true;
@@ -355,7 +345,7 @@ public partial class MainWindow : Window
         Dispatcher.UIThread.Post(() =>
         {
             _lastReceivedFolder = System.IO.Path.GetDirectoryName(file.FullPath);
-            FileReceivedText.Text = $"Received {file.SavedAs} from viewer";
+            FileReceivedText.Text = Loc.Instance.T("file.received", new { name = file.SavedAs });
             FileReceivedPanel.IsVisible = true;
         });
     }
@@ -380,7 +370,7 @@ public partial class MainWindow : Window
             _logger.LogInformation("Stopping server...");
 
             StopServerButton.IsEnabled = false;
-            StopServerButton.Content = "Stopping...";
+            StopServerButton.Content = Loc.Instance.T("share.stop");
 
             await _serverManager.StopAsync();
 
@@ -393,6 +383,7 @@ public partial class MainWindow : Window
             _passkeyCountdownTimer = null;
 
             _isServerRunning = false;
+            StopServerButton.IsVisible = false;
             ActiveConnectionsText.Text = "0";
             UpdateServerStatus(ServerStatus.Stopped);
             ServerIdPanel.IsVisible = false;
@@ -400,8 +391,9 @@ public partial class MainWindow : Window
             ConnectionInfoPanel.IsVisible = false;
 
             StartServerButton.IsEnabled = true;
-            StartServerButton.Content = "Start Server";
-            StopServerButton.Content = "Stop Server";
+            StartServerButton.IsVisible = true;
+            StartServerButton.Content = Loc.Instance.T("share.start");
+            StopServerButton.Content = Loc.Instance.T("share.stop");
 
             _serverManager.FileReceived -= OnFileReceived;
             FileReceivedPanel.IsVisible = false;
@@ -422,15 +414,15 @@ public partial class MainWindow : Window
         {
             _logger.LogError(ex, "Failed to stop server");
 
-            var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                "Error",
-                $"Failed to stop server: {ex.Message}",
+            var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(
+                Loc.Instance.T("error.title"),
+                Loc.Instance.T("error.title"),
                 ButtonEnum.Ok,
                 MsBoxIcon.Error);
             await msgBox.ShowWindowDialogAsync(this);
 
             StopServerButton.IsEnabled = true;
-            StopServerButton.Content = "Stop Server";
+            StopServerButton.Content = Loc.Instance.T("share.stop");
         }
     }
 
@@ -449,8 +441,8 @@ public partial class MainWindow : Window
 
             var button = (Button)sender!;
             var originalContent = button.Content;
-            button.Content = "Copied!";
-            _ = Task.Delay(2000).ContinueWith(_ => Dispatcher.UIThread.Post(() => button.Content = originalContent));
+            button.Content = Loc.Instance.T("action.copied");
+            _ = Task.Delay(2000).ContinueWith(_ => Dispatcher.UIThread.Post(() => button.Content = Loc.Instance.T("action.copy")));
         }
         catch (Exception ex)
         {
@@ -472,8 +464,8 @@ public partial class MainWindow : Window
 
             var button = (Button)sender!;
             var originalContent = button.Content;
-            button.Content = "Copied!";
-            _ = Task.Delay(2000).ContinueWith(_ => Dispatcher.UIThread.Post(() => button.Content = originalContent));
+            button.Content = Loc.Instance.T("action.copied");
+            _ = Task.Delay(2000).ContinueWith(_ => Dispatcher.UIThread.Post(() => button.Content = Loc.Instance.T("action.copy")));
         }
         catch (Exception ex)
         {
@@ -482,7 +474,17 @@ public partial class MainWindow : Window
     }
 
     private void OnConnectionCountChanged(object? sender, int count) =>
-        Dispatcher.UIThread.Post(() => ActiveConnectionsText.Text = count.ToString());
+        Dispatcher.UIThread.Post(() =>
+        {
+            ActiveConnectionsText.Text = count.ToString();
+            if (count == 0)
+            {
+                _controlApproved = false;
+                StopControlButton.IsVisible = false;
+                PermissionText.Text = Loc.Instance.T("control.view_only");
+            }
+            UpdateServerStatus(_isServerRunning ? ServerStatus.Running : ServerStatus.Stopped);
+        });
 
     // Raised on the sender's rotation thread. Post, never Invoke: a blocking Invoke stalls the rotation loop
     // (and with it every later passkey) whenever the UI thread is busy.
@@ -509,11 +511,11 @@ public partial class MainWindow : Window
 
         if (timeRemaining.TotalSeconds > 0)
         {
-            PasskeyExpirationText.Text = $"Expires in: {(int)timeRemaining.TotalSeconds}s";
+            PasskeyExpirationText.Text = Loc.Instance.T("code.timer", new { seconds = Math.Max(0, (int)Math.Ceiling(timeRemaining.TotalSeconds)) });
         }
         else
         {
-            PasskeyExpirationText.Text = "Generating new passkey...";
+            PasskeyExpirationText.Text = Loc.Instance.T("code.changed");
         }
     }
 
@@ -532,8 +534,8 @@ public partial class MainWindow : Window
 
                 var button = (Button)sender!;
                 var originalContent = button.Content;
-                button.Content = "Copied!";
-                _ = Task.Delay(2000).ContinueWith(_ => Dispatcher.UIThread.Post(() => button.Content = originalContent));
+                button.Content = Loc.Instance.T("action.copied");
+                _ = Task.Delay(2000).ContinueWith(_ => Dispatcher.UIThread.Post(() => button.Content = Loc.Instance.T("action.copy")));
             }
         }
         catch (Exception ex)
@@ -552,19 +554,19 @@ public partial class MainWindow : Window
         {
             case ServerStatus.Running:
                 ServerStatusBadge.Background = new SolidColorBrush(Color.FromRgb(0xD4, 0xED, 0xDA));
-                ServerStatusText.Text = "Running";
+                ServerStatusText.Text = Loc.Instance.T(_serverManager.ActiveConnections > 0 ? "share.active" : "share.ready");
                 ServerStatusText.Foreground = new SolidColorBrush(Color.FromRgb(0x15, 0x5D, 0x27));
                 break;
 
             case ServerStatus.Stopped:
                 ServerStatusBadge.Background = new SolidColorBrush(Color.FromRgb(0xFF, 0xF3, 0xCD));
-                ServerStatusText.Text = "Stopped";
+                ServerStatusText.Text = Loc.Instance.T("share.private");
                 ServerStatusText.Foreground = new SolidColorBrush(Color.FromRgb(0x85, 0x64, 0x04));
                 break;
 
             case ServerStatus.Error:
                 ServerStatusBadge.Background = new SolidColorBrush(Color.FromRgb(0xF8, 0xD7, 0xDA));
-                ServerStatusText.Text = "Error";
+                ServerStatusText.Text = Loc.Instance.T("error.title");
                 ServerStatusText.Foreground = new SolidColorBrush(Color.FromRgb(0x84, 0x2C, 0x30));
                 break;
         }
@@ -601,9 +603,9 @@ public partial class MainWindow : Window
 
             if (string.IsNullOrEmpty(serverId))
             {
-                var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                    "Validation Error",
-                    "Please enter a Server ID",
+                var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(
+                    Loc.Instance.T("error.title"),
+                    Loc.Instance.T("connect.number_required"),
                     ButtonEnum.Ok,
                     MsBoxIcon.Warning);
                 await msgBox.ShowWindowDialogAsync(this);
@@ -612,9 +614,9 @@ public partial class MainWindow : Window
 
             if (!IsPasskeyOrPassword(passkey))
             {
-                var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                    "Validation Error",
-                    PasskeyOrPasswordHint,
+                var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(
+                    Loc.Instance.T("error.title"),
+                    Loc.Instance.T("connect.code_required"),
                     ButtonEnum.Ok,
                     MsBoxIcon.Warning);
                 await msgBox.ShowWindowDialogAsync(this);
@@ -628,7 +630,7 @@ public partial class MainWindow : Window
                 string connectionName = ConnectionNameTextBox.Text?.Trim() ?? "";
                 if (string.IsNullOrEmpty(connectionName))
                 {
-                    connectionName = $"Server {serverId}";
+                    connectionName = ServerIdGenerator.FormatServerIdForDisplay(serverId);
                 }
 
                 var savedConnection = new SavedConnection
@@ -637,7 +639,7 @@ public partial class MainWindow : Window
                     Name = connectionName,
                     ServerId = serverId,
                     HasPassword = !string.IsNullOrEmpty(password),
-                    LastConnected = DateTime.Now.ToString("'Last used:' yyyy-MM-dd HH:mm")
+                    LastConnected = DateTime.Now.ToString("g")
                 };
 
                 _savedConnections.Add(savedConnection);
@@ -650,9 +652,9 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to connect to server");
-            var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                "Connection Error",
-                $"Failed to connect: {ex.Message}",
+            var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(
+                Loc.Instance.T("error.title"),
+                Loc.Instance.T(ex is CodeExpiredException ? "connect.expired" : "connect.failed"),
                 ButtonEnum.Ok,
                 MsBoxIcon.Error);
             await msgBox.ShowWindowDialogAsync(this);
@@ -683,9 +685,9 @@ public partial class MainWindow : Window
 
             if (!IsPasskeyOrPassword(passkey))
             {
-                var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                    "Validation Error",
-                    PasskeyOrPasswordHint,
+                var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(
+                    Loc.Instance.T("error.title"),
+                    Loc.Instance.T("connect.code_required"),
                     ButtonEnum.Ok,
                     MsBoxIcon.Warning);
                 await msgBox.ShowWindowDialogAsync(this);
@@ -707,7 +709,7 @@ public partial class MainWindow : Window
                 }
             }
 
-            connection.LastConnected = $"Last used: {DateTime.Now:yyyy-MM-dd HH:mm}";
+            connection.LastConnected = DateTime.Now.ToString("g");
             await _connectionManager.SaveConnectionAsync(connection);
 
             await ConnectToServerAsync(connection.ServerId, passkey, password);
@@ -715,9 +717,9 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to connect to saved server");
-            var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                "Connection Error",
-                $"Failed to connect: {ex.Message}",
+            var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(
+                Loc.Instance.T("error.title"),
+                Loc.Instance.T(ex is CodeExpiredException ? "connect.expired" : "connect.failed"),
                 ButtonEnum.Ok,
                 MsBoxIcon.Error);
             await msgBox.ShowWindowDialogAsync(this);
@@ -739,9 +741,9 @@ public partial class MainWindow : Window
             var button = (Button)sender!;
             var connection = (SavedConnection)button.Tag!;
 
-            var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                "Confirm Removal",
-                $"Remove connection '{connection.Name}'?",
+            var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(
+                Loc.Instance.T("action.remove"),
+                Loc.Instance.T("remove.confirm", new { name = connection.Name }),
                 ButtonEnum.YesNo,
                 MsBoxIcon.Question);
             var result = await msgBox.ShowWindowDialogAsync(this);
@@ -760,12 +762,11 @@ public partial class MainWindow : Window
         }
     }
 
-    private const string PasskeyOrPasswordHint =
-        "Please enter the 9-character passkey or the permanent password of the unattended computer (at least 12 characters)";
-
     private static bool IsPasskeyOrPassword(string input) =>
         DeskShare.Core.Auth.E2EBinding.LooksLikePasskey(input) ||
         input.Length >= DeskShare.Core.Auth.E2EBinding.PermanentPasswordMinLength;
+
+    private sealed class CodeExpiredException : Exception { }
 
     private async Task ConnectToServerAsync(string serverId, string passkey, string? password)
     {
@@ -817,6 +818,7 @@ public partial class MainWindow : Window
             if (!authResponse.IsSuccessStatusCode)
             {
                 var errorContent = await authResponse.Content.ReadAsStringAsync();
+                if (errorContent.Contains("expired", StringComparison.OrdinalIgnoreCase)) throw new CodeExpiredException();
                 throw new InvalidOperationException($"Authentication failed: {authResponse.StatusCode}. {errorContent}");
             }
 
@@ -824,6 +826,7 @@ public partial class MainWindow : Window
 
             if (authResult == null || !authResult.Success)
             {
+                if (authResult?.ErrorMessage?.Contains("expired", StringComparison.OrdinalIgnoreCase) == true) throw new CodeExpiredException();
                 throw new InvalidOperationException($"Authentication failed: {authResult?.ErrorMessage ?? "Unknown error"}");
             }
 
@@ -875,9 +878,9 @@ public partial class MainWindow : Window
             _connectionHistory.Insert(0, historyEntry);
             UpdateHistoryVisibility();
 
-            var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                "Connection Error",
-                $"Failed to connect: {ex.Message}",
+            var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(
+                Loc.Instance.T("error.title"),
+                Loc.Instance.T(ex is CodeExpiredException ? "connect.expired" : "connect.failed"),
                 ButtonEnum.Ok,
                 MsBoxIcon.Error);
             await msgBox.ShowWindowDialogAsync(this);
@@ -942,9 +945,9 @@ public partial class MainWindow : Window
 
             if (entry.IsTrusted)
             {
-                var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                    "Remove Trust",
-                    "Remove trust from this connection?\nYou will need to enter passkey for future connections.",
+                var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(
+                    Loc.Instance.T("action.remove"),
+                    Loc.Instance.T("remove.confirm", new { name = Loc.Instance.T("advanced.trust") }),
                     ButtonEnum.YesNo,
                     MsBoxIcon.Question);
                 var result = await msgBox.ShowWindowDialogAsync(this);
@@ -958,9 +961,9 @@ public partial class MainWindow : Window
             }
             else
             {
-                var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                    "Trust Connection",
-                    "Trust this connection?\nNo passkey will be required for future connections to this server.",
+                var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(
+                    Loc.Instance.T("advanced.trust"),
+                    Loc.Instance.T("advanced.trust") + "\n\n" + Loc.Instance.T("trust.warning"),
                     ButtonEnum.YesNo,
                     MsBoxIcon.Question);
                 var result = await msgBox.ShowWindowDialogAsync(this);
@@ -978,9 +981,9 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to update trust status");
-            var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                "Error",
-                $"Failed to update trust status: {ex.Message}",
+            var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(
+                Loc.Instance.T("error.title"),
+                Loc.Instance.T("error.title"),
                 ButtonEnum.Ok,
                 MsBoxIcon.Error);
             await msgBox.ShowWindowDialogAsync(this);
@@ -1013,9 +1016,9 @@ public partial class MainWindow : Window
     {
         try
         {
-            var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                "Clear History",
-                "Clear all connection history? Trusted connections will be preserved.",
+            var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(
+                Loc.Instance.T("history.clear"),
+                Loc.Instance.T("history.confirm"),
                 ButtonEnum.YesNo,
                 MsBoxIcon.Question);
             var result = await msgBox.ShowWindowDialogAsync(this);
@@ -1030,9 +1033,9 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to clear history");
-            var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                "Error",
-                $"Failed to clear history: {ex.Message}",
+            var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(
+                Loc.Instance.T("error.title"),
+                Loc.Instance.T("error.title"),
                 ButtonEnum.Ok,
                 MsBoxIcon.Error);
             await msgBox.ShowWindowDialogAsync(this);
@@ -1046,7 +1049,7 @@ public partial class MainWindow : Window
             var button = (Button)sender!;
             var originalContent = button.Content;
 
-            button.Content = "Checking...";
+            button.Content = Loc.Instance.T("action.refresh");
             button.IsEnabled = false;
 
             _logger.LogInformation("Manually refreshing online status for trusted servers");
@@ -1060,9 +1063,9 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to refresh online status");
-            var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                "Error",
-                $"Failed to refresh status: {ex.Message}",
+            var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(
+                Loc.Instance.T("error.title"),
+                Loc.Instance.T("error.title"),
                 ButtonEnum.Ok,
                 MsBoxIcon.Error);
             await msgBox.ShowWindowDialogAsync(this);
@@ -1153,9 +1156,9 @@ public partial class MainWindow : Window
             }
             _logger.LogInformation("Log copied to clipboard ({Lines} lines)", App.LogMessages.Count);
 
-            var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                "Success",
-                $"Log copied to clipboard ({App.LogMessages.Count} lines)",
+            var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(
+                Loc.Instance.T("action.done"),
+                Loc.Instance.T("action.copied"),
                 ButtonEnum.Ok,
                 MsBoxIcon.Info);
             await msgBox.ShowWindowDialogAsync(this);
@@ -1163,9 +1166,9 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to copy log to clipboard");
-            var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                "Error",
-                "Failed to copy log to clipboard: " + ex.Message,
+            var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(
+                Loc.Instance.T("error.title"),
+                Loc.Instance.T("error.title"),
                 ButtonEnum.Ok,
                 MsBoxIcon.Error);
             await msgBox.ShowWindowDialogAsync(this);

@@ -41,10 +41,13 @@
   <!-- Window/taskbar icon (Window.Icon="/deskshare.png"); the exe icon comes from ApplicationIcon -->
   <ItemGroup>
     <AvaloniaResource Include="deskshare.png" />
+    <AvaloniaResource Include="Assets/i18n/*.json" />
+    <AvaloniaResource Include="Assets/Fonts/*.ttf;Assets/Fonts/*.otf" />
   </ItemGroup>
 
   <!-- Copy appsettings.json to output directory -->
   <ItemGroup>
+    <None Update="Assets/Fonts/OFL-*.txt" CopyToOutputDirectory="PreserveNewest" />
     <None Update="appsettings.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

@@ -1,3 +1,4 @@
+using DeskShare.DesktopAvalonia.Localization;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO.Pipes;
@@ -49,9 +50,9 @@ public partial class UnattendedAccessPanel : UserControl
         var update = installed != null && ServiceVersion.UpdateAvailable(installed, appVersion);
         var packaged = File.Exists(SourceExe);
 
-        StatusText.Text = "Status: " + (installed == null ? "Not installed"
-            : update ? "Update available"
-            : running ? "Running" : "Stopped") + (note is null ? "" : " - " + note);
+        StatusText.Text = (installed == null ? Loc.Instance.T("status.notinstalled")
+            : update ? Loc.Instance.T("action.update")
+            : running ? Loc.Instance.T("status.online") : Loc.Instance.T("status.offline")) + (note is null ? "" : " - " + note);
         EnableButton.IsVisible = installed == null;
         EnableButton.IsEnabled = packaged;
         UpdateButton.IsVisible = update;
@@ -60,7 +61,7 @@ public partial class UnattendedAccessPanel : UserControl
         PasswordPanel.IsVisible = installed != null;
         AddToMyDevicesButton.IsVisible = installed != null && _account?.IsSignedIn == true;
         if (!packaged && installed == null)
-            StatusText.Text += " (service files are not part of this build)";
+            StatusText.Text += " (" + Loc.Instance.T("status.unavailable") + ")";
     }
 
     private static string? InstalledVersion()
@@ -113,11 +114,11 @@ public partial class UnattendedAccessPanel : UserControl
                     var keys = E2EBinding.FromPermanentPassword(password, id);
                     return (keys.AuthKey, keys.E2EKey);
                 }), ct));
-            note = $"password set, connect with Server ID {ServerIdGenerator.FormatServerIdForDisplay(serverId)} and the password";
+            note = Loc.Instance.T("action.done") + " " + ServerIdGenerator.FormatServerIdForDisplay(serverId);
         }
-        catch (Win32Exception) { note = "cancelled"; } // user declined the UAC prompt
-        catch (OperationCanceledException) { note = "password not set (timed out)"; }
-        catch (Exception ex) when (ex is InvalidOperationException or IOException) { note = "password not set: " + ex.Message; }
+        catch (Win32Exception) { note = Loc.Instance.T("status.cancelled"); } // user declined the UAC prompt
+        catch (OperationCanceledException) { note = Loc.Instance.T("status.cancelled"); }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException) { note = Loc.Instance.T("error.title"); }
         SetPasswordButton.IsEnabled = ClearPasswordButton.IsEnabled = true;
         Refresh(note);
     }
@@ -165,11 +166,11 @@ public partial class UnattendedAccessPanel : UserControl
             var serverId = await _account.Api.ClaimAsync(token, Environment.MachineName + " (unattended)", unattended: true,
                 (accountKey, timestamp, nonce) => ExchangeWithHelperAsync(ClaimProofSetup.Verb, (reader, writer, ct) =>
                     ClaimProofSetup.RunAppAsync(reader, writer, accountKey, timestamp, nonce, ct)));
-            note = $"added {ServerIdGenerator.FormatServerIdForDisplay(serverId)} to your devices";
+            note = Loc.Instance.T("action.done") + " " + ServerIdGenerator.FormatServerIdForDisplay(serverId);
         }
-        catch (Win32Exception) { note = "cancelled"; } // user declined the UAC prompt
-        catch (OperationCanceledException) { note = "not added (timed out)"; }
-        catch (Exception ex) when (ex is InvalidOperationException or IOException or HttpRequestException) { note = "not added: " + ex.Message; }
+        catch (Win32Exception) { note = Loc.Instance.T("status.cancelled"); } // user declined the UAC prompt
+        catch (OperationCanceledException) { note = Loc.Instance.T("status.cancelled"); }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or HttpRequestException) { note = Loc.Instance.T("error.title"); }
         AddToMyDevicesButton.IsEnabled = true;
         Refresh(note);
     }
@@ -186,10 +187,10 @@ public partial class UnattendedAccessPanel : UserControl
             if (p != null)
             {
                 await p.WaitForExitAsync();
-                if (p.ExitCode != 0) note = $"failed (exit code {p.ExitCode}), see %ProgramData%\\DeskShare\\logs\\service.log if present";
+                if (p.ExitCode != 0) note = Loc.Instance.T("error.title") + " (" + p.ExitCode + ")";
             }
         }
-        catch (Win32Exception) { note = "cancelled"; } // user declined the UAC prompt
+        catch (Win32Exception) { note = Loc.Instance.T("status.cancelled"); } // user declined the UAC prompt
         Refresh(note);
     }
 }

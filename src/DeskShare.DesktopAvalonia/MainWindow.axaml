@@ -1,39 +1,14 @@
-<!--
-    MainWindow - Avalonia UI equivalent of WPF's MainWindow.xaml.
-
-    Key migration changes:
-    - xmlns changed from WPF to Avalonia namespace
-    - .xaml extension → .axaml extension
-    - Visibility.Visible/Collapsed → IsVisible="True/False" (boolean)
-    - ListView → ListBox (Avalonia equivalent)
-    - PasswordBox → TextBox with PasswordChar="*"
-    - ControlTemplate.Triggers → Pseudo-class selectors (:pointerover, :pressed, :disabled)
-    - Style.Triggers → Selector-based styles
-    - Grid.ColumnDefinitions inline syntax: ColumnDefinitions="*,10,*"
-    - Cursor="Hand" → Cursor="Hand" (same)
-    - Run elements in TextBlock → same (Avalonia supports Inlines)
--->
-<Window xmlns="https://github.com/avaloniaui"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:controls="clr-namespace:DeskShare.DesktopAvalonia.Controls"
-        x:Class="DeskShare.DesktopAvalonia.MainWindow"
-        Title="DeskShare"
-        Icon="/deskshare.png"
-        Height="600" Width="900"
-        MinHeight="500" MinWidth="700"
-        WindowStartupLocation="CenterScreen"
-        Background="#F5F5F5">
-
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:controls="clr-namespace:DeskShare.DesktopAvalonia.Controls" xmlns:loc="clr-namespace:DeskShare.DesktopAvalonia.Localization" x:Class="DeskShare.DesktopAvalonia.MainWindow" Title="DeskShare" Icon="/deskshare.png" Height="740" Width="1100" MinHeight="500" MinWidth="700" WindowStartupLocation="CenterScreen" Background="#F4F7FB">
     <Window.Styles>
         <!-- Modern Button Style (replaces WPF ControlTemplate with Triggers) -->
         <Style Selector="Button.modernButton">
-            <Setter Property="Background" Value="#0078D4"/>
+            <Setter Property="Background" Value="#0B72D9"/>
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="20,10"/>
-            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontSize" Value="18"/>
             <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="CornerRadius" Value="10"/>
         </Style>
         <!-- Avalonia pseudo-classes replace WPF Triggers for state changes -->
         <Style Selector="Button.modernButton:pointerover">
@@ -46,7 +21,6 @@
             <Setter Property="Background" Value="#CCCCCC"/>
             <Setter Property="Foreground" Value="#666666"/>
         </Style>
-
         <!-- Secondary Button Style -->
         <Style Selector="Button.secondaryButton">
             <Setter Property="Background" Value="#F0F0F0"/>
@@ -55,12 +29,11 @@
             <Setter Property="Padding" Value="20,10"/>
             <Setter Property="FontSize" Value="14"/>
             <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="CornerRadius" Value="10"/>
         </Style>
         <Style Selector="Button.secondaryButton:pointerover">
             <Setter Property="Background" Value="#E0E0E0"/>
         </Style>
-
         <!-- Danger Button Style -->
         <Style Selector="Button.dangerButton">
             <Setter Property="Background" Value="#D13438"/>
@@ -69,7 +42,7 @@
             <Setter Property="Padding" Value="20,10"/>
             <Setter Property="FontSize" Value="14"/>
             <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="CornerRadius" Value="10"/>
         </Style>
         <Style Selector="Button.dangerButton:pointerover">
             <Setter Property="Background" Value="#B52E31"/>
@@ -78,7 +51,6 @@
             <Setter Property="Background" Value="#CCCCCC"/>
             <Setter Property="Foreground" Value="#666666"/>
         </Style>
-
         <!-- Modern TextBox Style (replaces WPF Style.Triggers) -->
         <Style Selector="TextBox.modernTextBox">
             <Setter Property="Padding" Value="10,8"/>
@@ -88,19 +60,17 @@
             <Setter Property="Background" Value="White"/>
         </Style>
         <Style Selector="TextBox.modernTextBox:focus">
-            <Setter Property="BorderBrush" Value="#0078D4"/>
+            <Setter Property="BorderBrush" Value="#0B72D9"/>
         </Style>
-
         <!-- Card Style - applied to Border elements -->
         <Style Selector="Border.card">
             <Setter Property="Background" Value="White"/>
             <Setter Property="BorderBrush" Value="#E0E0E0"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="CornerRadius" Value="10"/>
             <Setter Property="Padding" Value="20"/>
             <Setter Property="Margin" Value="10"/>
         </Style>
-
         <!-- Tab styling (replaces WPF TabItem ControlTemplate) -->
         <Style Selector="TabItem">
             <Setter Property="FontSize" Value="16"/>
@@ -108,682 +78,364 @@
             <Setter Property="Padding" Value="20,10"/>
             <Setter Property="Margin" Value="5,0"/>
         </Style>
+        <Style Selector="TabControl#MainTabControl /template/ ItemsPresenter#PART_ItemsPresenter">
+            <Setter Property="IsVisible" Value="False"/>
+        </Style>
+        <Style Selector="TextBlock">
+            <Setter Property="TextAlignment" Value="{Binding TextAlignment, Source={x:Static loc:Loc.Instance}}"/>
+            <Setter Property="FlowDirection" Value="{Binding FlowDirection, Source={x:Static loc:Loc.Instance}}"/>
+        </Style>
+        <Style Selector="TextBox /template/ TextBlock">
+            <Setter Property="FlowDirection" Value="LeftToRight"/>
+            <Setter Property="TextAlignment" Value="Left"/>
+        </Style>
     </Window.Styles>
-
-    <Grid RowDefinitions="Auto,*">
-        <!-- ZCLOUD account bar: only shown when the signaling server offers accounts (see MainWindow.Accounts.cs) -->
-        <StackPanel x:Name="AccountBar" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10"
-                    Margin="20,8,20,0" IsVisible="False">
-            <TextBlock x:Name="AccountNameText" VerticalAlignment="Center" FontSize="12" Foreground="#495057"/>
-            <Button x:Name="SignInButton" Content="Sign in" Classes="secondaryButton" Padding="12,6" Click="SignIn_Click"/>
+    <Grid RowDefinitions="Auto,Auto,*">
+        <Border Background="White" Padding="28,18" BorderBrush="#D3E0F2" BorderThickness="0,0,0,1">
+            <Grid x:Name="HeaderGrid" ColumnDefinitions="*,Auto" FlowDirection="LeftToRight">
+                <StackPanel x:Name="BrandPanel" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center" FlowDirection="LeftToRight">
+                    <Image Source="/deskshare.png" Width="40" Height="40"/>
+                    <TextBlock Text="DeskShare" FontSize="26" FontWeight="Bold" Foreground="#173859" VerticalAlignment="Center" FlowDirection="LeftToRight" TextWrapping="Wrap" Classes="ltr"/>
+                </StackPanel>
+                <StackPanel x:Name="LanguagePanel" Orientation="Horizontal" Spacing="12" Grid.Column="1">
+                    <TextBlock Text="{Binding [language.label], Source={x:Static loc:Loc.Instance}}" VerticalAlignment="Center"/>
+                    <ComboBox x:Name="LanguagePicker" MinWidth="155" VerticalAlignment="Center"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+        <StackPanel Orientation="Horizontal" Spacing="16" Margin="30,12" Grid.Row="1">
+            <Button Content="DeskShare" Click="Home_Click"/>
+            <Button Content="{Binding [advanced.label], Source={x:Static loc:Loc.Instance}}" Click="Advanced_Click"/>
         </StackPanel>
-
+        <!-- ZCLOUD account bar: only shown when the signaling server offers accounts (see MainWindow.Accounts.cs) -->
         <!-- Main Tab Control -->
-        <TabControl x:Name="MainTabControl" Grid.Row="1" Padding="10">
-
+        <TabControl x:Name="MainTabControl" Grid.Row="2" Padding="10" IsVisible="False">
             <!-- SERVER MODE TAB -->
-            <TabItem x:Name="ServerTab" Header="Server Mode">
+            <TabItem x:Name="ServerTab" Header="{Binding [home.need], Source={x:Static loc:Loc.Instance}}">
                 <ScrollViewer>
-                    <StackPanel MaxWidth="600" Margin="20">
+                    <StackPanel MaxWidth="1050" Margin="24,8" HorizontalAlignment="Stretch">
                         <!-- Header -->
-                        <TextBlock Text="Screen Sharing Server"
-                                 FontSize="28"
-                                 FontWeight="Bold"
-                                 Foreground="#333333"
-                                 Margin="0,0,0,10"/>
-                        <TextBlock Text="Share your screen with remote clients"
-                                 FontSize="14"
-                                 Foreground="#666666"
-                                 Margin="0,0,0,30"/>
-
-                        <!-- Status Card -->
+                        <TextBlock Text="{Binding [home.need], Source={x:Static loc:Loc.Instance}}" FontSize="28" FontWeight="Bold" Foreground="#333333" Margin="0,0,0,12" TextWrapping="Wrap" LineHeight="38"/>
+                        <TextBlock Text="{Binding [home.need_hint], Source={x:Static loc:Loc.Instance}}" FontSize="14" Foreground="#666666" Margin="0,0,0,12" TextWrapping="Wrap" LineHeight="24"/>
                         <Border Classes="card">
-                            <StackPanel>
-                                <TextBlock Text="Server Status"
-                                         FontSize="16"
-                                         FontWeight="SemiBold"
-                                         Margin="0,0,0,15"/>
-
-                                <!-- Status Badge -->
-                                <Border x:Name="ServerStatusBadge"
-                                        CornerRadius="12"
-                                        Padding="12,4"
-                                        HorizontalAlignment="Left"
-                                        Background="#FFF3CD"
-                                        Margin="0,0,0,20">
-                                    <TextBlock x:Name="ServerStatusText"
-                                             Text="Stopped"
-                                             FontWeight="SemiBold"
-                                             Foreground="#856404"/>
-                                </Border>
-
-                                <!-- Server ID Display (IsVisible replaces Visibility) -->
-                                <StackPanel x:Name="ServerIdPanel" IsVisible="False" Margin="0,0,0,15">
-                                    <TextBlock Text="Server ID"
-                                             FontSize="12"
-                                             Foreground="#666666"
-                                             Margin="0,0,0,5"/>
-                                    <Border Background="#F8F9FA"
-                                            BorderBrush="#DEE2E6"
-                                            BorderThickness="1"
-                                            CornerRadius="4"
-                                            Padding="12">
-                                        <Grid ColumnDefinitions="*,Auto">
-                                            <TextBlock x:Name="ServerIdText"
-                                                     Text="abc123-def456-ghi789"
-                                                     FontSize="16"
-                                                     FontFamily="Consolas"
-                                                     FontWeight="Bold"
-                                                     VerticalAlignment="Center"/>
-                                            <Button Grid.Column="1"
-                                                  Content="Copy"
-                                                  Classes="secondaryButton"
-                                                  Padding="12,6"
-                                                  Margin="10,0,0,0"
-                                                  Click="CopyServerId_Click"/>
-                                        </Grid>
+                            <Grid ColumnDefinitions="*,24,*">
+                                <StackPanel Spacing="16">
+                                    <Border x:Name="ServerStatusBadge" CornerRadius="12" Padding="12,4" HorizontalAlignment="Left" Background="#FFF3CD" Margin="0">
+                                        <TextBlock x:Name="ServerStatusText" Text="{Binding [share.private], Source={x:Static loc:Loc.Instance}}" FontWeight="SemiBold" Foreground="#856404" TextWrapping="Wrap"/>
                                     </Border>
+                                    <StackPanel x:Name="ServerIdPanel" IsVisible="False" Margin="0">
+                                        <TextBlock Text="{Binding [number.yours], Source={x:Static loc:Loc.Instance}}" FontSize="16" Foreground="#666666" Margin="0,0,0,5" TextWrapping="Wrap" LineHeight="26"/>
+                                        <Border Background="#F8F9FA" BorderBrush="#DEE2E6" BorderThickness="1" CornerRadius="4" Padding="12">
+                                            <Grid ColumnDefinitions="*,Auto">
+                                                <TextBlock x:Name="ServerIdText" Text="abc123-def456-ghi789" FontSize="36" FontFamily="avares://Avalonia.Fonts.Inter/Assets#Inter" FontWeight="Bold" VerticalAlignment="Center" FlowDirection="LeftToRight" LineHeight="44" Classes="ltr"/>
+                                                <Button Grid.Column="1" Content="{Binding [action.copy], Source={x:Static loc:Loc.Instance}}" Classes="secondaryButton" Padding="12,6" Margin="10,0,0,0" Click="CopyServerId_Click"/>
+                                            </Grid>
+                                        </Border>
+                                    </StackPanel>
+                                    <StackPanel x:Name="PasskeyPanel" IsVisible="False" Margin="0">
+                                        <TextBlock Text="{Binding [code.label], Source={x:Static loc:Loc.Instance}}" FontSize="16" Foreground="#666666" Margin="0,0,0,5" TextWrapping="Wrap" LineHeight="26"/>
+                                        <Border Background="#E7F5FF" BorderBrush="#4DABF7" BorderThickness="2" CornerRadius="6" Padding="16">
+                                            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
+                                                <TextBlock x:Name="PasskeyText" Text="XXX-XXX-XXX" FontSize="36" FontFamily="avares://Avalonia.Fonts.Inter/Assets#Inter" FontWeight="Bold" Foreground="#1971C2" VerticalAlignment="Center" FlowDirection="LeftToRight" LineHeight="44" Classes="ltr"/>
+                                                <Button Grid.Column="1" Content="{Binding [action.copy], Source={x:Static loc:Loc.Instance}}" Classes="secondaryButton" Padding="16,8" Margin="15,0,0,0" Click="CopyPasskey_Click"/>
+                                                <TextBlock x:Name="PasskeyExpirationText" Grid.Row="1" Grid.ColumnSpan="2" Text="" FontSize="12" Foreground="#495057" Margin="0,8,0,0" TextWrapping="Wrap" LineHeight="20"/>
+                                            </Grid>
+                                        </Border>
+                                        <TextBlock Text="{Binding [code.rotation], Source={x:Static loc:Loc.Instance}}" FontSize="14" Foreground="#868E96" Margin="0,8,0,0" TextWrapping="Wrap" LineHeight="20"/>
+                                    </StackPanel>
                                 </StackPanel>
-
-                                <!-- Passkey Display -->
-                                <StackPanel x:Name="PasskeyPanel" IsVisible="False" Margin="0,0,0,15">
-                                    <TextBlock Text="Connection Passkey (expires in 45 seconds)"
-                                             FontSize="12"
-                                             Foreground="#666666"
-                                             Margin="0,0,0,5"/>
-                                    <Border Background="#E7F5FF"
-                                            BorderBrush="#4DABF7"
-                                            BorderThickness="2"
-                                            CornerRadius="6"
-                                            Padding="16">
-                                        <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
-                                            <TextBlock x:Name="PasskeyText"
-                                                     Text="XXX-XXX-XXX"
-                                                     FontSize="32"
-                                                     FontFamily="Consolas"
-                                                     FontWeight="Bold"
-                                                     Foreground="#1971C2"
-                                                     VerticalAlignment="Center"/>
-
-                                            <Button Grid.Column="1"
-                                                  Content="Copy"
-                                                  Classes="secondaryButton"
-                                                  Padding="16,8"
-                                                  Margin="15,0,0,0"
-                                                  Click="CopyPasskey_Click"/>
-
-                                            <TextBlock x:Name="PasskeyExpirationText"
-                                                     Grid.Row="1"
-                                                     Grid.ColumnSpan="2"
-                                                     Text="Expires in: 45s"
-                                                     FontSize="12"
-                                                     Foreground="#495057"
-                                                     Margin="0,8,0,0"/>
-                                        </Grid>
+                                <StackPanel Spacing="20" Grid.Column="2">
+                                    <StackPanel Orientation="Horizontal" Spacing="12">
+                                        <TextBlock Text="{Binding [people.label], Source={x:Static loc:Loc.Instance}}" FontSize="14" Foreground="#666666" Margin="0,0,10,5" TextWrapping="Wrap"/>
+                                        <TextBlock x:Name="ActiveConnectionsText" Text="0" FontSize="14" FontWeight="SemiBold" Foreground="#0B72D9" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                    <!-- Status Badge -->
+                                    <!-- Server ID Display (IsVisible replaces Visibility) -->
+                                    <!-- Passkey Display -->
+                                    <Border Background="#EEF5FF" CornerRadius="12" Padding="18">
+                                        <TextBlock Text="{Binding [control.view_only], Source={x:Static loc:Loc.Instance}}" TextWrapping="Wrap" FontSize="18" x:Name="PermissionText"/>
                                     </Border>
-                                    <TextBlock Text="Client needs this passkey to connect"
-                                             FontSize="11"
-                                             Foreground="#868E96"
-                                             Margin="0,8,0,0"
-                                             TextWrapping="Wrap"/>
-                                </StackPanel>
-
-                                <!-- Access Password Display -->
-                                <StackPanel x:Name="ServerPasswordPanel" IsVisible="False" Margin="0,0,0,20">
-                                    <TextBlock Text="Access Password (Optional)"
-                                             FontSize="12"
-                                             Foreground="#666666"
-                                             Margin="0,0,0,5"/>
-                                    <Border Background="#F8F9FA"
-                                            BorderBrush="#DEE2E6"
-                                            BorderThickness="1"
-                                            CornerRadius="4"
-                                            Padding="12">
-                                        <Grid ColumnDefinitions="*,Auto">
-                                            <TextBlock x:Name="ServerPasswordText"
-                                                     Text="Not Set"
-                                                     FontSize="14"
-                                                     FontFamily="Consolas"
-                                                     VerticalAlignment="Center"
-                                                     Foreground="#666666"/>
-                                            <Button Grid.Column="1"
-                                                  Content="Copy"
-                                                  Classes="secondaryButton"
-                                                  Padding="12,6"
-                                                  Margin="10,0,0,0"
-                                                  Click="CopyPassword_Click"
-                                                  x:Name="CopyPasswordButton"
-                                                  IsEnabled="False"/>
-                                        </Grid>
-                                    </Border>
-                                </StackPanel>
-
-                                <!-- Connection Info -->
-                                <StackPanel x:Name="ConnectionInfoPanel" IsVisible="False" Margin="0,0,0,20">
-                                    <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto">
-                                        <TextBlock Text="Active Connections:"
-                                                 FontSize="14"
-                                                 Foreground="#666666"
-                                                 Margin="0,0,10,5"/>
-                                        <TextBlock x:Name="ActiveConnectionsText"
-                                                 Grid.Column="1"
-                                                 Text="0"
-                                                 FontSize="14"
-                                                 FontWeight="SemiBold"
-                                                 Foreground="#0078D4"/>
-
-                                        <TextBlock Grid.Row="1"
-                                                 Text="Uptime:"
-                                                 FontSize="14"
-                                                 Foreground="#666666"
-                                                 Margin="0,0,10,0"/>
-                                        <TextBlock x:Name="UptimeText"
-                                                 Grid.Row="1"
-                                                 Grid.Column="1"
-                                                 Text="00:00:00"
-                                                 FontSize="14"
-                                                 FontWeight="SemiBold"/>
+                                    <!-- Access Password Display -->
+                                    <!-- Connection Info -->
+                                    <!-- Control Buttons -->
+                                    <Button x:Name="StopControlButton" Content="{Binding [control.stop], Source={x:Static loc:Loc.Instance}}" IsVisible="False" Click="StopControl_Click" Classes="secondaryButton" HorizontalAlignment="Stretch" MinHeight="48"/>
+                                    <Grid ColumnDefinitions="*">
+                                        <Button x:Name="StartServerButton" Content="{Binding [share.start], Source={x:Static loc:Loc.Instance}}" Classes="modernButton" Padding="0,12" Click="StartServer_Click" FontSize="20" MinHeight="52" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
+                                        <Button x:Name="StopServerButton" Grid.Column="0" Content="{Binding [share.stop], Source={x:Static loc:Loc.Instance}}" Classes="dangerButton" Padding="0,12" IsEnabled="False" Click="StopServer_Click" IsVisible="False" FontSize="20" MinHeight="52" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"/>
                                     </Grid>
                                 </StackPanel>
-
-                                <!-- Control Buttons -->
-                                <Grid ColumnDefinitions="*,10,*">
-                                    <Button x:Name="StartServerButton"
-                                          Content="Start Server"
-                                          Classes="modernButton"
-                                          Padding="0,12"
-                                          Click="StartServer_Click"/>
-
-                                    <Button x:Name="StopServerButton"
-                                          Grid.Column="2"
-                                          Content="Stop Server"
-                                          Classes="dangerButton"
-                                          Padding="0,12"
-                                          IsEnabled="False"
-                                          Click="StopServer_Click"/>
-                                </Grid>
-                            </StackPanel>
+                            </Grid>
                         </Border>
-
-                        <!-- My devices: shown when signed in (see MainWindow.Accounts.cs) -->
-                        <Border x:Name="AddDeviceCard" Classes="card" Margin="10,20,10,10" IsVisible="False">
+                        <Expander x:Name="ShareAdvanced" Header="{Binding [advanced.label], Source={x:Static loc:Loc.Instance}}" HorizontalAlignment="Stretch">
                             <StackPanel>
-                                <TextBlock Text="My devices" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,10"/>
-                                <TextBlock Text="Lists this computer under your ZCLOUD account, so you can find it from your other devices. Connecting still needs the passkey or password."
-                                           FontSize="11" Foreground="#495057" TextWrapping="Wrap" Margin="0,0,0,10"/>
-                                <Button x:Name="AddDeviceButton" Content="Add this computer to my devices" Classes="modernButton"
-                                        IsEnabled="False" Click="AddThisComputer_Click"/>
-                                <TextBlock x:Name="AddDeviceStatusText" Text="Start the server first." FontSize="11"
-                                           Foreground="#868E96" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                                <StackPanel x:Name="ConnectionInfoPanel" IsVisible="False" Margin="0,0,0,20">
+                                    <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto">
+                                        <TextBlock Grid.Row="1" Text="{Binding [duration.label], Source={x:Static loc:Loc.Instance}}" FontSize="14" Foreground="#666666" Margin="0,0,10,0" TextWrapping="Wrap"/>
+                                        <TextBlock x:Name="UptimeText" Grid.Row="1" Grid.Column="1" Text="00:00:00" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                    </Grid>
+                                </StackPanel>
+                                <StackPanel x:Name="ServerPasswordPanel" IsVisible="False" Margin="0,0,0,20">
+                                    <TextBlock Text="{Binding [password.label], Source={x:Static loc:Loc.Instance}}" FontSize="12" Foreground="#666666" Margin="0,0,0,5" TextWrapping="Wrap"/>
+                                    <Border Background="#F8F9FA" BorderBrush="#DEE2E6" BorderThickness="1" CornerRadius="4" Padding="12">
+                                        <Grid ColumnDefinitions="*,Auto">
+                                            <TextBlock x:Name="ServerPasswordText" Text="{Binding [password.label], Source={x:Static loc:Loc.Instance}}" FontSize="14" FontFamily="Consolas" VerticalAlignment="Center" Foreground="#666666" FlowDirection="LeftToRight" Classes="ltr"/>
+                                            <Button Grid.Column="1" Content="{Binding [action.copy], Source={x:Static loc:Loc.Instance}}" Classes="secondaryButton" Padding="12,6" Margin="10,0,0,0" Click="CopyPassword_Click" x:Name="CopyPasswordButton" IsEnabled="False"/>
+                                        </Grid>
+                                    </Border>
+                                </StackPanel>
+                                <!-- Status Card -->
+                                <!-- My devices: shown when signed in (see MainWindow.Accounts.cs) -->
+                                <Border x:Name="AddDeviceCard" Classes="card" Margin="10,20,10,10" IsVisible="False">
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding [devices.mine], Source={x:Static loc:Loc.Instance}}" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,10" TextWrapping="Wrap"/>
+                                        <TextBlock Text="{Binding [connect.code_required], Source={x:Static loc:Loc.Instance}}" FontSize="11" Foreground="#495057" TextWrapping="Wrap" Margin="0,0,0,10"/>
+                                        <Button x:Name="AddDeviceButton" Content="{Binding [devices.add], Source={x:Static loc:Loc.Instance}}" Classes="modernButton" IsEnabled="False" Click="AddThisComputer_Click"/>
+                                        <TextBlock x:Name="AddDeviceStatusText" Text="{Binding [share.start], Source={x:Static loc:Loc.Instance}}" FontSize="11" Foreground="#868E96" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                                    </StackPanel>
+                                </Border>
+                                <!-- Settings Card -->
+                                <Border x:Name="ServerSettingsCard" Classes="card" Margin="10,20,10,10">
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding [advanced.label], Source={x:Static loc:Loc.Instance}}" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,15" TextWrapping="Wrap"/>
+                                        <CheckBox x:Name="EnableRemoteControlCheckBox" Content="{Binding [advanced.control], Source={x:Static loc:Loc.Instance}}" Margin="0,0,0,5" FontSize="14" IsChecked="False"/>
+                                        <TextBlock x:Name="RemoteControlWarningText" Text="{Binding [control.explain], Source={x:Static loc:Loc.Instance}}" FontSize="11" Foreground="#856404" Margin="25,0,0,15" TextWrapping="Wrap"/>
+                                        <StackPanel x:Name="DisplayPanel" Margin="0,0,0,15" IsVisible="False">
+                                            <TextBlock Text="{Binding [display.label], Source={x:Static loc:Loc.Instance}}" FontSize="14" Margin="0,0,0,5" TextWrapping="Wrap"/>
+                                            <ComboBox x:Name="DisplayComboBox" MinWidth="260"/>
+                                            <TextBlock Text="{Binding [display.switch_hint], Source={x:Static loc:Loc.Instance}}" FontSize="11" Foreground="#495057" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                        <CheckBox x:Name="EnableClipboardCheckBox" Content="{Binding [advanced.clipboard], Source={x:Static loc:Loc.Instance}}" Margin="0,0,0,15" FontSize="14" IsChecked="False"/>
+                                        <CheckBox x:Name="EnableFileReceiveCheckBox" Content="{Binding [advanced.files], Source={x:Static loc:Loc.Instance}}" Margin="0,0,0,5" FontSize="14" IsChecked="False"/>
+                                        <TextBlock Text="{Binding [file.folder_hint], Source={x:Static loc:Loc.Instance}}" FontSize="11" Foreground="#495057" Margin="25,0,0,15" TextWrapping="Wrap"/>
+                                        <StackPanel x:Name="PrivacyScreenPanel" Margin="0,0,0,15">
+                                            <CheckBox x:Name="EnablePrivacyScreenCheckBox" Content="{Binding [advanced.privacy], Source={x:Static loc:Loc.Instance}}" FontSize="14" IsChecked="False"/>
+                                            <CheckBox x:Name="PrivacyScreenBlocksInputCheckBox" Content="{Binding [privacy.block], Source={x:Static loc:Loc.Instance}}" Margin="25,5,0,0" FontSize="13" IsChecked="False"/>
+                                            <TextBlock Text="{Binding [privacy.elevation], Source={x:Static loc:Loc.Instance}}" FontSize="11" Foreground="#495057" Margin="25,0,0,0" TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                        <StackPanel x:Name="FileReceivedPanel" Orientation="Horizontal" Margin="25,0,0,15" IsVisible="False">
+                                            <TextBlock x:Name="FileReceivedText" FontSize="12" VerticalAlignment="Center"/>
+                                            <Button Content="{Binding [action.folder], Source={x:Static loc:Loc.Instance}}" Margin="10,0,0,0" Padding="8,2" Click="OpenReceivedFolder_Click"/>
+                                        </StackPanel>
+                                        <CheckBox x:Name="TrustClientPermanentCheckBox" Content="{Binding [advanced.trust], Source={x:Static loc:Loc.Instance}}" Margin="0,0,0,5" FontSize="14" IsChecked="False"/>
+                                        <TextBlock x:Name="TrustClientInfoText" Text="{Binding [advanced.trust], Source={x:Static loc:Loc.Instance}}" FontSize="11" Foreground="#495057" Margin="25,0,0,0" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                </Border>
+                                <controls:UnattendedAccessPanel/>
+                                <StackPanel x:Name="AccountBar" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10" Margin="20,8,20,0" IsVisible="False">
+                                    <TextBlock x:Name="AccountNameText" VerticalAlignment="Center" FontSize="12" Foreground="#495057"/>
+                                    <Button x:Name="SignInButton" Content="{Binding [account.signin], Source={x:Static loc:Loc.Instance}}" Classes="secondaryButton" Padding="12,6" Click="SignIn_Click"/>
+                                </StackPanel>
+                                <Button Content="{Binding [logs.label], Source={x:Static loc:Loc.Instance}}" Click="Logs_Click" Margin="10" MinHeight="44"/>
                             </StackPanel>
-                        </Border>
-
-                        <!-- Settings Card -->
-                        <Border x:Name="ServerSettingsCard" Classes="card" Margin="10,20,10,10">
-                            <StackPanel>
-                                <TextBlock Text="Server Settings"
-                                         FontSize="16"
-                                         FontWeight="SemiBold"
-                                         Margin="0,0,0,15"/>
-
-                                <CheckBox x:Name="EnableRemoteControlCheckBox"
-                                        Content="Viewers may ask to control this computer (you approve each request)"
-                                        Margin="0,0,0,5"
-                                        FontSize="14"
-                                        IsChecked="False"/>
-                                <TextBlock x:Name="RemoteControlWarningText"
-                                         Text="Security: control is only given after you click Allow on the request"
-                                         FontSize="11"
-                                         Foreground="#856404"
-                                         Margin="25,0,0,15"
-                                         TextWrapping="Wrap"/>
-
-                                <StackPanel x:Name="DisplayPanel" Margin="0,0,0,15" IsVisible="False">
-                                    <TextBlock Text="Display to share" FontSize="14" Margin="0,0,0,5"/>
-                                    <ComboBox x:Name="DisplayComboBox" MinWidth="260"/>
-                                    <TextBlock Text="Viewers with remote control can switch while sharing"
-                                             FontSize="11"
-                                             Foreground="#495057"
-                                             Margin="0,2,0,0"/>
-                                </StackPanel>
-
-                                <CheckBox x:Name="EnableClipboardCheckBox"
-                                        Content="Allow clipboard sharing (text)"
-                                        Margin="0,0,0,15"
-                                        FontSize="14"
-                                        IsChecked="False"/>
-
-                                <CheckBox x:Name="EnableFileReceiveCheckBox"
-                                        Content="Allow receiving files"
-                                        Margin="0,0,0,5"
-                                        FontSize="14"
-                                        IsChecked="False"/>
-                                <TextBlock Text="saved to Downloads\DeskShare"
-                                         FontSize="11"
-                                         Foreground="#495057"
-                                         Margin="25,0,0,15"/>
-                                <StackPanel x:Name="PrivacyScreenPanel" Margin="0,0,0,15">
-                                    <CheckBox x:Name="EnablePrivacyScreenCheckBox"
-                                            Content="Allow privacy screen (local monitor shows black)"
-                                            FontSize="14"
-                                            IsChecked="False"/>
-                                    <CheckBox x:Name="PrivacyScreenBlocksInputCheckBox"
-                                            Content="Also block local mouse and keyboard"
-                                            Margin="25,5,0,0"
-                                            FontSize="13"
-                                            IsChecked="False"/>
-                                    <TextBlock Text="Needs an elevated app to block input; Ctrl+Alt+Del always restores local input"
-                                             FontSize="11"
-                                             Foreground="#495057"
-                                             Margin="25,0,0,0"
-                                             TextWrapping="Wrap"/>
-                                </StackPanel>
-                                <StackPanel x:Name="FileReceivedPanel" Orientation="Horizontal" Margin="25,0,0,15" IsVisible="False">
-                                    <TextBlock x:Name="FileReceivedText" FontSize="12" VerticalAlignment="Center"/>
-                                    <Button Content="Open folder" Margin="10,0,0,0" Padding="8,2" Click="OpenReceivedFolder_Click"/>
-                                </StackPanel>
-
-                                <CheckBox x:Name="TrustClientPermanentCheckBox"
-                                        Content="Trust connected client permanently"
-                                        Margin="0,0,0,5"
-                                        FontSize="14"
-                                        IsChecked="False"/>
-                                <TextBlock x:Name="TrustClientInfoText"
-                                         Text="Connected client will be remembered - no passkey required next time"
-                                         FontSize="11"
-                                         Foreground="#495057"
-                                         Margin="25,0,0,0"
-                                         TextWrapping="Wrap"/>
-                            </StackPanel>
-                        </Border>
-                        <controls:UnattendedAccessPanel/>
+                        </Expander>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
-
             <!-- CLIENT MODE TAB -->
-            <TabItem x:Name="ClientTab" Header="Client Mode">
+            <TabItem x:Name="ClientTab" Header="{Binding [home.give], Source={x:Static loc:Loc.Instance}}">
                 <!-- Scrollable page: with a fixed window height the '*' row for saved connections collapsed
                      and the card slid under 'Manual Connection'. -->
                 <ScrollViewer>
-                <Grid Margin="20" RowDefinitions="Auto,Auto,Auto,Auto">
-
-                    <!-- Header -->
-                    <StackPanel Margin="0,0,0,20">
-                        <TextBlock Text="Remote Desktop Client"
-                                 FontSize="28"
-                                 FontWeight="Bold"
-                                 Foreground="#333333"
-                                 Margin="0,0,0,10"/>
-                        <TextBlock Text="Connect to a remote screen sharing server"
-                                 FontSize="14"
-                                 Foreground="#666666"/>
-
-                        <!-- My devices: shown when signed in; a click fills the Server ID below (see MainWindow.Accounts.cs) -->
-                        <Border x:Name="MyDevicesCard" Classes="card" Margin="0,20,0,0" IsVisible="False">
+                    <Grid Margin="24,8" RowDefinitions="Auto,Auto,Auto" MaxWidth="760" HorizontalAlignment="Stretch">
+                        <!-- Header -->
+                        <StackPanel Margin="0,0,0,12">
+                            <TextBlock Text="{Binding [home.give], Source={x:Static loc:Loc.Instance}}" FontSize="28" FontWeight="Bold" Foreground="#333333" Margin="0,0,0,10" TextWrapping="Wrap" LineHeight="38"/>
+                            <TextBlock Text="{Binding [home.give_hint], Source={x:Static loc:Loc.Instance}}" FontSize="14" Foreground="#666666" TextWrapping="Wrap" LineHeight="24"/>
+                            <!-- My devices: shown when signed in; a click fills the Server ID below (see MainWindow.Accounts.cs) -->
+                        </StackPanel>
+                        <!-- Saved Connections List -->
+                        <!-- Manual Connection Card -->
+                        <Border Grid.Row="1" Classes="card" Margin="0,12,0,12">
                             <StackPanel>
-                                <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,10">
-                                    <TextBlock Text="My devices" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                                    <Button Grid.Column="1" Content="Refresh" Classes="secondaryButton" Padding="12,6"
-                                            Margin="0,0,10,0" Click="RefreshMyDevices_Click"/>
-                                    <Button Grid.Column="2" x:Name="RemoveDeviceButton" Content="Remove" Classes="secondaryButton"
-                                            Padding="12,6" IsEnabled="False" Click="RemoveMyDevice_Click"/>
+                                <Grid ColumnDefinitions="*,10,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto">
+                                    <!-- Server ID -->
+                                    <StackPanel Grid.ColumnSpan="3">
+                                        <TextBlock Text="{Binding [number.theirs], Source={x:Static loc:Loc.Instance}}" FontSize="18" Foreground="#666666" Margin="0,0,0,5" TextWrapping="Wrap" LineHeight="28"/>
+                                        <TextBox x:Name="ManualServerIdTextBox" Classes="modernTextBox" Watermark="123 456 789" FontFamily="avares://Avalonia.Fonts.Inter/Assets#Inter" FlowDirection="LeftToRight" FontSize="24" MinHeight="60"/>
+                                    </StackPanel>
+                                    <!-- Passkey (Required) -->
+                                    <StackPanel Grid.Row="1" Grid.ColumnSpan="3" Margin="0,15,0,0">
+                                        <TextBlock Text="{Binding [code.label], Source={x:Static loc:Loc.Instance}}" FontSize="18" Foreground="#666666" Margin="0,0,0,5" TextWrapping="Wrap" LineHeight="28"/>
+                                        <TextBox x:Name="ManualPasskeyTextBox" Classes="modernTextBox" FontFamily="avares://Avalonia.Fonts.Inter/Assets#Inter" FlowDirection="LeftToRight" FontSize="24" MinHeight="60" Watermark="ABC-234-XYZ"/>
+                                        <TextBlock Text="{Binding [connect.code_hint], Source={x:Static loc:Loc.Instance}}" FontSize="10" Foreground="#868E96" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                    <!-- Password (Optional) - TextBox with PasswordChar replaces PasswordBox -->
+                                    <!-- Save Connection Checkbox -->
+                                    <!-- Connection Name (shown when Save is checked) -->
                                 </Grid>
-                                <ListBox x:Name="MyDevicesListBox" BorderThickness="0" Background="Transparent"
-                                         SelectionMode="Single" MaxHeight="200" SelectionChanged="MyDevices_SelectionChanged">
-                                    <ListBox.ItemTemplate>
-                                        <DataTemplate>
-                                            <Grid ColumnDefinitions="*,Auto">
-                                                <StackPanel>
-                                                    <TextBlock Text="{Binding Name}" FontSize="14" FontWeight="SemiBold"/>
-                                                    <TextBlock Text="{Binding Detail}" FontSize="11" Foreground="#666666" FontFamily="Consolas"/>
-                                                </StackPanel>
-                                                <TextBlock Grid.Column="1" Text="{Binding Status}" FontSize="12"
-                                                           Foreground="{Binding StatusBrush}" VerticalAlignment="Center"/>
-                                            </Grid>
-                                        </DataTemplate>
-                                    </ListBox.ItemTemplate>
-                                </ListBox>
-                                <TextBlock x:Name="MyDevicesStatusText" FontSize="11" Foreground="#868E96" TextWrapping="Wrap"
-                                           Margin="0,8,0,0" Text="Click a device to fill in its Server ID. The passkey or password is still needed."/>
+                                <!-- Connect Button -->
+                                <Button Content="{Binding [connect.action], Source={x:Static loc:Loc.Instance}}" Classes="modernButton" Padding="0,12" Margin="0,20,0,0" Click="ManualConnect_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" FontSize="20" MinHeight="52"/>
                             </StackPanel>
                         </Border>
-                    </StackPanel>
-
-                    <!-- Saved Connections List -->
-                    <Border Grid.Row="1" Classes="card">
-                        <Grid RowDefinitions="Auto,*">
-                            <TextBlock Text="Saved Connections"
-                                     FontSize="16"
-                                     FontWeight="SemiBold"
-                                     Margin="0,0,0,15"/>
-
-                            <ScrollViewer Grid.Row="1" MaxHeight="260">
-                                <StackPanel>
-                                    <!-- ListBox replaces WPF's ListView -->
-                                    <ListBox x:Name="ConnectionsListBox"
-                                            BorderThickness="0"
-                                            Background="Transparent"
-                                            SelectionMode="Single"
-                                            DoubleTapped="ConnectionsList_DoubleTapped">
-                                        <ListBox.ItemTemplate>
-                                            <DataTemplate>
-                                                <Border Background="White"
-                                                      BorderBrush="#E0E0E0"
-                                                      BorderThickness="1"
-                                                      CornerRadius="6"
-                                                      Padding="15"
-                                                      Margin="0,0,0,10">
+                        <!-- Connection History Card -->
+                        <Expander x:Name="ConnectAdvanced" Grid.Row="2" Header="{Binding [advanced.label], Source={x:Static loc:Loc.Instance}}" HorizontalAlignment="Stretch">
+                            <StackPanel>
+                                <StackPanel Margin="0,15,0,0">
+                                    <TextBlock Text="{Binding [password.label], Source={x:Static loc:Loc.Instance}}" FontSize="12" Foreground="#666666" Margin="0,0,0,5" TextWrapping="Wrap"/>
+                                    <TextBox x:Name="ManualPasswordBox" PasswordChar="*" Padding="10,8" FontSize="14" BorderBrush="#CCCCCC" BorderThickness="1" FlowDirection="LeftToRight"/>
+                                </StackPanel>
+                                <CheckBox x:Name="SaveConnectionCheckBox" Content="{Binding [devices.save], Source={x:Static loc:Loc.Instance}}" Margin="0,15,0,0" FontSize="14"/>
+                                <StackPanel x:Name="ConnectionNamePanel" Margin="0,15,0,0" IsVisible="False">
+                                    <TextBlock Text="{Binding [devices.name], Source={x:Static loc:Loc.Instance}}" FontSize="12" Foreground="#666666" Margin="0,0,0,5" TextWrapping="Wrap"/>
+                                    <TextBox x:Name="ConnectionNameTextBox" Classes="modernTextBox" Watermark="{Binding [devices.name], Source={x:Static loc:Loc.Instance}}"/>
+                                </StackPanel>
+                                <Border x:Name="MyDevicesCard" Classes="card" Margin="0,20,0,0" IsVisible="False">
+                                    <StackPanel>
+                                        <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,10">
+                                            <TextBlock Text="{Binding [devices.mine], Source={x:Static loc:Loc.Instance}}" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                                            <Button Grid.Column="1" Content="{Binding [action.refresh], Source={x:Static loc:Loc.Instance}}" Classes="secondaryButton" Padding="12,6" Margin="0,0,10,0" Click="RefreshMyDevices_Click"/>
+                                            <Button Grid.Column="2" x:Name="RemoveDeviceButton" Content="{Binding [action.remove], Source={x:Static loc:Loc.Instance}}" Classes="secondaryButton" Padding="12,6" IsEnabled="False" Click="RemoveMyDevice_Click"/>
+                                        </Grid>
+                                        <ListBox x:Name="MyDevicesListBox" BorderThickness="0" Background="Transparent" SelectionMode="Single" MaxHeight="200" SelectionChanged="MyDevices_SelectionChanged">
+                                            <ListBox.ItemTemplate>
+                                                <DataTemplate>
                                                     <Grid ColumnDefinitions="*,Auto">
                                                         <StackPanel>
-                                                            <TextBlock Text="{Binding Name}"
-                                                                     FontSize="16"
-                                                                     FontWeight="SemiBold"
-                                                                     Margin="0,0,0,5"/>
-                                                            <TextBlock FontSize="12"
-                                                                     Foreground="#666666"
-                                                                     FontFamily="Consolas">
-                                                                <Run Text="ID: "/>
-                                                                <Run Text="{Binding ServerId}" FontWeight="SemiBold"/>
-                                                            </TextBlock>
-                                                            <TextBlock Text="{Binding LastConnected}"
-                                                                     FontSize="11"
-                                                                     Foreground="#999999"
-                                                                     Margin="0,5,0,0"/>
+                                                            <TextBlock Text="{Binding Name}" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                                            <TextBlock Text="{Binding Detail}" FontSize="11" Foreground="#666666" FontFamily="Consolas" FlowDirection="LeftToRight" Classes="ltr"/>
                                                         </StackPanel>
-
-                                                        <StackPanel Grid.Column="1"
-                                                                  Orientation="Horizontal"
-                                                                  VerticalAlignment="Center">
-                                                            <Button Content="Connect"
-                                                                  Classes="modernButton"
-                                                                  Padding="15,8"
-                                                                  Margin="0,0,10,0"
-                                                                  Click="ConnectToSaved_Click"
-                                                                  Tag="{Binding}"/>
-                                                            <Button Content="Remove"
-                                                                  Classes="secondaryButton"
-                                                                  Padding="15,8"
-                                                                  Click="RemoveConnection_Click"
-                                                                  Tag="{Binding}"/>
-                                                        </StackPanel>
+                                                        <TextBlock Grid.Column="1" Text="{Binding Status}" FontSize="12" Foreground="{Binding StatusBrush}" VerticalAlignment="Center" TextWrapping="Wrap"/>
                                                     </Grid>
-                                                </Border>
-                                            </DataTemplate>
-                                        </ListBox.ItemTemplate>
-                                    </ListBox>
-
-                                    <!-- Empty State -->
-                                    <Border x:Name="EmptyConnectionsPanel"
-                                          Background="#F8F9FA"
-                                          BorderBrush="#DEE2E6"
-                                          BorderThickness="1"
-                                          CornerRadius="6"
-                                          Padding="40"
-                                          HorizontalAlignment="Stretch">
-                                        <StackPanel HorizontalAlignment="Center">
-                                            <TextBlock Text="No saved connections"
-                                                     FontSize="16"
-                                                     Foreground="#666666"
-                                                     HorizontalAlignment="Center"
-                                                     Margin="0,0,0,5"/>
-                                            <TextBlock Text="Use manual connection below to add your first connection"
-                                                     FontSize="12"
-                                                     Foreground="#999999"
-                                                     HorizontalAlignment="Center"/>
-                                        </StackPanel>
-                                    </Border>
-                                </StackPanel>
-                            </ScrollViewer>
-                        </Grid>
-                    </Border>
-
-                    <!-- Manual Connection Card -->
-                    <Border Grid.Row="2" Classes="card" Margin="10,20,10,10">
-                        <StackPanel>
-                            <TextBlock Text="Manual Connection"
-                                     FontSize="16"
-                                     FontWeight="SemiBold"
-                                     Margin="0,0,0,15"/>
-
-                            <Grid ColumnDefinitions="*,10,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto">
-                                <!-- Server ID -->
-                                <StackPanel Grid.ColumnSpan="2">
-                                    <TextBlock Text="Server ID"
-                                             FontSize="12"
-                                             Foreground="#666666"
-                                             Margin="0,0,0,5"/>
-                                    <TextBox x:Name="ManualServerIdTextBox"
-                                           Classes="modernTextBox"
-                                           Watermark="123 456 789"
-                                           FontFamily="Consolas"/>
-                                </StackPanel>
-
-                                <!-- Passkey (Required) -->
-                                <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Margin="0,15,0,0">
-                                    <TextBlock Text="Passkey (9 characters) or permanent password"
-                                             FontSize="12"
-                                             Foreground="#666666"
-                                             Margin="0,0,0,5"/>
-                                    <TextBox x:Name="ManualPasskeyTextBox"
-                                           Classes="modernTextBox"
-                                           FontFamily="Consolas"/>
-                                    <TextBlock Text="Get the passkey from the server screen, or use the password set for unattended access"
-                                             FontSize="10"
-                                             Foreground="#868E96"
-                                             Margin="0,4,0,0"/>
-                                </StackPanel>
-
-                                <!-- Password (Optional) - TextBox with PasswordChar replaces PasswordBox -->
-                                <StackPanel Grid.Row="2" Grid.ColumnSpan="2" Margin="0,15,0,0">
-                                    <TextBlock Text="Password (if required)"
-                                             FontSize="12"
-                                             Foreground="#666666"
-                                             Margin="0,0,0,5"/>
-                                    <TextBox x:Name="ManualPasswordBox"
-                                           PasswordChar="*"
-                                           Padding="10,8"
-                                           FontSize="14"
-                                           BorderBrush="#CCCCCC"
-                                           BorderThickness="1"/>
-                                </StackPanel>
-
-                                <!-- Save Connection Checkbox -->
-                                <CheckBox Grid.Row="3"
-                                        Grid.ColumnSpan="2"
-                                        x:Name="SaveConnectionCheckBox"
-                                        Content="Save this connection for future use"
-                                        Margin="0,15,0,0"
-                                        FontSize="14"/>
-
-                                <!-- Connection Name (shown when Save is checked) -->
-                                <StackPanel x:Name="ConnectionNamePanel"
-                                          Grid.Row="4"
-                                          Grid.ColumnSpan="2"
-                                          Margin="0,15,0,0"
-                                          IsVisible="False">
-                                    <TextBlock Text="Connection Name"
-                                             FontSize="12"
-                                             Foreground="#666666"
-                                             Margin="0,0,0,5"/>
-                                    <TextBox x:Name="ConnectionNameTextBox"
-                                           Classes="modernTextBox"
-                                           Text="My Remote PC"/>
-                                </StackPanel>
-                            </Grid>
-
-                            <!-- Connect Button -->
-                            <Button Content="Connect to Server"
-                                  Classes="modernButton"
-                                  Padding="0,12"
-                                  Margin="0,20,0,0"
-                                  Click="ManualConnect_Click"/>
-                        </StackPanel>
-                    </Border>
-
-                    <!-- Connection History Card -->
-                    <Border Grid.Row="3" Classes="card" Margin="10,20,10,10">
-                        <Grid RowDefinitions="Auto,Auto">
-                            <StackPanel Orientation="Horizontal" Margin="0,0,0,15">
-                                <TextBlock Text="Connection History"
-                                         FontSize="16"
-                                         FontWeight="SemiBold"
-                                         VerticalAlignment="Center"/>
-                                <Button Content="Refresh Status"
-                                      Classes="secondaryButton"
-                                      Padding="10,4"
-                                      Margin="15,0,0,0"
-                                      FontSize="12"
-                                      Click="RefreshOnlineStatus_Click"/>
-                                <Button Content="Clear History"
-                                      Classes="secondaryButton"
-                                      Padding="10,4"
-                                      Margin="8,0,0,0"
-                                      FontSize="12"
-                                      Click="ClearHistory_Click"/>
-                            </StackPanel>
-
-                            <ScrollViewer Grid.Row="1" MaxHeight="200">
-                                <ItemsControl x:Name="HistoryItemsControl">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Border Background="#F8F9FA"
-                                                  BorderBrush="#DEE2E6"
-                                                  BorderThickness="1"
-                                                  CornerRadius="4"
-                                                  Padding="12"
-                                                  Margin="0,0,0,8">
-                                                <Grid ColumnDefinitions="*,Auto,Auto">
-                                                    <StackPanel>
-                                                        <StackPanel Orientation="Horizontal">
-                                                            <TextBlock Text="{Binding DisplayName}"
-                                                                     FontSize="13"
-                                                                     FontWeight="SemiBold"
-                                                                     Margin="0,0,10,0"/>
-                                                            <Border Background="{Binding StatusBadgeColor}"
-                                                                  BorderBrush="{Binding StatusBadgeBorderColor}"
-                                                                  BorderThickness="1"
-                                                                  CornerRadius="3"
-                                                                  Padding="6,2"
-                                                                  VerticalAlignment="Center">
-                                                                <TextBlock Text="{Binding StatusBadge}"
-                                                                         FontSize="10"
-                                                                         FontWeight="SemiBold"
-                                                                         Foreground="{Binding StatusBadgeTextColor}"/>
+                                                </DataTemplate>
+                                            </ListBox.ItemTemplate>
+                                        </ListBox>
+                                        <TextBlock x:Name="MyDevicesStatusText" FontSize="11" Foreground="#868E96" TextWrapping="Wrap" Margin="0,8,0,0" Text="{Binding [connect.code_required], Source={x:Static loc:Loc.Instance}}"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border Classes="card">
+                                    <Grid RowDefinitions="Auto,*">
+                                        <TextBlock Text="{Binding [devices.saved], Source={x:Static loc:Loc.Instance}}" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,15" TextWrapping="Wrap"/>
+                                        <ScrollViewer Grid.Row="1" MaxHeight="260">
+                                            <StackPanel>
+                                                <!-- ListBox replaces WPF's ListView -->
+                                                <ListBox x:Name="ConnectionsListBox" BorderThickness="0" Background="Transparent" SelectionMode="Single" DoubleTapped="ConnectionsList_DoubleTapped">
+                                                    <ListBox.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <Border Background="White" BorderBrush="#E0E0E0" BorderThickness="1" CornerRadius="6" Padding="15" Margin="0,0,0,10">
+                                                                <Grid ColumnDefinitions="*,Auto">
+                                                                    <StackPanel>
+                                                                        <TextBlock Text="{Binding Name}" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,5" TextWrapping="Wrap"/>
+                                                                        <TextBlock FontSize="12" Foreground="#666666" FontFamily="Consolas" FlowDirection="LeftToRight" Classes="ltr">
+                                                                            <Run Text="{Binding [number.theirs], Source={x:Static loc:Loc.Instance}}"/>
+                                                                            <Run Text="{Binding ServerId, Converter={x:Static loc:DisplayValueConverter.Instance}}" FontWeight="SemiBold"/>
+                                                                        </TextBlock>
+                                                                        <TextBlock Text="{Binding LastConnected, Converter={x:Static loc:DisplayValueConverter.Instance}}" FontSize="11" Foreground="#999999" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                                                                    </StackPanel>
+                                                                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                                                        <Button Content="{Binding [connect.action], Source={x:Static loc:Loc.Instance}}" Classes="modernButton" Padding="15,8" Margin="0,0,10,0" Click="ConnectToSaved_Click" Tag="{Binding}"/>
+                                                                        <Button Content="{Binding [action.remove], Source={x:Static loc:Loc.Instance}}" Classes="secondaryButton" Padding="15,8" Click="RemoveConnection_Click" Tag="{Binding}"/>
+                                                                    </StackPanel>
+                                                                </Grid>
                                                             </Border>
-                                                        </StackPanel>
-                                                        <TextBlock FontSize="11"
-                                                                 Foreground="#666666"
-                                                                 FontFamily="Consolas"
-                                                                 Margin="0,4,0,0">
-                                                            <Run Text="ID: "/>
-                                                            <Run Text="{Binding ServerId}"/>
-                                                        </TextBlock>
-                                                        <TextBlock Text="{Binding TimestampDisplay}"
-                                                                 FontSize="10"
-                                                                 Foreground="#999999"
-                                                                 Margin="0,4,0,0"/>
+                                                        </DataTemplate>
+                                                    </ListBox.ItemTemplate>
+                                                </ListBox>
+                                                <!-- Empty State -->
+                                                <Border x:Name="EmptyConnectionsPanel" Background="#F8F9FA" BorderBrush="#DEE2E6" BorderThickness="1" CornerRadius="6" Padding="40" HorizontalAlignment="Stretch">
+                                                    <StackPanel HorizontalAlignment="Center">
+                                                        <TextBlock Text="{Binding [devices.empty], Source={x:Static loc:Loc.Instance}}" FontSize="16" Foreground="#666666" HorizontalAlignment="Center" Margin="0,0,0,5" TextWrapping="Wrap"/>
+                                                        <TextBlock Text="{Binding [connect.code_required], Source={x:Static loc:Loc.Instance}}" FontSize="12" Foreground="#999999" HorizontalAlignment="Center" TextWrapping="Wrap"/>
                                                     </StackPanel>
-
-                                                    <Button Grid.Column="1"
-                                                          Content="Trust"
-                                                          Classes="secondaryButton"
-                                                          Padding="10,4"
-                                                          Margin="0,0,8,0"
-                                                          FontSize="11"
-                                                          Click="TrustConnection_Click"
-                                                          Tag="{Binding}"/>
-
-                                                    <Button Grid.Column="2"
-                                                          Content="Remove"
-                                                          Classes="secondaryButton"
-                                                          Padding="10,4"
-                                                          FontSize="11"
-                                                          Click="RemoveHistory_Click"
-                                                          Tag="{Binding}"/>
-                                                </Grid>
-                                            </Border>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </ScrollViewer>
-
-                            <!-- Empty State -->
-                            <Border x:Name="EmptyHistoryPanel"
-                                  Grid.Row="1"
-                                  Background="#F8F9FA"
-                                  BorderBrush="#DEE2E6"
-                                  BorderThickness="1"
-                                  CornerRadius="6"
-                                  Padding="30"
-                                  HorizontalAlignment="Stretch"
-                                  IsVisible="False">
-                                <StackPanel HorizontalAlignment="Center">
-                                    <TextBlock Text="No connection history"
-                                             FontSize="14"
-                                             Foreground="#666666"
-                                             HorizontalAlignment="Center"
-                                             Margin="0,0,0,5"/>
-                                    <TextBlock Text="Your connection history will appear here"
-                                             FontSize="11"
-                                             Foreground="#999999"
-                                             HorizontalAlignment="Center"/>
-                                </StackPanel>
-                            </Border>
-                        </Grid>
-                    </Border>
-                </Grid>
+                                                </Border>
+                                            </StackPanel>
+                                        </ScrollViewer>
+                                    </Grid>
+                                </Border>
+                                <Border Classes="card" Margin="10,20,10,10">
+                                    <Grid RowDefinitions="Auto,Auto">
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,15">
+                                            <TextBlock Text="{Binding [history.label], Source={x:Static loc:Loc.Instance}}" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                                            <Button Content="{Binding [action.refresh], Source={x:Static loc:Loc.Instance}}" Classes="secondaryButton" Padding="10,4" Margin="15,0,0,0" FontSize="12" Click="RefreshOnlineStatus_Click"/>
+                                            <Button Content="{Binding [history.clear], Source={x:Static loc:Loc.Instance}}" Classes="secondaryButton" Padding="10,4" Margin="8,0,0,0" FontSize="12" Click="ClearHistory_Click"/>
+                                        </StackPanel>
+                                        <ScrollViewer Grid.Row="1" MaxHeight="200">
+                                            <ItemsControl x:Name="HistoryItemsControl">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border Background="#F8F9FA" BorderBrush="#DEE2E6" BorderThickness="1" CornerRadius="4" Padding="12" Margin="0,0,0,8">
+                                                            <Grid ColumnDefinitions="*,Auto,Auto">
+                                                                <StackPanel>
+                                                                    <StackPanel Orientation="Horizontal">
+                                                                        <TextBlock Text="{Binding DisplayName}" FontSize="13" FontWeight="SemiBold" Margin="0,0,10,0" TextWrapping="Wrap"/>
+                                                                        <Border Background="{Binding StatusBadgeColor}" BorderBrush="{Binding StatusBadgeBorderColor}" BorderThickness="1" CornerRadius="3" Padding="6,2" VerticalAlignment="Center">
+                                                                            <TextBlock Text="{Binding StatusBadge, Converter={x:Static loc:DisplayValueConverter.Instance}}" FontSize="10" FontWeight="SemiBold" Foreground="{Binding StatusBadgeTextColor}" TextWrapping="Wrap"/>
+                                                                        </Border>
+                                                                    </StackPanel>
+                                                                    <TextBlock FontSize="11" Foreground="#666666" FontFamily="Consolas" Margin="0,4,0,0" FlowDirection="LeftToRight" Classes="ltr">
+                                                                        <Run Text="{Binding [number.theirs], Source={x:Static loc:Loc.Instance}}"/>
+                                                                        <Run Text="{Binding ServerId, Converter={x:Static loc:DisplayValueConverter.Instance}}"/>
+                                                                    </TextBlock>
+                                                                    <TextBlock Text="{Binding ConnectedAt, StringFormat={}{0:g}}" FontSize="10" Foreground="#999999" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                                                                </StackPanel>
+                                                                <Button Grid.Column="1" Content="{Binding [advanced.trust], Source={x:Static loc:Loc.Instance}}" Classes="secondaryButton" Padding="10,4" Margin="0,0,8,0" FontSize="11" Click="TrustConnection_Click" Tag="{Binding}"/>
+                                                                <Button Grid.Column="2" Content="{Binding [action.remove], Source={x:Static loc:Loc.Instance}}" Classes="secondaryButton" Padding="10,4" FontSize="11" Click="RemoveHistory_Click" Tag="{Binding}"/>
+                                                            </Grid>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </ScrollViewer>
+                                        <!-- Empty State -->
+                                        <Border x:Name="EmptyHistoryPanel" Grid.Row="1" Background="#F8F9FA" BorderBrush="#DEE2E6" BorderThickness="1" CornerRadius="6" Padding="30" HorizontalAlignment="Stretch" IsVisible="False">
+                                            <StackPanel HorizontalAlignment="Center">
+                                                <TextBlock Text="{Binding [devices.empty], Source={x:Static loc:Loc.Instance}}" FontSize="14" Foreground="#666666" HorizontalAlignment="Center" Margin="0,0,0,5" TextWrapping="Wrap"/>
+                                                <TextBlock Text="{Binding [history.label], Source={x:Static loc:Loc.Instance}}" FontSize="11" Foreground="#999999" HorizontalAlignment="Center" TextWrapping="Wrap"/>
+                                            </StackPanel>
+                                        </Border>
+                                    </Grid>
+                                </Border>
+                                <Button Content="{Binding [logs.label], Source={x:Static loc:Loc.Instance}}" Click="Logs_Click" Margin="10" MinHeight="44"/>
+                            </StackPanel>
+                        </Expander>
+                    </Grid>
                 </ScrollViewer>
             </TabItem>
-
             <!-- LOG TAB -->
-            <TabItem Header="Log" x:Name="LogTab">
+            <TabItem Header="{Binding [logs.label], Source={x:Static loc:Loc.Instance}}" x:Name="LogTab">
                 <Grid Margin="20" RowDefinitions="Auto,*,Auto">
                     <!-- Header -->
-                    <TextBlock Grid.Row="0"
-                               Text="Application Log (DEBUG Mode)"
-                               FontSize="20"
-                               FontWeight="Bold"
-                               Foreground="#333333"
-                               Margin="0,0,0,15"/>
-
+                    <TextBlock Grid.Row="0" Text="{Binding [logs.label], Source={x:Static loc:Loc.Instance}}" FontSize="20" FontWeight="Bold" Foreground="#333333" Margin="0,0,0,15" TextWrapping="Wrap"/>
                     <!-- Log Display -->
-                    <Border Grid.Row="1"
-                            Background="White"
-                            BorderBrush="#DDDDDD"
-                            BorderThickness="1"
-                            CornerRadius="6"
-                            Padding="10">
+                    <Border Grid.Row="1" Background="White" BorderBrush="#DDDDDD" BorderThickness="1" CornerRadius="6" Padding="10">
                         <ScrollViewer x:Name="LogScrollViewer">
                             <ItemsControl ItemsSource="{Binding LogMessages}">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <TextBlock Text="{Binding}"
-                                                   FontFamily="Consolas"
-                                                   FontSize="11"
-                                                   TextWrapping="NoWrap"
-                                                   Margin="0,1"/>
+                                        <TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="11" TextWrapping="NoWrap" Margin="0,1" FlowDirection="LeftToRight" Classes="ltr"/>
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
                         </ScrollViewer>
                     </Border>
-
                     <!-- Actions -->
-                    <StackPanel Grid.Row="2"
-                                Orientation="Horizontal"
-                                HorizontalAlignment="Right"
-                                Margin="0,10,0,0">
-                        <Button Content="Clear Log"
-                                Classes="secondaryButton"
-                                Click="ClearLog_Click"
-                                Margin="0,0,10,0"/>
-                        <Button Content="Copy Log"
-                                Classes="modernButton"
-                                Click="CopyLog_Click"/>
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+                        <Button Content="{Binding [logs.clear], Source={x:Static loc:Loc.Instance}}" Classes="secondaryButton" Click="ClearLog_Click" Margin="0,0,10,0"/>
+                        <Button Content="{Binding [logs.copy], Source={x:Static loc:Loc.Instance}}" Classes="modernButton" Click="CopyLog_Click"/>
                     </StackPanel>
                 </Grid>
             </TabItem>
         </TabControl>
+        <ScrollViewer x:Name="HomeView" Grid.Row="2">
+            <StackPanel Margin="48,24" Spacing="24">
+                <TextBlock Text="{Binding [home.title], Source={x:Static loc:Loc.Instance}}" FontSize="32" FontWeight="Bold" Foreground="#173859" TextWrapping="Wrap"/>
+                <Grid ColumnDefinitions="*,24,*">
+                    <Border Classes="card" Padding="28" MinHeight="260" Grid.Column="0">
+                        <StackPanel Spacing="24">
+                            <TextBlock Text="{Binding [home.need], Source={x:Static loc:Loc.Instance}}" FontSize="26" FontWeight="Bold" TextWrapping="Wrap" Foreground="#173859"/>
+                            <TextBlock Text="{Binding [home.need_hint], Source={x:Static loc:Loc.Instance}}" FontSize="18" TextWrapping="Wrap" MinHeight="64"/>
+                            <Button Content="{Binding [home.need], Source={x:Static loc:Loc.Instance}}" Classes="modernButton" Click="NeedHelp_Click" HorizontalAlignment="Stretch" MinHeight="52"/>
+                        </StackPanel>
+                    </Border>
+                    <Border Classes="card" Padding="28" MinHeight="260" Grid.Column="2">
+                        <StackPanel Spacing="24">
+                            <TextBlock Text="{Binding [home.give], Source={x:Static loc:Loc.Instance}}" FontSize="26" FontWeight="Bold" TextWrapping="Wrap" Foreground="#173859"/>
+                            <TextBlock Text="{Binding [home.give_hint], Source={x:Static loc:Loc.Instance}}" FontSize="18" TextWrapping="Wrap" MinHeight="64"/>
+                            <Button Content="{Binding [home.give], Source={x:Static loc:Loc.Instance}}" Classes="modernButton" Click="HelpSomeone_Click" HorizontalAlignment="Stretch" MinHeight="52"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+                <TextBlock Text="{Binding [share.private], Source={x:Static loc:Loc.Instance}}" FontSize="16" Foreground="#426284" TextWrapping="Wrap"/>
+            </StackPanel>
+        </ScrollViewer>
     </Grid>
 </Window>

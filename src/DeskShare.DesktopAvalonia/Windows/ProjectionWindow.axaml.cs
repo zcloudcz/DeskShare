@@ -1,3 +1,4 @@
+using DeskShare.DesktopAvalonia.Localization;
 using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
@@ -34,7 +35,7 @@ namespace DeskShare.DesktopAvalonia.Windows;
 /// - Keyboard.IsKeyDown(Key.LeftShift) → e.KeyModifiers.HasFlag(KeyModifiers.Shift)
 /// - WindowStyle = WindowStyle.None → SystemDecorations = SystemDecorations.None
 /// - Visibility.Visible/Collapsed → IsVisible = true/false
-/// - MessageBox.Show → MessageBoxManager.GetMessageBoxStandard().ShowAsync()
+/// - MessageBox.Show → DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create().ShowAsync()
 /// </summary>
 public partial class ProjectionWindow : Window
 {
@@ -66,6 +67,15 @@ public partial class ProjectionWindow : Window
         byte[]? e2eKey = null)
     {
         InitializeComponent();
+        void LanguageChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs args)
+        {
+            FlowDirection = Loc.Instance.Language == "ar" ? Avalonia.Media.FlowDirection.RightToLeft : Avalonia.Media.FlowDirection.LeftToRight;
+            TopToolbar.FlowDirection = FlowDirection;
+            Dispatcher.UIThread.Post(() => Loc.Instance.ApplyDirection(this), DispatcherPriority.Loaded);
+        }
+        LanguageChanged(null, new System.ComponentModel.PropertyChangedEventArgs(null));
+        Loc.Instance.PropertyChanged += LanguageChanged;
+        Closed += (_, _) => Loc.Instance.PropertyChanged -= LanguageChanged;
 
         _logger = (App.ServiceProvider?.GetService(typeof(ILogger<ProjectionWindow>)) as ILogger<ProjectionWindow>)
                   ?? throw new InvalidOperationException("Logger not available");
@@ -79,8 +89,8 @@ public partial class ProjectionWindow : Window
         _resumeToken = resumeToken;
         _e2eKey = e2eKey;
 
-        ServerIdText.Text = $"Server ID: {serverId}";
-        ConnectedServerIdText.Text = serverId;
+        ServerIdText.Text = DeskShare.Core.ServerIdGenerator.FormatServerIdForDisplay(serverId);
+        ConnectedServerIdText.Text = DeskShare.Core.ServerIdGenerator.FormatServerIdForDisplay(serverId);
 
         _logger.LogInformation("ProjectionWindow initialized for server {ServerId}", serverId);
 
@@ -107,6 +117,15 @@ public partial class ProjectionWindow : Window
     public ProjectionWindow()
     {
         InitializeComponent();
+        void LanguageChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs args)
+        {
+            FlowDirection = Loc.Instance.Language == "ar" ? Avalonia.Media.FlowDirection.RightToLeft : Avalonia.Media.FlowDirection.LeftToRight;
+            TopToolbar.FlowDirection = FlowDirection;
+            Dispatcher.UIThread.Post(() => Loc.Instance.ApplyDirection(this), DispatcherPriority.Loaded);
+        }
+        LanguageChanged(null, new System.ComponentModel.PropertyChangedEventArgs(null));
+        Loc.Instance.PropertyChanged += LanguageChanged;
+        Closed += (_, _) => Loc.Instance.PropertyChanged -= LanguageChanged;
         _logger = null!;
         _clientManager = null!;
         _serverId = string.Empty;
@@ -116,7 +135,7 @@ public partial class ProjectionWindow : Window
     {
         try
         {
-            StatusText.Text = "Connecting to server...";
+            StatusText.Text = Loc.Instance.T("connect.pending");
             ConnectionStatusOverlay.IsVisible = true;
 
             _clientManager.FrameReceived += OnFrameReceived;
@@ -138,7 +157,7 @@ public partial class ProjectionWindow : Window
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to connect to server {ServerId}", _serverId);
-            StatusText.Text = $"Connection failed: {ex.Message}";
+            StatusText.Text = Loc.Instance.T("connect.failed");
 
             await Task.Delay(3000);
             Close();
@@ -186,7 +205,7 @@ public partial class ProjectionWindow : Window
         Dispatcher.UIThread.Invoke(() => SendFileButton.IsVisible = allowed);
     }
 
-    // "Request control": visible while the host's user can approve it and control is not granted yet. The text says where we are.
+    // Loc.Instance.T("control.request"): visible while the host's user can approve it and control is not granted yet. The text says where we are.
     private void OnControlRequestStateChanged(object? sender, ControlRequestState state)
     {
         Dispatcher.UIThread.Invoke(() =>
@@ -195,11 +214,11 @@ public partial class ProjectionWindow : Window
             RequestControlButton.IsEnabled = state is ControlRequestState.Requestable or ControlRequestState.Denied or ControlRequestState.TimedOut;
             RequestControlButton.Content = state switch
             {
-                ControlRequestState.Pending => "Waiting for the person at the computer...",
-                ControlRequestState.Denied => "Control was denied. Request again",
-                ControlRequestState.TimedOut => "Nobody answered. Request again",
-                ControlRequestState.UpdateRequired => "Update DeskShare to request control",
-                _ => "Request control",
+                ControlRequestState.Pending => Loc.Instance.T("control.wait"),
+                ControlRequestState.Denied => Loc.Instance.T("control.request"),
+                ControlRequestState.TimedOut => Loc.Instance.T("control.request"),
+                ControlRequestState.UpdateRequired => Loc.Instance.T("action.update"),
+                _ => Loc.Instance.T("control.request"),
             };
         });
     }
@@ -222,7 +241,7 @@ public partial class ProjectionWindow : Window
         {
             PrivacyButton.IsChecked = state.Enabled;
             if (!state.Enabled && state.Reason != null)
-                ToolTip.SetTip(PrivacyButton, $"Privacy screen is off: {state.Reason}");
+                ToolTip.SetTip(PrivacyButton, Loc.Instance.T("privacy.label") + ": " + Loc.Instance.T("action.disable"));
         });
     }
 
@@ -278,7 +297,7 @@ public partial class ProjectionWindow : Window
 
         var picked = await StorageProvider.OpenFilePickerAsync(new Avalonia.Platform.Storage.FilePickerOpenOptions
         {
-            Title = "Send file to host",
+            Title = Loc.Instance.T("action.sendfile"),
             AllowMultiple = false
         });
         var path = picked.Count == 1 ? picked[0].Path.LocalPath : null;
@@ -289,11 +308,11 @@ public partial class ProjectionWindow : Window
 
         var name = System.IO.Path.GetFileName(path);
         using var cts = _fileSendCts = new CancellationTokenSource();
-        var progress = new Progress<double>(p => SendFileButton.Content = $"Sending {name} {p:P0} (click to cancel)");
+        var progress = new Progress<double>(p => SendFileButton.Content = Loc.Instance.T("file.sending", new { name, progress = p.ToString("P0") }));
         try
         {
             var savedAs = await _clientManager.SendFileAsync(path, progress, cts.Token);
-            await ShowFileMessage($"Sent {name} (saved on the host as {savedAs}).", MsBoxIcon.Success);
+            await ShowFileMessage(Loc.Instance.T("file.sent", new { name }), MsBoxIcon.Success);
         }
         catch (OperationCanceledException)
         {
@@ -301,17 +320,18 @@ public partial class ProjectionWindow : Window
         }
         catch (Exception ex)
         {
-            await ShowFileMessage($"Could not send {name}: {ex.Message}", MsBoxIcon.Warning);
+            _logger.LogWarning(ex, "File transfer failed");
+            await ShowFileMessage(Loc.Instance.T("error.title"), MsBoxIcon.Warning);
         }
         finally
         {
             _fileSendCts = null;
-            SendFileButton.Content = "Send file...";
+            SendFileButton.Content = Loc.Instance.T("action.sendfile");
         }
     }
 
     private Task ShowFileMessage(string text, MsBoxIcon icon) =>
-        MessageBoxManager.GetMessageBoxStandard("Send file", text, ButtonEnum.Ok, icon).ShowWindowDialogAsync(this);
+        DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(Loc.Instance.T("action.sendfile"), text, ButtonEnum.Ok, icon).ShowWindowDialogAsync(this);
 
     private void ShareClipboard_Changed(object? sender, RoutedEventArgs e)
     {
@@ -324,7 +344,7 @@ public partial class ProjectionWindow : Window
         Dispatcher.UIThread.Invoke(() =>
         {
             ShareClipboardCheckBox.IsEnabled = allowed;
-            ToolTip.SetTip(ShareClipboardCheckBox, allowed ? null : "The host did not allow clipboard sharing");
+            ToolTip.SetTip(ShareClipboardCheckBox, allowed ? null : Loc.Instance.T("control.deny"));
         });
     }
 
@@ -332,7 +352,7 @@ public partial class ProjectionWindow : Window
     {
         Dispatcher.UIThread.Invoke(async () =>
         {
-            var msgBox = MessageBoxManager.GetMessageBoxStandard("Clipboard", reason, ButtonEnum.Ok, MsBoxIcon.Warning);
+            var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(Loc.Instance.T("advanced.clipboard"), Loc.Instance.T("control.denied"), ButtonEnum.Ok, MsBoxIcon.Warning);
             await msgBox.ShowWindowDialogAsync(this);
         });
     }
@@ -345,9 +365,9 @@ public partial class ProjectionWindow : Window
             await StopRecordingAsync(); // keeps what was recorded so far
             // A failed end-to-end check is a security warning, not an ordinary disconnect.
             var intercepted = reason == ClientManager.BindFailedMessage;
-            var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                intercepted ? "Security Warning" : "Connection Lost",
-                intercepted ? reason : $"Disconnected: {reason}",
+            var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(
+                Loc.Instance.T("error.title"),
+                Loc.Instance.T(intercepted ? "security.warning" : "connect.failed"),
                 ButtonEnum.Ok,
                 intercepted ? MsBoxIcon.Error : MsBoxIcon.Info);
             await msgBox.ShowWindowDialogAsync(this);
@@ -617,7 +637,7 @@ public partial class ProjectionWindow : Window
             WindowState = WindowState.Maximized;
             _isFullscreen = true;
 
-            FullscreenButton.Content = "Exit Fullscreen";
+            FullscreenButton.Content = Loc.Instance.T("viewer.fullscreen_hint");
             FullscreenHint.IsVisible = true;
 
             _ = Task.Delay(3000).ContinueWith(_ =>
@@ -632,7 +652,7 @@ public partial class ProjectionWindow : Window
             WindowState = _previousWindowState;
             _isFullscreen = false;
 
-            FullscreenButton.Content = "Fullscreen";
+            FullscreenButton.Content = Loc.Instance.T("action.fullscreen");
             FullscreenHint.IsVisible = false;
 
             _logger.LogInformation("Exited fullscreen mode");
@@ -641,9 +661,9 @@ public partial class ProjectionWindow : Window
 
     private async void Disconnect_Click(object? sender, RoutedEventArgs e)
     {
-        var msgBox = MessageBoxManager.GetMessageBoxStandard(
-            "Confirm Disconnect",
-            "Disconnect from remote server?",
+        var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(
+            Loc.Instance.T("connect.leave"),
+            Loc.Instance.T("connect.leave") + "?",
             ButtonEnum.YesNo,
             MsBoxIcon.Question);
         var result = await msgBox.ShowWindowDialogAsync(this);

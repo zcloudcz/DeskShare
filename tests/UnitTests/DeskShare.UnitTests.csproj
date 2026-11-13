@@ -23,6 +23,10 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="../../src/DeskShare.DesktopAvalonia/Assets/i18n/*.json" Link="i18n/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <!-- Recorded H.264/VP8 access units for the Media Foundation decoder tests (format: see MfFixtures) -->
   <ItemGroup>
     <None Include="TestData\**" CopyToOutputDirectory="PreserveNewest" />

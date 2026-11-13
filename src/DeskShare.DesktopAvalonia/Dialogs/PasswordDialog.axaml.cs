@@ -1,3 +1,4 @@
+using DeskShare.DesktopAvalonia.Localization;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -16,7 +17,7 @@ namespace DeskShare.DesktopAvalonia.Dialogs;
 /// - Window base class is Avalonia.Controls.Window (not System.Windows.Window)
 /// - DialogResult (bool?) replaced with Close(result) pattern
 /// - PasswordBox.Password → TextBox.Text (Avalonia has no PasswordBox)
-/// - MessageBox.Show() → MessageBoxManager.GetMessageBoxStandard().ShowAsync()
+/// - MessageBox.Show() → DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create().ShowAsync()
 /// - ShowDialog() returns Task<T> in Avalonia (async by default)
 /// </summary>
 public partial class PasswordDialog : Window
@@ -30,7 +31,8 @@ public partial class PasswordDialog : Window
     public PasswordDialog(string connectionName)
     {
         InitializeComponent();
-        ConnectionNameText.Text = $"Connecting to: {connectionName}";
+        FlowDirection = Localization.Loc.Instance.Language == "ar" ? Avalonia.Media.FlowDirection.RightToLeft : Avalonia.Media.FlowDirection.LeftToRight;
+        ConnectionNameText.Text = connectionName;
 
         // Focus the password field when the dialog opens
         Opened += (s, e) => PasswordBox.Focus();
@@ -42,6 +44,7 @@ public partial class PasswordDialog : Window
     public PasswordDialog()
     {
         InitializeComponent();
+        FlowDirection = Localization.Loc.Instance.Language == "ar" ? Avalonia.Media.FlowDirection.RightToLeft : Avalonia.Media.FlowDirection.LeftToRight;
     }
 
     private async void Connect_Click(object? sender, RoutedEventArgs e)
@@ -49,9 +52,9 @@ public partial class PasswordDialog : Window
         if (string.IsNullOrEmpty(PasswordBox.Text))
         {
             // Avalonia replacement for WPF's MessageBox.Show()
-            var msgBox = MessageBoxManager.GetMessageBoxStandard(
-                "Validation Error",
-                "Please enter a password",
+            var msgBox = DeskShare.DesktopAvalonia.Dialogs.LocalizedMessageBox.Create(
+                Loc.Instance.T("error.title"),
+                Loc.Instance.T("password.label"),
                 ButtonEnum.Ok,
                 MsBoxIcon.Warning);
             await msgBox.ShowWindowDialogAsync(this);

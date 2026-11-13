@@ -22,22 +22,28 @@ public sealed class SafetyPromptDialog : Window
 
     public bool DontShowAgain => _dontShowAgain?.IsChecked == true;
 
-    public SafetyPromptDialog(string title, string message, string safeButtonText, string affirmativeButtonText, string? dontShowAgainText = null)
+    public SafetyPromptDialog(string title, string message, string safeButtonText, string? affirmativeButtonText, string? dontShowAgainText = null)
     {
-        Title = title;
-        Width = 480;
+        Title = "DeskShare";
+        Width = 700;
+        Background = Brush.Parse("#F4F7FB");
+        FlowDirection = Localization.Loc.Instance.Language == "ar" ? FlowDirection.RightToLeft : FlowDirection.LeftToRight;
         SizeToContent = SizeToContent.Height;
         CanResize = false;
         Topmost = true;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
 
         var safe = new Button { Content = safeButtonText, MinWidth = 110, Margin = new Thickness(0, 0, 10, 0) };
-        var affirmative = new Button { Content = affirmativeButtonText, MinWidth = 110 };
+        var affirmative = new Button { IsVisible = affirmativeButtonText != null, Content = affirmativeButtonText, MinWidth = 150, MinHeight = 52, Background = Brush.Parse("#0B72D9"), Foreground = Brushes.White };
+        safe.MinHeight = 52;
+        Opened += (_, _) => safe.Focus();
+        KeyDown += (_, e) => { if (e.Key == Avalonia.Input.Key.Escape) Close(); };
         safe.Click += (_, _) => Close();
         affirmative.Click += (_, _) => { Allowed = true; Close(); };
 
         var panel = new StackPanel { Margin = new Thickness(24), Spacing = 16 };
-        panel.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, FontSize = 15 });
+        panel.Children.Add(new TextBlock { TextAlignment = Localization.Loc.Instance.TextAlignment, Text = title, FontSize = 28, FontWeight = FontWeight.Bold, TextWrapping = TextWrapping.Wrap });
+        panel.Children.Add(new TextBlock { TextAlignment = Localization.Loc.Instance.TextAlignment, Text = message, TextWrapping = TextWrapping.Wrap, FontSize = 15 });
         if (dontShowAgainText != null)
         {
             _dontShowAgain = new CheckBox { Content = dontShowAgainText };
@@ -53,11 +59,16 @@ public sealed class SafetyPromptDialog : Window
     }
 
     /// <summary>Shows the window and completes when it is closed. The answer is <see cref="Allowed"/>.</summary>
-    public Task<bool> ShowAndWaitAsync()
+    public Task<bool> ShowAndWaitAsync(Window? owner = null)
     {
         var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         Closed += (_, _) => done.TrySetResult(Allowed);
-        Show();
+        if (owner != null)
+        {
+            WindowStartupLocation = WindowStartupLocation.CenterOwner;
+            _ = ShowDialog(owner);
+        }
+        else Show();
         Activate();
         return done.Task;
     }

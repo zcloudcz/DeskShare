@@ -1,3 +1,4 @@
+using DeskShare.DesktopAvalonia.Localization;
 using System.Diagnostics;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
@@ -34,7 +35,7 @@ public partial class ProjectionWindow
         if (!_clientManager.SendRecordingState(true))
         {
             RecordButton.IsChecked = false;
-            ShowRecordingMessage("Could not tell the host about the recording, so it was not started.");
+            ShowRecordingMessage(Loc.Instance.T("record.failed"));
             return;
         }
 
@@ -55,13 +56,13 @@ public partial class ProjectionWindow
             _logger.LogError(ex, "Could not start the recording");
             _clientManager.SendRecordingState(false);
             RecordButton.IsChecked = false;
-            ShowRecordingMessage("Could not start the recording: " + ex.Message);
+            ShowRecordingMessage(Loc.Instance.T("record.failed"));
             return;
         }
 
         _recordingStartedUtc = DateTime.UtcNow;
         RecordingSavedBar.IsVisible = false;
-        RecordButton.Content = "Stop recording";
+        RecordButton.Content = Loc.Instance.T("record.stop");
         RecIndicator.IsVisible = true;
         UpdateRecIndicator();
         _recTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
@@ -85,7 +86,7 @@ public partial class ProjectionWindow
         _recTimer = null;
         RecIndicator.IsVisible = false;
         RecordButton.IsChecked = false;
-        RecordButton.Content = "Record";
+        RecordButton.Content = Loc.Instance.T("action.record");
         _clientManager.SendRecordingState(false); // a no-op when the connection is already gone: the host clears the flag itself
 
         // Stop() waits for the encoder thread to write the rest of the queue and the file trailer: not on the UI thread.
@@ -95,14 +96,14 @@ public partial class ProjectionWindow
         if (error != null)
         {
             // Closing the file failed (disk full, ...): never say "Saved" for a file that may be broken.
-            ShowRecordingMessage("Recording could not be saved: " + error.Message);
+            ShowRecordingMessage(Loc.Instance.T("record.failed"));
             return;
         }
         if (files.Count == 0) return;
 
         _lastRecordingFolder = Path.GetDirectoryName(files[0]);
         ShowRecordingMessage(
-            files.Count == 1 ? $"Saved to {files[0]}" : $"Saved {files.Count} files to {_lastRecordingFolder} (the screen size changed during the recording)");
+            Loc.Instance.T("record.saved", new { path = files.Count == 1 ? files[0] : _lastRecordingFolder }));
     }
 
     /// <summary>
