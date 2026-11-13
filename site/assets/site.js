@@ -51,5 +51,5 @@
   const os = /Mac/i.test(platform) ? 'mac' : /Linux/i.test(platform) ? 'linux' : 'windows';
   const assets = {mac: 'DeskShare-osx-Setup.pkg', linux: 'DeskShare.AppImage', windows: 'DeskShare-win-Setup.exe'};
   download.href = 'https://github.com/zcloudcz/DeskShare/releases/latest/download/' + assets[os];
-  document.getElementById('hero-os').textContent = {mac: 'macOS', linux: 'Linux', windows: 'Windows'}[os];
+  document.getElementById('hero-os').textContent = '(' + {mac: 'macOS', linux: 'Linux', windows: 'Windows'}[os] + ')';
 })();
