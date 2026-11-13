@@ -6,7 +6,7 @@
   "step1": "DeskShare uygulamasını bilgisayarınıza indirip açın.",
   "step2": "“Yardıma ihtiyacım var” seçeneğini seçin. Numaranızı ve kodunuzu güvendiğiniz kişiye söyleyin.",
   "step3": "Yardımcı kişi bunları tarayıcıya veya uygulamaya girer ve ekranınızı görür.",
-  "permission": "Kontrol varsayılan olarak kapalıdır. Paylaşmadan önce gelişmiş seçeneklerden istekleri açın ve her isteği onaylayın. Paylaşımı istediğiniz zaman durdurabilirsiniz.",
+  "permission": "Yardım eden kişi fare ve klavye kontrolü isteyebilir. Her bağlantıda siz karar verirsiniz; yanıt verilmezse istek 30 saniye sonra reddedilir. Paylaşımı istediğiniz zaman durdurabilirsiniz.",
   "validity": "Kod her 60 saniyede bir değişir. Değişirse yeni kodu okuyun.",
   "downloads": "Tüm indirmeler",
   "company": "Şirketler için MSI",

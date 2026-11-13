@@ -6,7 +6,7 @@
   "step1": "Pobierz i otwórz DeskShare na komputerze.",
   "step2": "Wybierz „Potrzebuję pomocy”. Podaj swój numer i kod zaufanej osobie.",
   "step3": "Osoba pomagająca wpisuje je w przeglądarce lub aplikacji i widzi Twój ekran.",
-  "permission": "Sterowanie jest domyślnie wyłączone. Przed udostępnieniem włącz prośby w opcjach zaawansowanych i zatwierdzaj każdą prośbę. Możesz zakończyć udostępnianie w każdej chwili.",
+  "permission": "Osoba pomagająca może poprosić o sterowanie myszą i klawiaturą. Decydujesz przy każdym połączeniu; bez odpowiedzi prośba zostanie odrzucona po 30 sekundach. Udostępnianie możesz zatrzymać w każdej chwili.",
   "validity": "Kod zmienia się co 60 sekund. Gdy się zmieni, przeczytaj nowy.",
   "downloads": "Wszystkie pliki do pobrania",
   "company": "MSI dla firm",

@@ -6,7 +6,7 @@
   "step1": "Stáhněte si DeskShare a otevřete ho na počítači.",
   "step2": "Zvolte „Potřebuji pomoc“. Sdělte své číslo a kód člověku, kterému důvěřujete.",
   "step3": "Pomáhající je zadá v prohlížeči nebo aplikaci a uvidí vaši obrazovku.",
-  "permission": "Ovládání je ve výchozím stavu vypnuté. Před sdílením povolte žádosti v Rozšířených a pak každou žádost schvalte. Sdílení můžete kdykoli zastavit.",
+  "permission": "Pomáhající může požádat o ovládání myši a klávesnice. Vy rozhodnete u každého připojení, bez odpovědi se žádost po 30 sekundách zamítne. Sdílení můžete kdykoli zastavit.",
   "validity": "Kód se mění každých 60 sekund. Když se změní, přečtěte nový.",
   "downloads": "Všechny verze ke stažení",
   "company": "MSI pro firmy",

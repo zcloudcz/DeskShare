@@ -6,7 +6,7 @@
   "step1": "Unduh dan buka DeskShare di komputer Anda.",
   "step2": "Pilih “Saya perlu bantuan”. Beri tahu nomor dan kode Anda kepada orang yang Anda percaya.",
   "step3": "Orang tersebut memasukkannya di browser atau aplikasi dan melihat layar Anda.",
-  "permission": "Kontrol dinonaktifkan secara bawaan. Aktifkan permintaan di opsi lanjutan sebelum berbagi, lalu setujui setiap permintaan. Anda dapat berhenti berbagi kapan saja.",
+  "permission": "Penolong dapat meminta untuk mengendalikan mouse dan keyboard. Anda yang memutuskan di setiap koneksi; tanpa jawaban, permintaan ditolak setelah 30 detik. Anda dapat menghentikan berbagi kapan saja.",
   "validity": "Kode berubah setiap 60 detik. Jika berubah, bacakan kode yang baru.",
   "downloads": "Semua unduhan",
   "company": "MSI untuk perusahaan",

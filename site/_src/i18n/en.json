@@ -6,7 +6,7 @@
   "step1": "Download and open DeskShare on your computer.",
   "step2": "Choose “I need help”. Tell someone you trust your number and code.",
   "step3": "Your helper enters them in the browser or app and sees your screen.",
-  "permission": "Control is off by default. Enable requests under Advanced before sharing, then approve each request. You can stop sharing at any time.",
+  "permission": "The helper can ask to control your mouse and keyboard. You decide for every connection; without an answer the request is denied after 30 seconds. You can stop sharing at any time.",
   "validity": "The code changes every 60 seconds. If it changes, read the new code.",
   "downloads": "All downloads",
   "company": "MSI for companies",

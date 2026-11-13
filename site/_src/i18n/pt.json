@@ -6,7 +6,7 @@
   "step1": "Transfira e abra o DeskShare no computador.",
   "step2": "Escolha «Preciso de ajuda». Diga o seu número e código a alguém em quem confia.",
   "step3": "A outra pessoa introduz os dados no navegador ou na aplicação e vê o seu ecrã.",
-  "permission": "O controlo está desativado por predefinição. Ative os pedidos nas opções avançadas antes de partilhar e aprove cada pedido. Pode parar a partilha a qualquer momento.",
+  "permission": "Quem ajuda pode pedir para controlar o mouse e o teclado. Você decide em cada conexão; sem resposta, o pedido é recusado após 30 segundos. Você pode parar de compartilhar a qualquer momento.",
   "validity": "O código muda a cada 60 segundos. Se mudar, leia o novo.",
   "downloads": "Todas as transferências",
   "company": "MSI para empresas",

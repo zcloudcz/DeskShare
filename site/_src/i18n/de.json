@@ -6,7 +6,7 @@
   "step1": "Laden Sie DeskShare herunter und öffnen Sie es auf Ihrem Computer.",
   "step2": "Wählen Sie „Ich brauche Hilfe“. Nennen Sie einer vertrauten Person Ihre Nummer und Ihren Code.",
   "step3": "Die helfende Person gibt beides im Browser oder in der App ein und sieht Ihren Bildschirm.",
-  "permission": "Die Steuerung ist zunächst ausgeschaltet. Aktivieren Sie Anfragen vor der Freigabe unter Erweitert und bestätigen Sie jede Anfrage. Sie können die Freigabe jederzeit beenden.",
+  "permission": "Die helfende Person kann um die Steuerung von Maus und Tastatur bitten. Sie entscheiden bei jeder Verbindung; ohne Antwort wird die Anfrage nach 30 Sekunden abgelehnt. Sie können die Freigabe jederzeit beenden.",
   "validity": "Der Code ändert sich alle 60 Sekunden. Lesen Sie dann den neuen Code vor.",
   "downloads": "Alle Downloads",
   "company": "MSI für Unternehmen",

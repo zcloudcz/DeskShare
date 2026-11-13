@@ -6,7 +6,7 @@
   "step1": "Scarica e apri DeskShare sul computer.",
   "step2": "Scegli «Ho bisogno di aiuto». Comunica il tuo numero e il codice a una persona di fiducia.",
   "step3": "La persona li inserisce nel browser o nell’app e vede il tuo schermo.",
-  "permission": "Il controllo è disattivato per impostazione predefinita. Abilita le richieste nelle opzioni avanzate prima di condividere e approva ogni richiesta. Puoi interrompere la condivisione in qualsiasi momento.",
+  "permission": "Chi ti aiuta può chiedere di controllare mouse e tastiera. Decidi tu a ogni connessione; senza risposta la richiesta viene rifiutata dopo 30 secondi. Puoi interrompere la condivisione in qualsiasi momento.",
   "validity": "Il codice cambia ogni 60 secondi. Quando cambia, leggi quello nuovo.",
   "downloads": "Tutti i download",
   "company": "MSI per le aziende",
