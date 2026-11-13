@@ -1,42 +1,55 @@
-// Fills in the latest release version and date from GitHub so the page never shows a stale number.
-(async () => {
-  const el = document.getElementById('release-meta');
-  if (!el) return;
-  try {
-    const res = await fetch('https://api.github.com/repos/zcloudcz/DeskShare/releases/latest', { headers: { Accept: 'application/vnd.github+json' } });
-    if (!res.ok) return;
-    const rel = await res.json();
-    const date = new Date(rel.published_at).toLocaleDateString(document.documentElement.lang, { year: 'numeric', month: 'long', day: 'numeric' });
-    el.textContent = `${el.dataset.label} ${rel.tag_name} · ${date}`;
-  } catch {
-    // Offline or rate-limited: keep the static text.
-  }
-})();
-
-// Points the hero download at the visitor's OS. The static HTML stays Windows, so crawlers and
-// visitors without JS get the main build. Browsers do not reliably tell Apple Silicon from Intel
-// (Safari reports "Intel" on every Mac), so Macs get the Apple Silicon build plus an Intel link.
+// Explicit paths stay in their language. Only the Czech root auto-detects.
 (() => {
-  const dl = document.getElementById('hero-dl');
-  if (!dl) return;
+  const supported = ['cs', 'sk', 'en', 'de', 'pl', 'uk', 'fr', 'es', 'it', 'pt', 'ru', 'tr', 'ar', 'zh', 'ja', 'ko', 'id'];
+  const normalize = value => {
+    const code = String(value || '').toLowerCase().split('-')[0];
+    return supported.includes(code) ? code : null;
+  };
+  const automatic = () => (navigator.languages || [navigator.language]).map(normalize).find(Boolean) || 'en';
+  const path = code => code === 'cs' ? '/' : `/${code}/`;
+  const readSaved = () => { try { return normalize(localStorage.getItem('deskshare.lang')); } catch { return null; } };
+  const save = code => { try { code ? localStorage.setItem('deskshare.lang', code) : localStorage.removeItem('deskshare.lang'); } catch { /* Navigation works without storage. */ } };
+  const url = new URL(location.href);
+  const query = normalize(url.searchParams.get('lang'));
+  const isLanding = location.pathname === '/' || /^\/(sk|en|de|pl|uk|fr|es|it|pt|ru|tr|ar|zh|ja|ko|id)\/$/.test(location.pathname);
+  if (isLanding && query) {
+    save(query);
+    url.searchParams.delete('lang');
+    url.pathname = path(query);
+    if (url.href !== location.href) location.replace(url.href);
+  } else if (location.pathname === '/') {
+    const chosen = readSaved() || automatic();
+    if (chosen !== 'cs') {
+      url.pathname = path(chosen);
+      location.replace(url.href);
+    }
+  }
+  document.querySelectorAll('[data-lang]').forEach(link => {
+    link.addEventListener('click', event => {
+      event.preventDefault();
+      const code = link.dataset.lang;
+      save(code === 'auto' ? null : code);
+      // Drop stale ?lang while retaining unrelated parameters and anchors.
+      const target = new URL(location.href);
+      target.searchParams.delete('lang');
+      target.pathname = path(code === 'auto' ? automatic() : code);
+      location.assign(target.href);
+    });
+  });
+
+  const download = document.getElementById('hero-dl');
+  if (!download) return;
   const ua = navigator.userAgent;
   const platform = navigator.userAgentData?.platform || navigator.platform || '';
-  // iPadOS Safari pretends to be a Mac; touch points give it away.
   const mobile = /Android|iPhone|iPad|iPod|CrOS/i.test(ua) || (/Mac/i.test(platform) && navigator.maxTouchPoints > 1);
-  const os = mobile ? 'mobile' : /Mac/i.test(platform) ? 'mac' : /Linux/i.test(platform) ? 'linux' : null;
-  if (!os) return;
-
-  if (os === 'mobile') {
-    // Desktop installers are useless on a phone: lead with the web viewer instead.
-    dl.remove();
-    document.getElementById('hero-web').className = 'btn primary';
+  if (mobile) {
+    // A browser viewer cannot share this device's desktop. Keep the two roles distinct.
+    download.href = '#download';
+    download.textContent = document.querySelector('.sub-link').textContent;
     return;
   }
-  const base = 'https://github.com/zcloudcz/DeskShare/releases/latest/download/';
-  dl.href = base + (os === 'mac' ? 'DeskShare-osx-Setup.pkg' : 'DeskShare.AppImage');
-  for (const id of ['hero-dl-label', 'hero-title']) {
-    const el = document.getElementById(id);
-    el.textContent = el.dataset[os];
-  }
-  if (os === 'mac') document.getElementById('hero-intel').hidden = false;
+  const os = /Mac/i.test(platform) ? 'mac' : /Linux/i.test(platform) ? 'linux' : 'windows';
+  const assets = {mac: 'DeskShare-osx-Setup.pkg', linux: 'DeskShare.AppImage', windows: 'DeskShare-win-Setup.exe'};
+  download.href = 'https://github.com/zcloudcz/DeskShare/releases/latest/download/' + assets[os];
+  document.getElementById('hero-os').textContent = {mac: 'macOS', linux: 'Linux', windows: 'Windows'}[os];
 })();
