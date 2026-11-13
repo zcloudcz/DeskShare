@@ -8,7 +8,6 @@ function updateSecretMode() {
     field.type = passwordMode.checked ? 'password' : 'text';
     field.autocapitalize = passwordMode.checked ? 'none' : 'characters';
     field.placeholder = passwordMode.checked ? '' : 'ABC-234-XYZ';
-    document.querySelector('[data-copy="passkey"]').hidden = passwordMode.checked;
     document.getElementById('codeHint').textContent = t(passwordMode.checked ? 'web.password_hint' : 'web.code_hint');
 }
 passwordMode.addEventListener('change', updateSecretMode);
@@ -23,17 +22,6 @@ document.getElementById('serverId').addEventListener('blur', event => {
     const digits = event.target.value.replace(/[\s-]/g, '');
     if (/^\d{9}$/.test(digits)) event.target.value = digits.match(/.{3}/g).join(' ');
 });
-document.querySelectorAll('[data-copy]').forEach(button => button.addEventListener('click', async () => {
-    const field = document.getElementById(button.dataset.copy);
-    try {
-        await navigator.clipboard.writeText(field.value);
-        button.textContent = t('action.copied');
-        setTimeout(() => { button.textContent = t('action.copy'); }, 1800);
-    } catch {
-        field.focus(); field.select();
-        updateStatus(t('web.manualcopy'));
-    }
-}));
 function syncSessionUi() {
     const connected = !disconnectBtn.disabled || !fullscreenBtn.disabled;
     document.body.classList.toggle('connected', connected);
