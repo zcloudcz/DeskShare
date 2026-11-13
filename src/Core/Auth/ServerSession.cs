@@ -65,7 +65,7 @@ public sealed class ServerSession
 
     /// <summary>
     /// Current time-based passkey for authentication.
-    /// 9-character alphanumeric code, valid for 45 seconds.
+    /// 9-character alphanumeric code, valid for 60 seconds.
     /// Example: "A3F7K9M2P"
     /// </summary>
     public required string Passkey { get; set; }

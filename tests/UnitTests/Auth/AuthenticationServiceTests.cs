@@ -43,8 +43,8 @@ public class AuthenticationServiceTests
 
         var expiration = AuthenticationService.GetPasskeyExpiration(timestamp);
 
-        // Valid for the full 45 s, not just until 10:30:45.
-        Assert.Equal(new DateTime(2025, 1, 15, 10, 31, 29, DateTimeKind.Utc), expiration);
+        // Valid for the full 60 s, not just until 10:30:45.
+        Assert.Equal(new DateTime(2025, 1, 15, 10, 31, 44, DateTimeKind.Utc), expiration);
     }
 
     [Fact]

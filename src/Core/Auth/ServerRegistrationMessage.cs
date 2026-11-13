@@ -223,7 +223,7 @@ public sealed class ClientAuthenticationResponse
     public string? WebSocketToken { get; set; }
 
     /// <summary>
-    /// Single-use token the client can POST to /resume to reconnect without the passkey (which rotates every 45 s).
+    /// Single-use token the client can POST to /resume to reconnect without the passkey (which rotates every 60 s).
     /// Every /resume response carries the next one.
     /// </summary>
     public string? ResumeToken { get; set; }
