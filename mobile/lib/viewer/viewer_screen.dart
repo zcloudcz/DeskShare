@@ -70,7 +70,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
           decoration: const InputDecoration(
             labelText: 'Passkey or permanent password',
             hintText: 'XXX-XXX-XXX',
-            helperText: 'The passkey changes every 45 seconds',
+            helperText: 'The code changes every 60 seconds',
             border: OutlineInputBorder(),
           ),
           onSubmitted: (_) => _connect(),
