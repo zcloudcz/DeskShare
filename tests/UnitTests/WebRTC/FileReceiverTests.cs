@@ -479,13 +479,15 @@ public sealed class FileReceiverTests : IDisposable
     [Fact]
     public async Task ActiveTransfer_DoesNotTimeOut_WhileChunksKeepArriving()
     {
-        using var r = Create(idle: TimeSpan.FromMilliseconds(400));
+        // The whole transfer (4 x 400 ms) outlasts the idle limit, every gap stays well below it. Wide margins because
+        // CI runners (Windows in particular) can stall a Task.Delay by a few hundred milliseconds.
+        using var r = Create(idle: TimeSpan.FromMilliseconds(1000));
         var id = NewId();
         Offer(r, id, "x.bin", 4);
 
         for (var i = 0; i < 4; i++)
         {
-            await Task.Delay(150);
+            await Task.Delay(400);
             Send(r, Chunk(id, i, [1]));
         }
 
