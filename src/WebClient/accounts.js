@@ -70,7 +70,7 @@
     }
 
     async function loadDevices() {
-        setStatus('Loading...');
+        setStatus(t('web.loading'));
         const list = $('myDevicesList');
         try {
             const data = await (await api('GET', '/me/devices')).json();
@@ -80,12 +80,15 @@
                 const li = document.createElement('li');
                 const pick = document.createElement('button');
                 pick.className = 'device-pick';
-                pick.title = 'Fill in this Server ID';
+                pick.title = t('web.pick');
                 const name = document.createElement('strong');
                 name.textContent = d.name;
                 const detail = document.createElement('span');
-                detail.textContent = ` ${formatServerId(d.serverId)}${d.unattended ? ' (unattended)' : ''} - ` +
-                    (d.online ? 'online' : 'last seen ' + new Date(d.lastSeen).toLocaleString());
+                const number = document.createElement('bdi');
+                number.dir = 'ltr';
+                number.textContent = formatServerId(d.serverId);
+                detail.textContent = d.online ? t('web.online') : t('web.lastseen', { time: new Date(d.lastSeen).toLocaleString(DeskShareI18n.language) });
+                detail.prepend(number);
                 detail.className = d.online ? 'device-online' : 'device-offline';
                 pick.append(name, detail);
                 pick.onclick = () => {
@@ -94,19 +97,19 @@
                     $('passkey').focus();
                 };
                 const remove = document.createElement('button');
-                remove.textContent = 'Remove';
+                remove.textContent = t('web.remove');
                 remove.onclick = async () => {
                     try { await api('DELETE', '/me/devices/' + encodeURIComponent(d.serverId)); await loadDevices(); }
-                    catch (e) { setStatus('Not removed: ' + e.message); }
+                    catch (e) { setStatus(t('web.accountfailed')); }
                 };
                 li.append(pick, remove);
                 list.appendChild(li);
             }
             setStatus(data.devices.length === 0
-                ? 'No devices yet. Add a computer from the DeskShare desktop app (Server Mode, "Add this computer to my devices").'
-                : 'Click a device to fill in its Server ID. The passkey or password is still needed.');
+                ? t('web.nodevices')
+                : t('web.deviceshint'));
         } catch (e) {
-            setStatus('Could not load your devices: ' + e.message);
+            setStatus(t('web.accountfailed'));
         }
     }
 
@@ -114,7 +117,7 @@
         const account = currentAccount();
         $('accountBar').hidden = false;
         $('accountName').textContent = account ? (account.username || account.name || '') : '';
-        $('signInBtn').textContent = account ? 'Sign out' : 'Sign in';
+        $('signInBtn').textContent = t(account ? 'web.signout' : 'web.signin');
         $('myDevicesPanel').hidden = !account;
         if (account) loadDevices();
     }
@@ -162,10 +165,11 @@
         } catch (e) {
             console.warn('[Accounts] Sign-in failed:', e);
         }
-        $('signInBtn').onclick = () => onSignInClick().catch((e) => setStatus('Sign-in failed: ' + e.message));
+        $('signInBtn').onclick = () => onSignInClick().catch((e) => setStatus(t('web.accountfailed')));
         $('refreshDevicesBtn').onclick = loadDevices;
         updateUi();
     }
 
+    window.addEventListener('deskshare-language', () => { if (msalApp) updateUi(); });
     init().catch((e) => console.warn('[Accounts] Not available:', e));
 })();

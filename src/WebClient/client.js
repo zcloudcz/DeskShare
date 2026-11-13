@@ -1,3 +1,14 @@
+// Presentation-only translation helper; protocol tests can load this file without the UI bundle.
+const uiMessages = new Map();
+function uiText(key, params) {
+    const text = typeof t === 'function' ? t(key, params) : key;
+    uiMessages.set(text, { key, params });
+    return text;
+}
+let currentStatusMessage = null;
+let currentConnectionState = 'Disconnected';
+let currentRtcState = 'new';
+
 // WebSocket and WebRTC connection management
 let ws = null;
 let pc = null;
@@ -50,6 +61,7 @@ const displaySelect = document.getElementById('displaySelect');
 const fileInput = document.getElementById('fileInput');
 
 function updateStatus(message, type = 'info') {
+    currentStatusMessage = uiMessages.get(message) || null;
     statusDiv.style.display = 'block';
     statusDiv.className = `status ${type}`;
     statusText.textContent = message;
@@ -62,11 +74,13 @@ function updateStatus(message, type = 'info') {
 }
 
 function updateConnectionState(state) {
-    document.getElementById('connectionState').textContent = state;
+    currentConnectionState = state;
+    document.getElementById('connectionState').textContent = uiText(state === 'Connected' ? 'web.online' : state === 'Connecting' ? 'connect.pending' : state === 'Signaling offline' ? 'web.offline' : 'web.disconnected');
 }
 
 function updateWebRtcState(state) {
-    document.getElementById('webrtcState').textContent = state;
+    currentRtcState = state;
+    document.getElementById('webrtcState').textContent = uiText('rtc.' + state.toLowerCase());
 }
 
 function getBaseUrl() {
@@ -92,9 +106,8 @@ async function signAuthRequest(serverId, passkey, timestamp, nonce) {
 // The signaling server relays the SDP (and so the DTLS fingerprints) and sees what we send it, so the passkey itself
 // never goes there: we send authKey, derived from it. e2eKey, derived from the same passkey, stays in this page and
 // is used to prove over the data channel that both sides see the same fingerprints (no man in the middle).
-const PLACEHOLDER_IDLE = placeholder.textContent;
 const BIND_TIMEOUT_MS = 10000;
-const BIND_FAILED_MESSAGE = 'Secure connection check failed. The connection may be intercepted. Do not continue.';
+const BIND_FAILED_MESSAGE = 'web.bind_failed';
 let e2eKey = null; // { serverId, bytes }; memory only. A page reload needs the passkey again.
 // All per-connection state (verified, clipboard/file permission, transfer, held-back video) lives in the PeerSession of
 // the current peer connection (bind-gate.js). Its messages go out only through sessions.send().
@@ -195,14 +208,14 @@ function showVideo(session) {
     remoteVideo.style.display = 'block';
     fullscreenBtn.disabled = false;
     recordBtn.hidden = false; // only a verified session shows video, so recording is offered only then
-    updateStatus('Receiving video stream', 'success');
+    updateStatus(uiText('web.connected'), 'success');
 }
 
 function failBinding() {
     console.warn('End-to-end check failed'); // no keys or fingerprints in the console
     bindFailed = true;
     disconnect();
-    updateStatus(BIND_FAILED_MESSAGE, 'error');
+    updateStatus(uiText(BIND_FAILED_MESSAGE), 'error');
 }
 
 function startBindTimer(session) {
@@ -236,12 +249,12 @@ async function authenticate() {
     const passkey = document.getElementById('passkey')?.value || '';
 
     if (!serverId) {
-        updateStatus('Server ID is required', 'error');
+        updateStatus(uiText('web.required'), 'error');
         return null;
     }
 
     if (!crypto.subtle) {
-        updateStatus('A secure context (https) is required to connect.', 'error');
+        updateStatus(uiText('web.secure'), 'error');
         return null;
     }
 
@@ -256,10 +269,10 @@ async function authenticate() {
         if (looksLikePasskey(passkey)) {
             keys = await deriveKeys(passkey, serverId);
         } else if (passkey.length >= PERMANENT_PASSWORD_MIN_LENGTH) {
-            updateStatus('Checking password...', 'info');
+            updateStatus(uiText('connect.pending'), 'info');
             keys = await derivePermanentKeys(passkey, serverId);
         } else {
-            updateStatus(`Enter the 9-character passkey or the permanent password (at least ${PERMANENT_PASSWORD_MIN_LENGTH} characters).`, 'error');
+            updateStatus(uiText('web.invalid'), 'error');
             return null;
         }
         authKey = keys.authKey;
@@ -279,7 +292,7 @@ async function authenticate() {
         Signature: await signAuthRequest(serverId, authKey, timestamp, nonce)
     };
 
-    updateStatus('Authenticating...', 'info');
+    updateStatus(uiText('connect.pending'), 'info');
 
     const response = await fetch(`${baseUrl}/authenticate`, {
         method: 'POST',
@@ -288,9 +301,10 @@ async function authenticate() {
     });
 
     if (!response.ok) {
-        const errorText = response.status === 401 ? 'Invalid passkey, password or server ID'
-            : response.status === 429 ? 'Too many attempts. Wait a few minutes and try again.'
-            : `Authentication failed (${response.status})`;
+        const errorText = response.status === 401 ? uiText(passkey && !looksLikePasskey(passkey) ? 'web.password_failed' : 'connect.expired')
+            : response.status === 404 ? uiText('web.notfound')
+            : response.status === 429 ? uiText('web.retry')
+            : uiText('connect.failed');
         updateStatus(errorText, 'error');
         return null;
     }
@@ -337,7 +351,7 @@ async function connect(tryResume = false) {
     try {
         let authResult = null;
         if (tryResume && resumeToken) {
-            updateStatus('Resuming session...', 'info');
+            updateStatus(uiText('connect.pending'), 'info');
             authResult = await resume();
         }
         if (!authResult) authResult = await authenticate();
@@ -352,13 +366,13 @@ async function connect(tryResume = false) {
         const wsUrl = new URL(signalingUrl);
         wsUrl.searchParams.set('token', authResult.webSocketToken);
 
-        updateStatus('Connecting to signaling server...', 'info');
+        updateStatus(uiText('connect.pending'), 'info');
         updateConnectionState('Connecting');
 
         ws = new WebSocket(wsUrl.toString());
 
         ws.onopen = () => {
-            updateStatus('Connected to signaling server', 'success');
+            updateStatus(uiText('connect.pending'), 'success');
             updateConnectionState('Connected');
             connectBtn.disabled = true;
             disconnectBtn.disabled = false;
@@ -389,7 +403,7 @@ async function connect(tryResume = false) {
                 case 3: // Identify
                     clientId = message.TargetId;
                     document.getElementById('clientId').textContent = clientId.substring(0, 8) + '...';
-                    updateStatus('Connected, requesting connection to server...', 'info');
+                    updateStatus(uiText('connect.pending'), 'info');
 
                     // After getting our ID, request connection to the server
                     const serverId = normalizeServerId(document.getElementById('serverId').value);
@@ -401,7 +415,7 @@ async function connect(tryResume = false) {
                     break;
 
                 case 4: // Error
-                    updateStatus(`Error: ${message.ErrorMessage}`, 'error');
+                    updateStatus(uiText(/not found|not connected|not available/i.test(message.ErrorMessage || '') ? 'web.notfound' : 'connect.failed'), 'error');
 
                     // If the error is about server disconnecting, clean up
                     if (message.ErrorMessage && message.ErrorMessage.includes('disconnected')) {
@@ -442,7 +456,7 @@ async function connect(tryResume = false) {
 
         ws.onerror = (error) => {
             console.error('WebSocket error:', error);
-            updateStatus('WebSocket error occurred', 'error');
+            updateStatus(uiText('connect.failed'), 'error');
         };
 
         ws.onclose = (event) => {
@@ -454,7 +468,7 @@ async function connect(tryResume = false) {
             // signaling outage (e.g. a server deployment) must not end the session; reconnect only when needed.
             if (!userDisconnected && isMediaConnected()) {
                 updateConnectionState('Signaling offline');
-                updateStatus('Signaling server offline - video and control continue', 'info');
+                updateStatus(uiText('web.offline'), 'info');
                 return;
             }
 
@@ -468,16 +482,16 @@ async function connect(tryResume = false) {
             if (!userDisconnected && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
                 attemptReconnection();
             } else if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-                updateStatus('Max reconnection attempts reached. Please reconnect manually.', 'error');
+                updateStatus(uiText('connect.failed'), 'error');
             } else {
-                if (!bindFailed) updateStatus('Disconnected from signaling server', 'info');
+                if (!bindFailed) updateStatus(uiText('web.disconnected'), 'info');
             }
         };
 
         return true;
     } catch (error) {
         console.error('Connection error:', error);
-        updateStatus(`Connection failed: ${error.message}`, 'error');
+        updateStatus(uiText('connect.failed'), 'error');
         updateConnectionState('Error');
         return false;
     }
@@ -485,7 +499,7 @@ async function connect(tryResume = false) {
 
 async function handleOffer(message) {
     try {
-        updateStatus('Received offer, creating peer connection...', 'info');
+        updateStatus(uiText('connect.pending'), 'info');
 
         // A new offer replaces the connection: detach and close the old one first, so none of its late events or
         // callbacks can act on the new one.
@@ -514,7 +528,7 @@ async function handleOffer(message) {
         hostDisplays = []; // the previous connection's display list does not carry over
         setClipboardAllowed(false);
         setFilesAllowed(false);
-        placeholder.textContent = 'Verifying secure connection...';
+        placeholder.textContent = uiText('connect.pending');
 
         // The sender always opens the "input" data channel: the end-to-end check runs over it.
         pc.ondatachannel = (event) => setupDataChannel(session, event.channel);
@@ -565,12 +579,12 @@ async function handleOffer(message) {
             }
 
             if (pc.connectionState === 'connected') {
-                updateStatus('WebRTC connection established', 'success');
+                updateStatus(uiText('connect.pending'), 'success');
                 startBindTimer(session);
                 startStatsMonitoring(); // Start collecting statistics
             } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
                 stopRecordingOf(session); // cleanup() may not run while signaling is still connected; the file is still offered
-                updateStatus('WebRTC connection failed', 'error');
+                updateStatus(uiText('connect.failed'), 'error');
                 stopStatsMonitoring(); // Stop collecting statistics
                 // Media lost while the signaling socket was already gone: start the normal reconnect path.
                 if (pc.connectionState === 'failed' && !ws && !userDisconnected) {
@@ -594,7 +608,7 @@ async function handleOffer(message) {
         await pc.setLocalDescription(answer);
 
         // Send answer to sender
-        updateStatus('Sending answer...', 'info');
+        updateStatus(uiText('connect.pending'), 'info');
         sendMessage({
             Type: 1, // Answer (0=Offer, 1=Answer, 2=IceCandidate, 3=Identify, 4=Error, 5=ConnectionRequest)
             TargetId: senderId,
@@ -612,7 +626,7 @@ async function handleOffer(message) {
 
     } catch (error) {
         console.error('Error handling offer:', error);
-        updateStatus(`Failed to handle offer: ${error.message}`, 'error');
+        updateStatus(uiText('connect.failed'), 'error');
     }
 }
 
@@ -654,7 +668,7 @@ function sendMessage(message) {
 }
 
 function sendConnectionRequest(serverId) {
-    updateStatus(`Requesting connection to ${formatServerId(serverId)}...`, 'info');
+    updateStatus(uiText('connect.pending'), 'info');
     // Send a connection request message to the server
     sendMessage({
         Type: 5, // ConnectionRequest (we'll need to add this type)
@@ -669,7 +683,7 @@ function isMediaConnected() {
 
 function disconnect() {
     userDisconnected = true; // explicit disconnect: do not auto-reconnect
-    updateStatus('Disconnecting...', 'info');
+    updateStatus(uiText('web.disconnected'), 'info');
 
     // Cancel any pending reconnection attempts
     if (reconnectTimeout) {
@@ -707,7 +721,7 @@ function attemptReconnection() {
         MAX_RECONNECT_DELAY_MS
     );
 
-    updateStatus(`Connection lost. Reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`, 'info');
+    updateStatus(uiText('web.reconnecting'), 'info');
 
     reconnectTimeout = setTimeout(async () => {
         try {
@@ -719,13 +733,13 @@ function attemptReconnection() {
                 if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
                     attemptReconnection();
                 } else {
-                    updateStatus('Max reconnection attempts reached. Please reconnect manually.', 'error');
+                    updateStatus(uiText('connect.failed'), 'error');
                 }
                 return;
             }
             // Success - reset reconnect attempts
             reconnectAttempts = 0;
-            updateStatus('Reconnected successfully!', 'success');
+            updateStatus(uiText('connect.pending'), 'success');
         } catch (error) {
             isReconnecting = false;
             console.error('Reconnection failed:', error);
@@ -770,7 +784,7 @@ function cleanup() {
     clearTimeout(bindTimer);
 
     remoteVideo.style.display = 'none';
-    placeholder.textContent = bindFailed ? BIND_FAILED_MESSAGE : PLACEHOLDER_IDLE;
+    placeholder.textContent = bindFailed ? uiText(BIND_FAILED_MESSAGE) : uiText('web.idle');
     placeholder.style.display = 'block';
     fullscreenBtn.disabled = true; // Disable fullscreen button
 
@@ -844,23 +858,23 @@ function setupDataChannel(session, channel) {
             if (!(remoteControl && remoteControl.enabled)) {
                 // "requestable": the host asks its user to approve control when we click "Enable control".
                 hostAllowsControl = message.authorized === true || message.requestable === true;
-                if (hostAllowsControl) updateStatus('Remote control is available. Click "Enable control".', 'success');
+                if (hostAllowsControl) updateStatus(uiText('control.request'), 'success');
                 updateControlButton();
             } else {
                 remoteControl.handleAuthorizationResponse(message);
-                updateStatus(message.authorized ? 'Remote control active'
-                    : message.reason === 'timeout' ? 'Nobody at the computer answered the control request'
-                    : 'The host did not allow remote control',
+                updateStatus(message.authorized ? uiText('control.active')
+                    : message.reason === 'timeout' ? uiText('web.denied')
+                    : uiText('web.denied'),
                     message.authorized ? 'success' : 'error');
                 updateControlButton();
             }
         } else if (message.type === 'approval_pending') {
             // The host's user is being asked (to allow the connection, or the control we requested).
             updateStatus(message.what === 'connection'
-                ? 'Waiting for the person at the computer to allow the connection...'
-                : 'Waiting for the person at the computer to allow control...', 'info');
+                ? uiText('control.wait')
+                : uiText('control.wait'), 'info');
         } else if (message.type === 'approval_denied') {
-            updateStatus('The person at the computer did not allow the connection', 'error');
+            updateStatus(uiText('connect.failed'), 'error');
         } else if (message.type === 'displays') {
             onDisplays(message);
         } else if (message.type === 'privacy_screen_state') {
@@ -871,7 +885,7 @@ function setupDataChannel(session, channel) {
             onHostFileMessage(message);
         } else if (message.type === 'authorization_revoked' && remoteControl) {
             remoteControl.disable();
-            updateStatus('The host revoked remote control', 'error');
+            updateStatus(uiText('web.denied'), 'error');
             updateControlButton();
         }
     };
@@ -881,10 +895,10 @@ function toggleControl() {
     if (!remoteControl) return;
     if (remoteControl.enabled) {
         remoteControl.disable();
-        updateStatus('Remote control disabled', 'info');
+        updateStatus(uiText('web.denied'), 'info');
     } else {
         remoteControl.enable(); // sends authorization_request; input flows after authorization_response
-        updateStatus('Requesting remote control...', 'info');
+        updateStatus(uiText('control.wait'), 'info');
     }
     updateControlButton();
 }
@@ -895,7 +909,7 @@ let hostAllowsControl = false;
 function updateControlButton() {
     if (!controlBtn) return;
     controlBtn.disabled = !remoteControl || (!hostAllowsControl && !remoteControl.enabled);
-    controlBtn.textContent = remoteControl && remoteControl.enabled ? 'Disable control' : 'Enable control';
+    controlBtn.textContent = remoteControl && remoteControl.enabled ? uiText('control.stop') : uiText('control.request');
     // Only while the host has authorized control: the host rejects the message otherwise.
     if (ctrlAltDelBtn) ctrlAltDelBtn.disabled = !(remoteControl && remoteControl.enabled && remoteControl.authorized);
     updatePrivacyButton();
@@ -923,7 +937,7 @@ function toggleRecording() {
     const stream = remoteVideo.srcObject;
     const session = sessions.current;
     if (!stream || !session || !session.verified || typeof MediaRecorder === 'undefined') {
-        updateStatus('Recording is not available in this browser or connection', 'error');
+        updateStatus(uiText('web.recordfailed'), 'error');
         return;
     }
     // Build and start the recorder BEFORE telling the host: if the browser throws here, the host was never told "on",
@@ -941,14 +955,14 @@ function toggleRecording() {
         recorder.onstop = () => { if (recording === rec) stopRecording(); else finishRecording(rec); };
         recorder.start(1000);
     } catch (err) {
-        updateStatus('Could not start recording: ' + err.message, 'error');
+        updateStatus(uiText('web.recordfailed'), 'error');
         return;
     }
     // Tell the host: if that does not work (connection gone), do not keep a recording behind its back.
     if (!sessions.send(session, { type: 'recording_state', on: true })) {
         rec.finished = true; // discard: no file for a recording the host was not told about
         recorder.stop();
-        updateStatus('Could not tell the host about the recording; not recording', 'error');
+        updateStatus(uiText('web.recordfailed'), 'error');
         return;
     }
     recording = rec;
@@ -959,13 +973,13 @@ function toggleRecording() {
 function updateRecordingIndicator() {
     if (!recording) {
         recIndicator.hidden = true;
-        recordBtn.textContent = 'Record';
+        recordBtn.textContent = uiText('web.record');
         return;
     }
     const s = Math.floor((Date.now() - recording.startedAt) / 1000);
-    recIndicator.textContent = `● REC ${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+    recIndicator.textContent = `${uiText('web.record')} ${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
     recIndicator.hidden = false;
-    recordBtn.textContent = 'Stop recording';
+    recordBtn.textContent = uiText('web.stoprecord');
 }
 
 // Stops the recording only if it belongs to this session (a late event of a replaced connection must not stop a newer one).
@@ -998,7 +1012,7 @@ function finishRecording(rec) {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
-    updateStatus(`Recording saved as ${a.download}`, 'success');
+    updateStatus(uiText('web.saved', { name: a.download }), 'success');
 }
 
 // ---- Privacy screen (the host's local monitor shows black; offered only when the host allowed it and control is active) ----
@@ -1013,7 +1027,7 @@ function updatePrivacyButton() {
     }
     if (!controlActive) privacyOn = false;
     privacyBtn.hidden = !(hostAllowsPrivacy && controlActive);
-    privacyBtn.textContent = privacyOn ? 'Privacy screen: on' : 'Privacy screen';
+    privacyBtn.textContent = privacyOn ? uiText('web.privacy_on') : uiText('web.privacy');
 }
 
 function togglePrivacy() {
@@ -1025,7 +1039,7 @@ function togglePrivacy() {
 function onPrivacyState(message) {
     privacyOn = message.enabled === true;
     updatePrivacyButton();
-    if (message.reason && !privacyOn) updateStatus('Privacy screen is off: ' + message.reason, 'info');
+    if (message.reason && !privacyOn) updateStatus(uiText('web.privacy'), 'info');
 }
 
 // ---- Display picker (shown when the host has several displays and control is active; the host refuses a switch without control) ----
@@ -1101,12 +1115,12 @@ async function sendClipboard() {
 function sendClipboardText(text, session = sessions.current) {
     if (!session || !session.verified || !sessions.isCurrent(session)) return;
     if (!text) {
-        updateStatus('Your clipboard has no text', 'info');
+        updateStatus(uiText('web.emptytext'), 'info');
         return;
     }
     const bytes = new TextEncoder().encode(text).length;
     if (bytes > CLIPBOARD_MAX_BYTES) {
-        updateStatus(`Clipboard text is too large (${bytes} bytes, max ${CLIPBOARD_MAX_BYTES}); not sent`, 'error');
+        updateStatus(uiText('web.textlarge'), 'error');
         return;
     }
     // Same shape as the .NET ClipboardMessage (ContentType 0 = Text).
@@ -1115,23 +1129,23 @@ function sendClipboardText(text, session = sessions.current) {
         data: { ContentType: 0, TextContent: text, SizeBytes: bytes, Timestamp: new Date().toISOString(), SequenceNumber: ++clipboardSequence }
     });
     if (new TextEncoder().encode(json).length > MAX_MESSAGE_BYTES) {
-        updateStatus('Clipboard text is too large once encoded; not sent', 'error');
+        updateStatus(uiText('web.textlarge'), 'error');
         return;
     }
     if (!sessions.send(session, json)) return;
-    updateStatus(`Clipboard sent to the host (${bytes} bytes)`, 'success');
+    updateStatus(uiText('web.textsent'), 'success');
 }
 
 function receiveHostClipboard(message) {
     const data = message.data;
     if (copyHostClipboardBtn.hidden || !data || data.ContentType !== 0 || typeof data.TextContent !== 'string' || !data.TextContent) return;
     if (new TextEncoder().encode(data.TextContent).length > CLIPBOARD_MAX_BYTES) {
-        updateStatus('The host sent clipboard text that is too large; ignored', 'error');
+        updateStatus(uiText('web.textlarge'), 'error');
         return;
     }
     hostClipboardText = data.TextContent;
     copyHostClipboardBtn.disabled = false;
-    updateStatus('The host sent clipboard text. Click "Copy host clipboard".', 'info');
+    updateStatus(uiText('web.textreceived'), 'info');
 }
 
 async function copyHostClipboard() {
@@ -1140,7 +1154,7 @@ async function copyHostClipboard() {
         await navigator.clipboard.writeText(hostClipboardText);
         hostClipboardText = null;
         copyHostClipboardBtn.disabled = true;
-        updateStatus('Host clipboard copied to your clipboard', 'success');
+        updateStatus(uiText('action.copied'), 'success');
     } catch {
         // writeText refused: show the text selected so the user can press Ctrl+C.
         showFallbackField('output');
@@ -1163,7 +1177,7 @@ function showFallbackField(kind) {
     const field = document.createElement(kind === 'input' ? 'input' : 'textarea');
     if (kind === 'input') {
         field.type = 'text';
-        field.placeholder = 'Paste here (Ctrl+V) to send';
+        field.placeholder = uiText('web.paste');
         field.addEventListener('paste', (event) => {
             event.preventDefault();
             const text = event.clipboardData ? event.clipboardData.getData('text/plain') : '';
@@ -1173,7 +1187,7 @@ function showFallbackField(kind) {
     } else {
         field.readOnly = true;
         field.rows = 2;
-        field.title = 'Press Ctrl+C to copy';
+        field.title = uiText('web.manualcopy');
         field.value = hostClipboardText;
         field.addEventListener('copy', (event) => {
             // Put the text on the clipboard ourselves: hiding the field below would otherwise remove the
@@ -1183,9 +1197,9 @@ function showFallbackField(kind) {
             hostClipboardText = null;
             copyHostClipboardBtn.disabled = true;
             hideFallbackField();
-            updateStatus('Host clipboard copied to your clipboard', 'success');
+            updateStatus(uiText('action.copied'), 'success');
         });
-        updateStatus('Press Ctrl+C to copy the host clipboard', 'info');
+        updateStatus(uiText('web.manualcopy'), 'info');
     }
     field.addEventListener('keydown', (event) => {
         event.stopPropagation();
@@ -1218,7 +1232,7 @@ function setFilesAllowed(allowed) {
 function onSendFileClick() {
     if (fileTransfer) {
         fileTransfer.cancelled = true; // second click cancels
-        updateStatus('Cancelling file transfer...', 'info');
+        updateStatus(uiText('web.cancelled'), 'info');
     } else {
         fileInput.click();
     }
@@ -1303,11 +1317,11 @@ async function sendFile(file) {
     // (PeerSession.kill) and every step below re-checks it before it sends.
     const session = sessions.current;
     if (!session || !session.verified || !session.filesAllowed || !session.channel || session.channel.readyState !== 'open') {
-        updateStatus('The host does not accept files', 'error');
+        updateStatus(uiText('web.filefailed'), 'error');
         return;
     }
     if (fileTransfer) {
-        updateStatus('A file is already being sent', 'info');
+        updateStatus(uiText('web.filewait'), 'info');
         return;
     }
 
@@ -1322,7 +1336,7 @@ async function sendFile(file) {
 
     try {
         send({ type: 'file_offer', id: t.id, name: file.name, size: file.size });
-        updateStatus(`Offering ${file.name} to the host...`, 'info');
+        updateStatus(uiText('web.filewait'), 'info');
         const answer = await nextHostReply(t);
         if (answer.type !== 'file_accept') throw new Error(`The host refused ${file.name}: ${answer.reason || answer.type}`);
 
@@ -1339,7 +1353,7 @@ async function sendFile(file) {
             const percent = Math.floor(sent * 100 / file.size);
             if (percent !== lastPercent) {
                 lastPercent = percent;
-                updateStatus(`Sending ${file.name} ${percent}% (click "Send file" to cancel)`, 'info');
+                updateStatus(uiText('web.filesending', { name: file.name, percent }), 'info');
             }
         }
 
@@ -1349,11 +1363,11 @@ async function sendFile(file) {
         await waitForChannelDrain(session.channel, 0, () => { if (t.replies.length) return true; abortIfStopped(); });
         const done = await nextHostReply(t);
         if (done.type !== 'file_done') throw new Error(`The host could not save ${file.name}: ${done.reason || done.type}`);
-        updateStatus(`Sent ${file.name} (saved on the host as ${done.savedAs})`, 'success');
+        updateStatus(uiText('web.filesent', { name: done.savedAs }), 'success');
     } catch (error) {
         try { send({ type: 'file_cancel', id: t.id }); } catch { /* connection went away or was replaced: nothing to tell */ }
-        if (error.message === 'cancelled') updateStatus(`Cancelled sending ${file.name}`, 'info');
-        else updateStatus(error.message, 'error');
+        if (error.message === 'cancelled') updateStatus(uiText('web.cancelled'), 'info');
+        else updateStatus(uiText('web.filefailed'), 'error');
     } finally {
         if (fileTransfer === t) fileTransfer = null;
         session.transfer = null;
@@ -1542,7 +1556,7 @@ function startStatsMonitoring() {
                     (remote && remote.candidateType === 'relay');
                 // The relay protocol (udp/tcp/tls) is reported on the local candidate.
                 const relayProtocol = local && local.relayProtocol ? ` (${local.relayProtocol})` : '';
-                connectionType = isRelay ? `relay${relayProtocol}` : 'direct';
+                connectionType = isRelay ? `${uiText('web.relay')}${relayProtocol}` : uiText('web.direct');
             }
 
             // Update UI with statistics
@@ -1608,7 +1622,7 @@ function startPingMonitoring(serverId) {
                 if (ws) ws.close();
                 return;
             }
-            updateStatus('Server not responding - disconnecting', 'error');
+            updateStatus(uiText('connect.failed'), 'error');
             disconnect();
             return;
         }
@@ -1653,7 +1667,7 @@ function toggleFullscreen() {
         } else if (videoContainer.msRequestFullscreen) { // IE11
             videoContainer.msRequestFullscreen();
         }
-        fullscreenBtn.textContent = 'Exit Fullscreen';
+        fullscreenBtn.textContent = uiText('web.exitfull');
     } else {
         // Exit fullscreen
         if (document.exitFullscreen) {
@@ -1663,24 +1677,23 @@ function toggleFullscreen() {
         } else if (document.msExitFullscreen) { // IE11
             document.msExitFullscreen();
         }
-        fullscreenBtn.textContent = 'Fullscreen';
+        fullscreenBtn.textContent = uiText('view.fullscreen');
     }
 }
 
 // Listen for fullscreen changes (ESC key or F11)
 document.addEventListener('fullscreenchange', () => {
     if (document.fullscreenElement) {
-        fullscreenBtn.textContent = 'Exit Fullscreen';
+        fullscreenBtn.textContent = uiText('web.exitfull');
     } else {
-        fullscreenBtn.textContent = 'Fullscreen';
+        fullscreenBtn.textContent = uiText('view.fullscreen');
     }
 });
 
-// When served by the SignalingServer itself (not opened from disk), use that host and hide the field: users of the
-// hosted viewer never need another server, the field only matters for a local copy opened from disk (development).
+// When served by the SignalingServer itself (not opened from disk), use that host: users of the
+// hosted viewer start with that service; the field remains available under Advanced.
 if (location.protocol.startsWith('http')) {
     const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
     const signalingInput = document.getElementById('signalingUrl');
     signalingInput.value = `${wsScheme}://${location.host}/signal`;
-    signalingInput.closest('.control-group').style.display = 'none'; // not .hidden: mobile.css sets display: flex
 }
