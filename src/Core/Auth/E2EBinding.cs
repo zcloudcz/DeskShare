@@ -21,7 +21,7 @@ namespace DeskShare.Core.Auth;
 ///
 /// The HMAC covers the role ("sender"/"viewer") so a peer cannot simply echo the other side's message back.
 /// Limit: the server can brute-force the 9-character passkey from <c>authKey</c> offline, but the passkey changes
-/// every 45 s and the check has a 10 s deadline, so this only helps an attacker who is very well equipped.
+/// every 60 s and the check has a 10 s deadline, so this only helps an attacker who is very well equipped.
 /// </remarks>
 public static class E2EBinding
 {

@@ -71,10 +71,10 @@ void main() {
       }
     });
 
-    test('expiration is the full 45 s from now', () {
-      expect(passkeyExpiration(DateTime.utc(2026, 1, 1, 0, 0, 0)), DateTime.utc(2026, 1, 1, 0, 0, 45));
-      // Just before an old slot boundary: still the full 45 s.
-      expect(passkeyExpiration(DateTime.utc(2026, 1, 1, 0, 0, 44, 999)), DateTime.utc(2026, 1, 1, 0, 1, 29, 999));
+    test('expiration is the full 60 s from now', () {
+      expect(passkeyExpiration(DateTime.utc(2026, 1, 1, 0, 0, 0)), DateTime.utc(2026, 1, 1, 0, 1, 0));
+      // Just before an old slot boundary: still the full 60 s.
+      expect(passkeyExpiration(DateTime.utc(2026, 1, 1, 0, 0, 44, 999)), DateTime.utc(2026, 1, 1, 0, 1, 44, 999));
     });
 
     test('credential wire value is the HKDF auth key, never the raw passkey', () {

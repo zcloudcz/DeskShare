@@ -1,3 +1,4 @@
+using DeskShare.DesktopAvalonia.Localization;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -14,6 +15,7 @@ public partial class SetPasswordDialog : Window
     public SetPasswordDialog()
     {
         InitializeComponent();
+        FlowDirection = Localization.Loc.Instance.Language == "ar" ? Avalonia.Media.FlowDirection.RightToLeft : Avalonia.Media.FlowDirection.LeftToRight;
         Opened += (_, _) => PasswordBox.Focus();
     }
 
@@ -24,7 +26,7 @@ public partial class SetPasswordDialog : Window
             ?? (password != ConfirmBox.Text ? "The two passwords are not the same." : null);
         if (error != null)
         {
-            ErrorText.Text = error;
+            ErrorText.Text = Loc.Instance.T("password.rules");
             ErrorText.IsVisible = true;
             return;
         }

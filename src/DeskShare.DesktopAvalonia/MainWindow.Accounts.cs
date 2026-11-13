@@ -1,3 +1,4 @@
+using DeskShare.DesktopAvalonia.Localization;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Media;
@@ -38,7 +39,7 @@ public partial class MainWindow
     {
         var signedIn = _account?.IsSignedIn == true;
         AccountNameText.Text = signedIn ? _account!.UserName : "";
-        SignInButton.Content = signedIn ? "Sign out" : "Sign in";
+        SignInButton.Content = signedIn ? Loc.Instance.T("account.signout") : Loc.Instance.T("account.signin");
         AddDeviceCard.IsVisible = signedIn;
         AddDeviceButton.IsEnabled = signedIn;
         MyDevicesCard.IsVisible = signedIn;
@@ -59,7 +60,7 @@ public partial class MainWindow
         {
             // Includes the user closing the browser tab (MsalClientException "authentication_canceled").
             _logger.LogWarning("Sign-in failed: {Message}", ex.Message);
-            AccountNameText.Text = "Sign-in failed";
+            AccountNameText.Text = Loc.Instance.T("error.title");
         }
         finally
         {
@@ -74,7 +75,7 @@ public partial class MainWindow
         if (_account is null) return;
         if (!_serverManager.IsRunning || _serverManager.ServerId is not { } serverId)
         {
-            AddDeviceStatusText.Text = "Start the server first: the device must be online to be added.";
+            AddDeviceStatusText.Text = Loc.Instance.T("share.start");
             return;
         }
 
@@ -84,12 +85,12 @@ public partial class MainWindow
             var key = DeviceClaimProof.ClaimKey(new ServerOwnerSecretStore().GetOrCreate());
             await _account.Api.ClaimAsync(await _account.GetTokenAsync(), Environment.MachineName, unattended: false,
                 (accountKey, timestamp, nonce) => Task.FromResult((serverId, DeviceClaimProof.Compute(key, serverId, accountKey, timestamp, nonce))));
-            AddDeviceStatusText.Text = $"Added {ServerIdGenerator.FormatServerIdForDisplay(serverId)} to your devices.";
+            AddDeviceStatusText.Text = Loc.Instance.T("action.done") + " " + ServerIdGenerator.FormatServerIdForDisplay(serverId);
             _ = LoadMyDevicesAsync();
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or TaskCanceledException)
         {
-            AddDeviceStatusText.Text = "Not added: " + ex.Message;
+            AddDeviceStatusText.Text = Loc.Instance.T("error.title");
         }
         finally
         {
@@ -110,17 +111,17 @@ public partial class MainWindow
                 .Select(d => new MyDeviceItem(
                     d.ServerId,
                     d.Name,
-                    ServerIdGenerator.FormatServerIdForDisplay(d.ServerId) + (d.Unattended ? "  (unattended)" : ""),
-                    d.Online ? "Online" : "Last seen " + d.LastSeen.ToLocalTime().ToString("g"),
+                    ServerIdGenerator.FormatServerIdForDisplay(d.ServerId) + (d.Unattended ? " (" + Loc.Instance.T("unattended.label") + ")" : ""),
+                    d.Online ? Loc.Instance.T("status.online") : Loc.Instance.T("status.offline") + " " + d.LastSeen.ToLocalTime().ToString("g"),
                     d.Online ? Brushes.Green : Brushes.Gray))
                 .ToList();
             MyDevicesStatusText.Text = devices.Devices.Count == 0
-                ? "No devices yet. Use \"Add this computer to my devices\" in Server Mode on each computer."
-                : "Click a device to fill in its Server ID. The passkey or password is still needed.";
+                ? Loc.Instance.T("devices.empty")
+                : Loc.Instance.T("connect.code_required");
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or TaskCanceledException)
         {
-            MyDevicesStatusText.Text = "Could not load your devices: " + ex.Message;
+            MyDevicesStatusText.Text = Loc.Instance.T("error.title");
         }
     }
 
@@ -143,7 +144,7 @@ public partial class MainWindow
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or TaskCanceledException)
         {
-            MyDevicesStatusText.Text = "Not removed: " + ex.Message;
+            MyDevicesStatusText.Text = Loc.Instance.T("error.title");
             return;
         }
         await LoadMyDevicesAsync();

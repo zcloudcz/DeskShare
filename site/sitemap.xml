@@ -1,7 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
-  <url><loc>https://deskshare.zcloud.cz/</loc><xhtml:link rel="alternate" hreflang="cs" href="https://deskshare.zcloud.cz/"/><xhtml:link rel="alternate" hreflang="en" href="https://deskshare.zcloud.cz/en/"/></url>
-  <url><loc>https://deskshare.zcloud.cz/en/</loc><xhtml:link rel="alternate" hreflang="cs" href="https://deskshare.zcloud.cz/"/><xhtml:link rel="alternate" hreflang="en" href="https://deskshare.zcloud.cz/en/"/></url>
-  <url><loc>https://deskshare.zcloud.cz/zasady-ochrany-osobnich-udaju/</loc><xhtml:link rel="alternate" hreflang="cs" href="https://deskshare.zcloud.cz/zasady-ochrany-osobnich-udaju/"/><xhtml:link rel="alternate" hreflang="en" href="https://deskshare.zcloud.cz/en/privacy/"/></url>
-  <url><loc>https://deskshare.zcloud.cz/en/privacy/</loc><xhtml:link rel="alternate" hreflang="cs" href="https://deskshare.zcloud.cz/zasady-ochrany-osobnich-udaju/"/><xhtml:link rel="alternate" hreflang="en" href="https://deskshare.zcloud.cz/en/privacy/"/></url>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://deskshare.zcloud.cz/</loc></url>
+  <url><loc>https://deskshare.zcloud.cz/sk/</loc></url>
+  <url><loc>https://deskshare.zcloud.cz/en/</loc></url>
+  <url><loc>https://deskshare.zcloud.cz/de/</loc></url>
+  <url><loc>https://deskshare.zcloud.cz/pl/</loc></url>
+  <url><loc>https://deskshare.zcloud.cz/uk/</loc></url>
+  <url><loc>https://deskshare.zcloud.cz/fr/</loc></url>
+  <url><loc>https://deskshare.zcloud.cz/es/</loc></url>
+  <url><loc>https://deskshare.zcloud.cz/it/</loc></url>
+  <url><loc>https://deskshare.zcloud.cz/pt/</loc></url>
+  <url><loc>https://deskshare.zcloud.cz/ru/</loc></url>
+  <url><loc>https://deskshare.zcloud.cz/tr/</loc></url>
+  <url><loc>https://deskshare.zcloud.cz/ar/</loc></url>
+  <url><loc>https://deskshare.zcloud.cz/zh/</loc></url>
+  <url><loc>https://deskshare.zcloud.cz/ja/</loc></url>
+  <url><loc>https://deskshare.zcloud.cz/ko/</loc></url>
+  <url><loc>https://deskshare.zcloud.cz/id/</loc></url>
+  <url><loc>https://deskshare.zcloud.cz/zasady-ochrany-osobnich-udaju/</loc></url>
+  <url><loc>https://deskshare.zcloud.cz/en/privacy/</loc></url>
 </urlset>

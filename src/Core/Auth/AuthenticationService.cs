@@ -14,11 +14,11 @@ namespace DeskShare.Core.Auth;
 ///
 /// How it works:
 /// 1. Server ID: Generated from MAC address (stable identifier for this machine)
-/// 2. Passkey: random 9-character code (rotates every 45 seconds), registered with the SignalingServer
+/// 2. Passkey: random 9-character code (rotates every 60 seconds), registered with the SignalingServer
 /// 3. The passkey proves that someone physically has access to the server machine
 ///
 /// Why time-based passkeys?
-/// - Short expiration (45s) limits window for unauthorized access
+/// - Short expiration (60s) limits window for unauthorized access
 /// - Auto-rotation means if someone sees the passkey, it's only valid briefly
 /// - No need to store passwords - a fresh random one is generated on demand
 /// </remarks>
@@ -28,7 +28,7 @@ public sealed class AuthenticationService
     /// Passkey validity duration in seconds.
     /// After this time, a new passkey must be generated.
     /// </summary>
-    public const int PasskeyValiditySeconds = 45;
+    public const int PasskeyValiditySeconds = 60;
 
     /// <summary>
     /// Passkey length (9 characters for user-friendliness).
@@ -82,9 +82,9 @@ public sealed class AuthenticationService
     /// Calculates the expiration time for a passkey generated at the given timestamp.
     /// </summary>
     /// <param name="timestamp">The timestamp when passkey was generated.</param>
-    /// <returns>DateTime when the passkey expires (timestamp + 45 seconds).</returns>
+    /// <returns>DateTime when the passkey expires (timestamp + 60 seconds).</returns>
     public static DateTime GetPasskeyExpiration(DateTime timestamp) =>
-        // The full validity from the moment the passkey is made. (It used to end at the next 45 s slot boundary of the
+        // The full validity from the moment the passkey is made. (It used to end at the next slot boundary of the
         // day, so a passkey made just before a boundary was valid for a second or two and a viewer typing it was rejected.)
         timestamp.ToUniversalTime().AddSeconds(PasskeyValiditySeconds);
 

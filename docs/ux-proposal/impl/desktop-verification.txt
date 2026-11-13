@@ -1,0 +1,52 @@
+DeskShare Avalonia UX implementation verification
+Date: 2026-11-13 UTC
+
+Changes
+- Role-based home, sharing and helper screens, with secondary features under Advanced.
+- Live localization: 17 embedded dictionaries, 118 keys each, named placeholders, saved/automatic language resolution.
+- Arabic layout and text direction; device numbers, codes and their inputs remain LTR.
+- Bundled SIL OFL Arabic and CJK fonts, with notices copied into the app output.
+- Sharing startup leaves preparation state and exposes Stop sharing. Remote control remains opt-in.
+- Notification and confirmation buttons are localized, with negative answers focused by default.
+- Approval uses the existing cancellation/30-second gate; close/Escape deny and the safe button gets focus.
+- Actual input authorization is forwarded through ServerManager to the permission summary and Stop control.
+- Code validity is 60 seconds in Core and mobile; format, charset and authentication protocol are unchanged.
+
+Build
+$ dotnet build DeskShare.sln -c Release
+Passed on Linux, including the Avalonia app and UnitTests.
+
+Tests
+$ dotnet test tests/UnitTests -c Release
+Baseline: passed 1045, failed 32, skipped 32.
+After: passed 1052, failed 32, skipped 32.
+All 32 failing test names match the baseline exactly; no new failures.
+Seven new language-resolution and dictionary/placeholder checks passed.
+Failure-name SHA256: 09442d0d7bfd8643e42d63a9bd3db6c222bdcb22af96ebb0711f83787d8862e6
+
+Live UI verification
+Ran the Release app on DISPLAY=:0 and registered real sharing against wss://app.deskshare.zcloud.cz/signal.
+The initial machine lacked libavformat.so.62. Installed the same ignored FFmpeg 8.1 LGPL shared artifacts used by release.yml into the local ffmpeg directory, rebuilt, and verified real X11 capture (79 frames captured and converted in an initial short run).
+No FFmpeg binaries or downloaded archives are included in the commits; release packaging already supplies these libraries.
+Captured and visually reviewed home, sharing and helper screens in cs/en/de/ar.
+Files desktop-<screen>-<language>.png use 1280x800 captures with a 1280x740 client window.
+Files ending -default.png use the default 1100x740 client window, including window-manager decoration.
+Arabic font fallback, text direction and clipping were corrected during screenshot review.
+Verified that pressing Enter at the safety prompt takes the safe answer, and explicit Share my screen starts sharing.
+Language changes were exercised while the same sharing session remained running.
+The Arabic validation notification was checked, including its localized OK button.
+The app was stopped and language selection restored to Automatic after verification.
+
+Rotation evidence
+~/.config/RemoteDesktop.NET/logs/desktop-avalonia-20261113.log:
+Generated-new-code timestamps 19:21:52.488 and 19:22:52.489 UTC during a successfully initialized X11 capture session.
+Interval: 60.001 seconds. Each logged validity deadline is 60 seconds after generation.
+Final capture statistics for that session: 3016 captured, 3016 converted, 0 transmitted (no viewer connected).
+Code values are intentionally omitted here.
+
+Limits
+- The 32 existing Windows input-controller test failures remain on Linux.
+- Native Windows/macOS UI and unattended-service installation were not exercised here.
+- No second-device end-to-end control, file-transfer or recording session was performed.
+- Flutter SDK is unavailable, so the updated mobile expiration expectations were not executed.
+- Translations are implementation translations and have not had native-speaker review.

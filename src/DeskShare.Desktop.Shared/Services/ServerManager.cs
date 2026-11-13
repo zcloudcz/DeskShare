@@ -28,6 +28,9 @@ public class ServerManager : IDisposable
     /// The token is cancelled on timeout or when the viewer leaves; the UI must close the question then.
     /// </summary>
     public Func<CancellationToken, Task<bool>>? ControlApprovalPrompt { get; set; }
+
+    public event EventHandler<bool>? RemoteControlChanged;
+    public void RevokeRemoteControl() => _screenSenderService?.RevokeRemoteControl();
     public string? ServerId => _serverId;
 
     /// <summary>Raised when the sender replaced the Server ID after a collision on the signaling server.</summary>
@@ -120,6 +123,8 @@ public class ServerManager : IDisposable
 
             var serviceLogger = _loggerFactory.CreateLogger<ScreenSenderService>();
             _screenSenderService = new ScreenSenderService(serviceLogger, configuration) { ControlApprovalPrompt = ControlApprovalPrompt };
+
+            _screenSenderService.RemoteControlChanged += (_, allowed) => RemoteControlChanged?.Invoke(this, allowed);
 
             // Subscribe to passkey changes
             _screenSenderService.PasskeyChanged += (sender, args) =>

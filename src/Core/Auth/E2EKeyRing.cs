@@ -4,7 +4,7 @@ namespace DeskShare.Core.Auth;
 /// The sender's e2e keys, one per passkey it has issued recently (see <see cref="E2EBinding"/>).
 /// </summary>
 /// <remarks>
-/// Why a list and not just the current key: the passkey rotates every 45 s. A viewer that authenticated with the
+/// Why a list and not just the current key: the passkey rotates every 60 s. A viewer that authenticated with the
 /// previous passkey is still connecting when the sender rotates, so the sender must still accept that key for a while.
 /// A key that already verified a viewer is kept longer, because that viewer reconnects (resume token, trusted
 /// client) with the SAME key and the passkey it typed is long gone. Everything lives in memory only.

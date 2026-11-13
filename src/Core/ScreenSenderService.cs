@@ -53,6 +53,11 @@ public class ScreenSenderService : IHostedService, IDisposable
     /// </summary>
     public Func<CancellationToken, Task<bool>>? ControlApprovalPrompt { get; set; }
 
+    /// <summary>Reports actual input authorization, including revocation from the session banner.</summary>
+    public event EventHandler<bool>? RemoteControlChanged;
+
+    public void RevokeRemoteControl() => _webrtcSessionWithInput?.RevokeInputAuthorization();
+
     /// <summary>Unattended agent: asks whether a verified viewer may connect at all. Null admits everyone. Set before <see cref="StartAsync"/>.</summary>
     public Func<CancellationToken, Task<bool>>? ViewerAdmission { get; set; }
 
@@ -291,6 +296,8 @@ public class ScreenSenderService : IHostedService, IDisposable
                 // session that takes ownership of it (the finally block below disposes the session).
                 var serilogLogger = Serilog.Log.ForContext<IInputController>();
                 var inputController = PlatformServiceFactory.CreateInputController(serilogLogger);
+                inputController.AuthorizationStateChanged += (_, state) =>
+                    RemoteControlChanged?.Invoke(this, state == InputAuthorizationState.Authorized);
 
                 // Create session with input support
                 var serilogSessionLogger = Serilog.Log.ForContext<WebRTCSessionWithInput>();
@@ -632,7 +639,7 @@ public class ScreenSenderService : IHostedService, IDisposable
         }
     }
 
-    // Logged once, not on every 45 s re-registration.
+    // Logged once, not on every 60 s re-registration.
     private bool _permanentKeyWarned;
 
     /// <summary>

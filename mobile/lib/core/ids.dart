@@ -10,7 +10,7 @@ const passkeyCharset = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 const passkeyLength = 9;
 
 /// Seconds a passkey stays valid before the sender rotates it.
-const passkeyValiditySeconds = 45;
+const passkeyValiditySeconds = 60;
 
 final _digitsOnly = RegExp(r'^[1-9]\d{8}$');
 
@@ -52,7 +52,7 @@ String generatePasskey([Random? random]) {
       passkeyLength, (_) => passkeyCharset.codeUnitAt(r.nextInt(passkeyCharset.length))));
 }
 
-/// The full validity from now (`AuthenticationService.GetPasskeyExpiration`). It used to end at the next 45 s slot
+/// The full validity from now (`AuthenticationService.GetPasskeyExpiration`). It used to end at the next slot
 /// boundary, so a passkey made just before one was valid for a second and the viewer typing it was rejected.
 DateTime passkeyExpiration(DateTime now) => now.toUtc().add(const Duration(seconds: passkeyValiditySeconds));
 

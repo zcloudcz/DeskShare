@@ -1,271 +1,88 @@
-<!--
-    Fullscreen projection window for remote desktop viewing.
-    Avalonia equivalent of WPF's ProjectionWindow.xaml.
-
-    Key changes:
-    - xmlns changed to Avalonia namespace
-    - Image element is the same in Avalonia
-    - ProgressBar is the same in Avalonia
-    - WindowState="Maximized" → same in Avalonia
-    - KeyDown event handler → same syntax
-    - Cursor="Hand" → same in Avalonia
--->
-<Window xmlns="https://github.com/avaloniaui"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        x:Class="DeskShare.DesktopAvalonia.Windows.ProjectionWindow"
-        Title="DeskShare - Viewer"
-        Icon="/deskshare.png"
-        Height="800" Width="1280"
-        WindowState="Maximized"
-        Background="Black"
-        KeyDown="Window_KeyDown">
-
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:loc="clr-namespace:DeskShare.DesktopAvalonia.Localization" x:Class="DeskShare.DesktopAvalonia.Windows.ProjectionWindow" Title="DeskShare" Icon="/deskshare.png" Height="800" Width="1280" WindowState="Maximized" Background="Black" KeyDown="Window_KeyDown">
+    <Window.Styles>
+        <Style Selector="TextBlock">
+            <Setter Property="TextAlignment" Value="{Binding TextAlignment, Source={x:Static loc:Loc.Instance}}"/>
+            <Setter Property="FlowDirection" Value="{Binding FlowDirection, Source={x:Static loc:Loc.Instance}}"/>
+        </Style>
+        <Style Selector="TextBox /template/ TextBlock">
+            <Setter Property="FlowDirection" Value="LeftToRight"/>
+            <Setter Property="TextAlignment" Value="Left"/>
+        </Style>
+    </Window.Styles>
     <Grid>
         <!-- Video Display Area -->
-        <Border x:Name="VideoContainer"
-                Background="Black"
-                HorizontalAlignment="Stretch"
-                VerticalAlignment="Stretch">
+        <Border x:Name="VideoContainer" Background="Black" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" FlowDirection="LeftToRight">
             <Grid>
                 <!-- Video Image Display -->
-                <Border Background="#1E1E1E"
-                        HorizontalAlignment="Center"
-                        VerticalAlignment="Center">
-                    <Image x:Name="VideoImage"
-                         Stretch="Uniform"/>
+                <Border Background="#1E1E1E" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Image x:Name="VideoImage" Stretch="Uniform"/>
                 </Border>
-
                 <!-- Connection Status Overlay -->
-                <Border x:Name="ConnectionStatusOverlay"
-                      Background="#CC000000"
-                      HorizontalAlignment="Center"
-                      VerticalAlignment="Center"
-                      Padding="40"
-                      CornerRadius="8"
-                      IsVisible="True">
+                <Border x:Name="ConnectionStatusOverlay" Background="#CC000000" HorizontalAlignment="Center" VerticalAlignment="Center" Padding="40" CornerRadius="8" IsVisible="True">
                     <StackPanel>
-                        <TextBlock x:Name="StatusText"
-                                 Text="Connecting to server..."
-                                 FontSize="24"
-                                 Foreground="White"
-                                 HorizontalAlignment="Center"
-                                 Margin="0,0,0,15"/>
-
-                        <ProgressBar IsIndeterminate="True"
-                                   Width="300"
-                                   Height="6"
-                                   Background="#444444"
-                                   Foreground="#0078D4"/>
-
-                        <TextBlock x:Name="ServerIdText"
-                                 FontSize="14"
-                                 Foreground="#CCCCCC"
-                                 HorizontalAlignment="Center"
-                                 Margin="0,15,0,0"
-                                 FontFamily="Consolas"/>
+                        <TextBlock x:Name="StatusText" Text="{Binding [connect.pending], Source={x:Static loc:Loc.Instance}}" FontSize="24" Foreground="White" HorizontalAlignment="Center" Margin="0,0,0,15"/>
+                        <ProgressBar IsIndeterminate="True" Width="300" Height="6" Background="#444444" Foreground="#0078D4"/>
+                        <TextBlock x:Name="ServerIdText" FontSize="14" Foreground="#CCCCCC" HorizontalAlignment="Center" Margin="0,15,0,0" FontFamily="Consolas" FlowDirection="LeftToRight" Classes="ltr"/>
                     </StackPanel>
                 </Border>
-
                 <!-- Top Toolbar -->
-                <Border x:Name="TopToolbar"
-                      Background="#CC1E1E1E"
-                      Height="50"
-                      VerticalAlignment="Top"
-                      IsVisible="False">
-                    <Grid Margin="15,0" ColumnDefinitions="Auto,*,Auto">
+                <Border x:Name="TopToolbar" Background="#CC1E1E1E" VerticalAlignment="Top" IsVisible="False">
+                    <Grid Margin="15,8" ColumnDefinitions="Auto,*,Auto" RowDefinitions="Auto,Auto">
                         <!-- Connection Info -->
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <TextBlock Text="Connected to:"
-                                     Foreground="White"
-                                     FontSize="14"
-                                     VerticalAlignment="Center"
-                                     Margin="0,0,10,0"/>
-                            <TextBlock x:Name="ConnectedServerIdText"
-                                     Foreground="#0078D4"
-                                     FontSize="14"
-                                     FontFamily="Consolas"
-                                     FontWeight="Bold"
-                                     VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding [number.theirs], Source={x:Static loc:Loc.Instance}}" Foreground="White" FontSize="14" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <TextBlock x:Name="ConnectedServerIdText" Foreground="#0078D4" FontSize="14" FontFamily="Consolas" FontWeight="Bold" VerticalAlignment="Center" FlowDirection="LeftToRight" Classes="ltr"/>
                         </StackPanel>
-
                         <!-- Stats Display -->
-                        <StackPanel Grid.Column="1"
-                                  Orientation="Horizontal"
-                                  HorizontalAlignment="Center"
-                                  VerticalAlignment="Center">
-                            <Border Background="#333333"
-                                  CornerRadius="4"
-                                  Padding="10,5"
-                                  Margin="5,0">
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <Border Background="#333333" CornerRadius="4" Padding="10,5" Margin="5,0">
                                 <StackPanel Orientation="Horizontal">
-                                    <TextBlock Text="FPS: " Foreground="#CCCCCC" FontSize="12"/>
+                                    <TextBlock Text="{Binding [viewer.fps], Source={x:Static loc:Loc.Instance}}" Foreground="#CCCCCC" FontSize="12"/>
                                     <TextBlock x:Name="FpsText" Text="30" Foreground="White" FontSize="12" FontWeight="Bold"/>
                                 </StackPanel>
                             </Border>
-
-                            <Border Background="#333333"
-                                  CornerRadius="4"
-                                  Padding="10,5"
-                                  Margin="5,0">
+                            <Border Background="#333333" CornerRadius="4" Padding="10,5" Margin="5,0">
                                 <StackPanel Orientation="Horizontal">
-                                    <TextBlock Text="Latency: " Foreground="#CCCCCC" FontSize="12"/>
+                                    <TextBlock Text="{Binding [viewer.latency], Source={x:Static loc:Loc.Instance}}" Foreground="#CCCCCC" FontSize="12"/>
                                     <TextBlock x:Name="LatencyText" Text="45ms" Foreground="White" FontSize="12" FontWeight="Bold"/>
                                 </StackPanel>
                             </Border>
-
-                            <Border Background="#333333"
-                                  CornerRadius="4"
-                                  Padding="10,5"
-                                  Margin="5,0">
+                            <Border Background="#333333" CornerRadius="4" Padding="10,5" Margin="5,0">
                                 <StackPanel Orientation="Horizontal">
-                                    <TextBlock Text="Quality: " Foreground="#CCCCCC" FontSize="12"/>
+                                    <TextBlock Text="{Binding [viewer.quality], Source={x:Static loc:Loc.Instance}}" Foreground="#CCCCCC" FontSize="12"/>
                                     <TextBlock x:Name="QualityText" Text="1080p" Foreground="White" FontSize="12" FontWeight="Bold"/>
                                 </StackPanel>
                             </Border>
                         </StackPanel>
-
                         <!-- Control Buttons -->
-                        <StackPanel Grid.Column="2"
-                                  Orientation="Horizontal"
-                                  VerticalAlignment="Center">
-                            <CheckBox x:Name="ShareClipboardCheckBox"
-                                    Content="Share my clipboard with the host"
-                                    Foreground="White"
-                                    FontSize="12"
-                                    Margin="5,0"
-                                    IsEnabled="False"
-                                    IsChecked="False"
-                                    IsCheckedChanged="ShareClipboard_Changed"/>
-
+                        <WrapPanel Grid.Row="1" Grid.ColumnSpan="3" Margin="0,8,0,0">
+                            <CheckBox x:Name="ShareClipboardCheckBox" Content="{Binding [advanced.clipboard], Source={x:Static loc:Loc.Instance}}" Foreground="White" FontSize="12" Margin="5,0" IsEnabled="False" IsChecked="False" IsCheckedChanged="ShareClipboard_Changed"/>
                             <!-- Visible only while the host's user can approve control (see OnControlRequestStateChanged). -->
-                            <Button x:Name="RequestControlButton"
-                                  Content="Request control"
-                                  Background="#0078D4"
-                                  Foreground="White"
-                                  BorderThickness="0"
-                                  Padding="12,8"
-                                  Margin="5,0"
-                                  Cursor="Hand"
-                                  IsVisible="False"
-                                  Click="RequestControl_Click"/>
-
-                            <Button x:Name="SendFileButton"
-                                  Content="Send file..."
-                                  Background="#444444"
-                                  Foreground="White"
-                                  BorderThickness="0"
-                                  Padding="12,8"
-                                  Margin="5,0"
-                                  Cursor="Hand"
-                                  IsVisible="False"
-                                  Click="SendFile_Click"/>
-
+                            <Button x:Name="RequestControlButton" Content="{Binding [control.request], Source={x:Static loc:Loc.Instance}}" Background="#0078D4" Foreground="White" BorderThickness="0" Padding="12,8" Margin="5,0" Cursor="Hand" IsVisible="False" Click="RequestControl_Click"/>
+                            <Button x:Name="SendFileButton" Content="{Binding [action.sendfile], Source={x:Static loc:Loc.Instance}}" Background="#444444" Foreground="White" BorderThickness="0" Padding="12,8" Margin="5,0" Cursor="Hand" IsVisible="False" Click="SendFile_Click"/>
                             <!-- Visible only while the host has several displays and authorized control (see OnDisplaysChanged). -->
-                            <ComboBox x:Name="DisplayCombo"
-                                  MinWidth="200"
-                                  Margin="5,0"
-                                  IsVisible="False"
-                                  ToolTip.Tip="Switch the shared display"
-                                  SelectionChanged="Display_Changed"/>
-
-                            <ToggleButton x:Name="PrivacyButton"
-                                  Content="Privacy screen"
-                                  Background="#444444"
-                                  Foreground="White"
-                                  BorderThickness="0"
-                                  Padding="12,8"
-                                  Margin="5,0"
-                                  Cursor="Hand"
-                                  IsVisible="False"
-                                  Click="Privacy_Click"/>
-
+                            <ComboBox x:Name="DisplayCombo" MinWidth="200" Margin="5,0" IsVisible="False" ToolTip.Tip="{Binding [display.label], Source={x:Static loc:Loc.Instance}}" SelectionChanged="Display_Changed"/>
+                            <ToggleButton x:Name="PrivacyButton" Content="{Binding [privacy.label], Source={x:Static loc:Loc.Instance}}" Background="#444444" Foreground="White" BorderThickness="0" Padding="12,8" Margin="5,0" Cursor="Hand" IsVisible="False" Click="Privacy_Click"/>
                             <!-- Recording is the viewer's own copy; the host is told (see ProjectionWindow.Recording.cs). -->
-                            <TextBlock x:Name="RecIndicator"
-                                  Foreground="#FF5555"
-                                  FontWeight="Bold"
-                                  FontSize="13"
-                                  VerticalAlignment="Center"
-                                  Margin="5,0"
-                                  IsVisible="False"/>
-
-                            <ToggleButton x:Name="RecordButton"
-                                  Content="Record"
-                                  Background="#444444"
-                                  Foreground="White"
-                                  BorderThickness="0"
-                                  Padding="12,8"
-                                  Margin="5,0"
-                                  Cursor="Hand"
-                                  Click="Record_Click"/>
-
-                            <Button x:Name="FullscreenButton"
-                                  Content="Fullscreen"
-                                  Background="#444444"
-                                  Foreground="White"
-                                  BorderThickness="0"
-                                  Padding="12,8"
-                                  Margin="5,0"
-                                  Cursor="Hand"
-                                  Click="ToggleFullscreen_Click"/>
-
-                            <Button x:Name="CtrlAltDelButton"
-                                  Content="Ctrl+Alt+Del"
-                                  Background="#444444"
-                                  Foreground="White"
-                                  BorderThickness="0"
-                                  Padding="12,8"
-                                  Margin="5,0"
-                                  Cursor="Hand"
-                                  IsEnabled="False"
-                                  Click="CtrlAltDel_Click"/>
-
-                            <Button Content="Disconnect"
-                                  Background="#D13438"
-                                  Foreground="White"
-                                  BorderThickness="0"
-                                  Padding="12,8"
-                                  Margin="5,0"
-                                  Cursor="Hand"
-                                  Click="Disconnect_Click"/>
-                        </StackPanel>
+                            <TextBlock x:Name="RecIndicator" Foreground="#FF5555" FontWeight="Bold" FontSize="13" VerticalAlignment="Center" Margin="5,0" IsVisible="False"/>
+                            <ToggleButton x:Name="RecordButton" Content="{Binding [action.record], Source={x:Static loc:Loc.Instance}}" Background="#444444" Foreground="White" BorderThickness="0" Padding="12,8" Margin="5,0" Cursor="Hand" Click="Record_Click"/>
+                            <Button x:Name="FullscreenButton" Content="{Binding [action.fullscreen], Source={x:Static loc:Loc.Instance}}" Background="#444444" Foreground="White" BorderThickness="0" Padding="12,8" Margin="5,0" Cursor="Hand" Click="ToggleFullscreen_Click"/>
+                            <Button x:Name="CtrlAltDelButton" Content="Ctrl+Alt+Del" Background="#444444" Foreground="White" BorderThickness="0" Padding="12,8" Margin="5,0" Cursor="Hand" IsEnabled="False" Click="CtrlAltDel_Click"/>
+                            <Button Content="{Binding [connect.leave], Source={x:Static loc:Loc.Instance}}" Background="#D13438" Foreground="White" BorderThickness="0" Padding="12,8" Margin="5,0" Cursor="Hand" Click="Disconnect_Click"/>
+                        </WrapPanel>
                     </Grid>
                 </Border>
-
                 <!-- Shown after a recording was saved -->
-                <Border x:Name="RecordingSavedBar"
-                      Background="#CC000000"
-                      CornerRadius="4"
-                      Padding="15,8"
-                      VerticalAlignment="Bottom"
-                      HorizontalAlignment="Center"
-                      Margin="0,0,0,20"
-                      IsVisible="False">
+                <Border x:Name="RecordingSavedBar" Background="#CC000000" CornerRadius="4" Padding="15,8" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,20" IsVisible="False">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock x:Name="RecordingSavedText"
-                                 Foreground="White"
-                                 FontSize="14"
-                                 VerticalAlignment="Center"/>
-                        <Button Content="Open folder"
-                              Margin="12,0,0,0"
-                              Click="OpenRecordingFolder_Click"/>
-                        <Button Content="Close"
-                              Margin="6,0,0,0"
-                              Click="CloseRecordingSaved_Click"/>
+                        <TextBlock x:Name="RecordingSavedText" Foreground="White" FontSize="14" VerticalAlignment="Center"/>
+                        <Button Content="{Binding [action.folder], Source={x:Static loc:Loc.Instance}}" Margin="12,0,0,0" Click="OpenRecordingFolder_Click"/>
+                        <Button Content="{Binding [action.close], Source={x:Static loc:Loc.Instance}}" Margin="6,0,0,0" Click="CloseRecordingSaved_Click"/>
                     </StackPanel>
                 </Border>
-
                 <!-- Fullscreen hint -->
-                <Border x:Name="FullscreenHint"
-                      Background="#CC000000"
-                      CornerRadius="4"
-                      Padding="15,8"
-                      VerticalAlignment="Top"
-                      HorizontalAlignment="Center"
-                      Margin="0,20,0,0"
-                      IsVisible="False">
-                    <TextBlock Text="Press F11 or ESC to exit fullscreen"
-                             Foreground="White"
-                             FontSize="14"/>
+                <Border x:Name="FullscreenHint" Background="#CC000000" CornerRadius="4" Padding="15,8" VerticalAlignment="Top" HorizontalAlignment="Center" Margin="0,20,0,0" IsVisible="False">
+                    <TextBlock Text="{Binding [viewer.fullscreen_hint], Source={x:Static loc:Loc.Instance}}" Foreground="White" FontSize="14"/>
                 </Border>
             </Grid>
         </Border>

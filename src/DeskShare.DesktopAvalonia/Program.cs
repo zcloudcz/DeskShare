@@ -1,4 +1,5 @@
 using Avalonia;
+using Avalonia.Media;
 using Velopack;
 
 namespace DeskShare.DesktopAvalonia;
@@ -40,6 +41,13 @@ public class Program
     public static AppBuilder BuildAvaloniaApp()
         => AppBuilder.Configure<App>()
             .UsePlatformDetect()       // Automatically detect Windows/macOS/Linux
+            .With(new FontManagerOptions
+            {
+                FontFallbacks = [
+                    new FontFallback { FontFamily = new FontFamily("avares://DeskShare/Assets/Fonts#Noto Sans Arabic") },
+                    new FontFallback { FontFamily = new FontFamily("avares://DeskShare/Assets/Fonts#Noto Sans CJK SC") }
+                ]
+            })
             .WithInterFont()           // Use the Inter font family (bundled with Avalonia.Fonts.Inter)
             .LogToTrace();             // Log Avalonia framework messages to Trace output
 }

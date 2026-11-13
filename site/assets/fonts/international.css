@@ -1,0 +1,6 @@
+/* Noto fonts, SIL OFL 1.1. Self-hosted text subsets; refresh with _src/fetch_fonts.py. */
+@font-face { font-family: "DeskShare Arabic"; font-style: normal; font-weight: 400 600; font-display: swap; src: url("noto-arabic.ttf"); unicode-range: U+0600-06FF; }
+@font-face { font-family: "DeskShare CJK"; font-style: normal; font-weight: 400 600; font-display: swap; src: url("noto-cjk.ttf"); unicode-range: U+3000-9FFF,U+FF00-FFEF; }
+@font-face { font-family: "DeskShare Korean"; font-style: normal; font-weight: 400 600; font-display: swap; src: url("noto-korean.ttf"); unicode-range: U+AC00-D7AF; }
+@font-face { font-family: "DeskShare Cyrillic"; font-style: normal; font-weight: 400 600; font-display: swap; src: url("noto-cyrillic.ttf"); unicode-range: U+0400-052F; }
+@font-face { font-family: "DeskShare Japanese"; font-style: normal; font-weight: 400 600; font-display: swap; src: url("noto-japanese.ttf"); unicode-range: U+3000-9FFF,U+FF00-FFEF; }

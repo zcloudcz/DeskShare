@@ -26,7 +26,7 @@ abstract class SenderSession extends ChangeNotifier {
   /// "server-123456789"
   String get serverId;
 
-  /// Canonical passkey of the current 45 s slot, empty while not sharing.
+  /// Canonical passkey of the current 60 s slot, empty while not sharing.
   String get passkey;
   DateTime? get passkeyValidTo;
   bool get viewerConnected;
@@ -605,7 +605,7 @@ class WebRtcSenderSession extends SenderSession {
   }
 
   @visibleForTesting
-  void addDebugKey(List<int> e2eKey) => _e2eKeys.add(e2eKey, DateTime.now().toUtc().add(const Duration(seconds: 45)));
+  void addDebugKey(List<int> e2eKey) => _e2eKeys.add(e2eKey, DateTime.now().toUtc().add(const Duration(seconds: passkeyValiditySeconds)));
 
   @visibleForTesting
   bool get controlGranted => _controlGrantedForSession;
