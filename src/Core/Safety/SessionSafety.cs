@@ -84,6 +84,12 @@ internal sealed class SessionSafety : IDisposable
         }
     }
 
+    /// <summary>
+    /// Raised (outside the lock) with the number of verified viewers, 0 or 1, whenever it changes. The sender has one
+    /// viewer session at a time: a new verified viewer replaces the previous one.
+    /// </summary>
+    public event Action<int>? ViewerCountChanged;
+
     /// <summary>For the display switch callback of the service (the switch happens outside the data channel manager).</summary>
     public void DisplaySwitched(string displayName) => _audit.Write(AuditEvents.DisplaySwitched(displayName));
 
@@ -95,14 +101,17 @@ internal sealed class SessionSafety : IDisposable
     {
         // A new id per viewer connection, short enough to read in the Event Viewer.
         var id = Guid.NewGuid().ToString("N")[..8];
+        bool wasIdle;
         lock (_recordingLock)
         {
+            wasIdle = _active == null;
             _sessionId = id;
             _active = peer;
             _recording = false; // a new session starts without recording until its viewer says so
         }
         _audit.Write(AuditEvents.SessionStarted(id, RemoteAddressOf(peer), endToEndVerified: true));
         _model.ViewerStarted();
+        if (wasIdle) ViewerCountChanged?.Invoke(1);
 
         // The data channel usually reports the end, but a connection that dies without closing its channel only changes state.
         if (peer.Connection is { } connection)
@@ -136,6 +145,7 @@ internal sealed class SessionSafety : IDisposable
         if (sequence != 0) _model.RecordingChanged(false, sequence);
         _audit.Write(AuditEvents.SessionEnded(sessionId));
         _model.ViewerEnded();
+        ViewerCountChanged?.Invoke(0);
     }
 
     private void OnRecordingChanged(PeerContext peer)

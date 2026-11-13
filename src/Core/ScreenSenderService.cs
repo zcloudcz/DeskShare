@@ -147,6 +147,9 @@ public class ScreenSenderService : IHostedService, IDisposable
     /// </summary>
     public event EventHandler<string>? ServerIdChanged;
 
+    /// <summary>Raised with the number of connected, verified viewers (0 or 1) whenever it changes.</summary>
+    public event EventHandler<int>? ViewerCountChanged;
+
     /// <summary>Raised when a file from the viewer was received and verified (the UI shows a notice).</summary>
     public event EventHandler<ReceivedFile>? FileReceived;
 
@@ -173,7 +176,22 @@ public class ScreenSenderService : IHostedService, IDisposable
 
         _stoppingCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        _executingTask = ExecuteAsync(_stoppingCts.Token);
+        _logger.LogInformation("ScreenSenderService executing...");
+        _logger.LogInformation("Server ID: {ServerId}", ServerId);
+        _logger.LogInformation("Signaling Server: {SignalingServer}", _configuration.SignalingServerUrl);
+        _logger.LogInformation("Target FPS: {TargetFps}", _configuration.TargetFps);
+
+        IsRunning = true;
+
+        // The first passkey is announced synchronously, before StartAsync returns (ServerManager.CurrentPasskey relies on it).
+        AnnounceNewPasskey();
+
+        // The rest runs on the thread pool, never on the caller's SynchronizationContext. The desktop app starts the
+        // service from its UI thread, and start-up blocks (capture probe waits for the first frame, closing FFmpeg
+        // waits for its decode loop). On the Avalonia UI thread that froze the window and, because PasskeyChanged is
+        // marshalled to the UI, the passkey rotation as well.
+        var stoppingToken = _stoppingCts.Token;
+        _executingTask = Task.Run(() => ExecuteAsync(stoppingToken));
         WireStreamingSignal(_executingTask);
 
         if (_executingTask.IsCompleted)
@@ -207,21 +225,17 @@ public class ScreenSenderService : IHostedService, IDisposable
 
     private async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("ScreenSenderService executing...");
-        _logger.LogInformation("Server ID: {ServerId}", ServerId);
-        _logger.LogInformation("Signaling Server: {SignalingServer}", _configuration.SignalingServerUrl);
-        _logger.LogInformation("Target FPS: {TargetFps}", _configuration.TargetFps);
-
-        IsRunning = true;
-
-        // Generate initial passkey
-        await GenerateNewPasskeyAsync(allowServerIdChange: true);
+        // Register the initial passkey (announced by StartAsync)
+        await RegisterWithSignalingServerAsync(allowServerIdChange: true);
 
         // Start passkey rotation task
         _passkeyRotationTask = Task.Run(async () => await PasskeyRotationLoopAsync(stoppingToken), stoppingToken);
 
         try
         {
+            // Stopped while registering: do not start capture just to tear it down again.
+            stoppingToken.ThrowIfCancellationRequested();
+
             // Get screen resolution
             int width, height;
             using (var tempCapturer = PlatformServiceFactory.CreateScreenCapturer(_configuration.AdapterIndex, _configuration.OutputIndex, _configuration.TargetFps, drawPointer: _pointerDrawn))
@@ -310,6 +324,7 @@ public class ScreenSenderService : IHostedService, IDisposable
                 ApplyIceServers(_webrtcSessionWithInput.VideoSource);
                 _webrtcSessionWithInput.EnableE2EBinding(_e2eKeys);
                 _safety = new SessionSafety(_webrtcSessionWithInput, _configuration, AuditLog.Default, _logger, ControlApprovalPrompt, ViewerAdmission);
+                _safety.ViewerCountChanged += count => ViewerCountChanged?.Invoke(this, count);
 
                 inputController.SetCapturedDisplay(InputRectFor(displays[currentDisplay]));
                 _webrtcSessionWithInput.DataChannel.DisplaySwitcher = new DisplaySwitchService(displays, currentDisplay, async (display, stillAllowed) =>
@@ -424,8 +439,12 @@ public class ScreenSenderService : IHostedService, IDisposable
             _pipeline?.Dispose();
             _pipeline = null;
 
-            _safety?.Dispose();
-            _safety = null;
+            if (_safety != null)
+            {
+                _safety.Dispose();
+                _safety = null;
+                ViewerCountChanged?.Invoke(this, 0); // the session is gone with its viewer
+            }
             _webrtcSessionWithInput?.Dispose();
             _webrtcSessionWithInput = null;
 
@@ -474,6 +493,15 @@ public class ScreenSenderService : IHostedService, IDisposable
     /// </summary>
     internal async Task GenerateNewPasskeyAsync(bool allowServerIdChange = false)
     {
+        AnnounceNewPasskey();
+
+        // Register with SignalingServer
+        await RegisterWithSignalingServerAsync(allowServerIdChange);
+    }
+
+    /// <summary>Generates a new passkey and raises <see cref="PasskeyChanged"/>; registration is up to the caller.</summary>
+    private void AnnounceNewPasskey()
+    {
         var now = DateTime.UtcNow;
         _currentPasskey = AuthenticationService.GeneratePasskey();
         _passkeyValidTo = AuthenticationService.GetPasskeyExpiration(now);
@@ -487,9 +515,6 @@ public class ScreenSenderService : IHostedService, IDisposable
             Passkey = _currentPasskey,
             ValidTo = _passkeyValidTo
         });
-
-        // Register with SignalingServer
-        await RegisterWithSignalingServerAsync(allowServerIdChange);
     }
 
     /// <summary>

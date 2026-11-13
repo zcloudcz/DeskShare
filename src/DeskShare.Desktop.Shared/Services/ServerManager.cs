@@ -42,7 +42,6 @@ public class ServerManager : IDisposable
 
     // Events for UI updates
     public event EventHandler<int>? ConnectionCountChanged;
-    public event EventHandler<ServerStats>? StatsUpdated;
     public event EventHandler<PasskeyChangedEventArgs>? PasskeyChanged;
 
     /// <summary>Raised when a viewer sent a file that was saved on this machine.</summary>
@@ -131,6 +130,12 @@ public class ServerManager : IDisposable
 
             _screenSenderService.FileReceived += (sender, file) => FileReceived?.Invoke(this, file);
 
+            _screenSenderService.ViewerCountChanged += (sender, count) =>
+            {
+                Interlocked.Exchange(ref _activeConnections, count);
+                ConnectionCountChanged?.Invoke(this, count);
+            };
+
             _screenSenderService.ServerIdChanged += (sender, newId) =>
             {
                 _serverId = newId;
@@ -175,7 +180,8 @@ public class ServerManager : IDisposable
             _isRunning = false;
             _serverId = null;
             CurrentPasskey = null;
-            _activeConnections = 0;
+            if (Interlocked.Exchange(ref _activeConnections, 0) != 0)
+                ConnectionCountChanged?.Invoke(this, 0);
 
             _logger.LogInformation("Server stopped successfully");
         }
@@ -190,15 +196,4 @@ public class ServerManager : IDisposable
     {
         StopAsync().GetAwaiter().GetResult();
     }
-}
-
-/// <summary>
-/// Server performance statistics from Prometheus metrics endpoint.
-/// </summary>
-public class ServerStats
-{
-    public int ActiveConnections { get; set; }
-    public int CurrentFps { get; set; }
-    public double CpuUsage { get; set; }
-    public double MemoryUsageMb { get; set; }
 }
