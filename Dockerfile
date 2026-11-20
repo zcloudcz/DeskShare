@@ -4,7 +4,7 @@
 
 # ---- BUILD STAGE ----
 # This stage compiles the application and produces optimized release binaries.
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
 # Copy all source files into the build container
@@ -19,7 +19,7 @@ RUN dotnet publish src/SignalingServer/DeskShare.SignalingServer.csproj -c Relea
 
 # ---- RUNTIME STAGE ----
 # This stage uses the minimal ASP.NET runtime image (no SDK, no build tools).
-FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 
 # Copy the published application from the build stage

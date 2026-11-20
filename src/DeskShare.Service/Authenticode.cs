@@ -12,7 +12,11 @@ internal static class Authenticode
     public static string? SignerThumbprint(string path)
     {
         if (!IsValid(path)) return null;
+        // X509CertificateLoader has no Authenticode counterpart; CreateFromSignedFile is still the supported way to
+        // read the signer of a PE file (SYSLIB0057 targets loading raw certificate blobs, not signed files).
+#pragma warning disable SYSLIB0057
         try { return new X509Certificate2(X509Certificate.CreateFromSignedFile(path)).Thumbprint; }
+#pragma warning restore SYSLIB0057
         catch (System.Security.Cryptography.CryptographicException) { return null; }
     }
 

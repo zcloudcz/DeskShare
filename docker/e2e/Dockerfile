@@ -1,6 +1,6 @@
 # Linux E2E image: real headless sender + real .NET viewer (ClientManager) on a virtual X display.
 # Build context is the repo root:  docker build -f docker/e2e/Dockerfile .
-FROM mcr.microsoft.com/dotnet/sdk:8.0
+FROM mcr.microsoft.com/dotnet/sdk:10.0
 
 # xvfb              - virtual X display the sender captures (x11grab) and injects input into (XTest)
 # xdotool           - lets the test read the real pointer position

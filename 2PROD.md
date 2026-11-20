@@ -429,7 +429,7 @@ has a Docker setup.
 
 1. **Create `Dockerfile` in project root:**
    - Multi-stage build: restore → build → publish → runtime.
-   - Base image: `mcr.microsoft.com/dotnet/aspnet:8.0`.
+   - Base image: `mcr.microsoft.com/dotnet/aspnet:10.0`.
    - Expose ports 5151 (HTTPS) and 9090 (metrics).
    - Include health check: `HEALTHCHECK CMD curl -f http://localhost:5151/health`.
 

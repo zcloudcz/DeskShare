@@ -1,8 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- Target net8.0 for cross-platform compatibility (used by both WPF and Avalonia projects) -->
-    <TargetFramework>net8.0</TargetFramework>
+    <!-- Target net10.0 for cross-platform compatibility (used by both WPF and Avalonia projects) -->
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <!-- Required for unsafe memory operations in VideoSink frame rendering -->
@@ -22,8 +22,8 @@
   <!-- NuGet packages shared by both WPF and Avalonia desktop clients -->
   <ItemGroup>
     <!-- Configuration & DI -->
-    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.11" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.11" />
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.15" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.15" />
 
     <!-- Logging with Serilog -->
     <PackageReference Include="Serilog" Version="4.3.0" />

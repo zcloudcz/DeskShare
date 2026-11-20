@@ -9,7 +9,7 @@ FROM archlinux:latest
 # Bump the date deliberately (and re-run the test) to move to newer sway/portal/PipeWire versions.
 RUN echo 'Server = https://archive.archlinux.org/repos/2026/10/21/$repo/os/$arch' > /etc/pacman.d/mirrorlist
 
-# dotnet-sdk-8.0, aspnet-runtime-8.0 - build and run the sender and the test assembly (it references ASP.NET)
+# dotnet-sdk, aspnet-runtime (.NET 10) - build and run the sender and the test assembly (it references ASP.NET)
 # sway, swaybg                    - headless wlroots compositor and a solid-colour background the test looks for
 # xdg-desktop-portal(-wlr)        - the ScreenCast portal the sender talks to over D-Bus (wlr has no RemoteDesktop)
 # pipewire, wireplumber           - the video stream; wireplumber links the sender's stream to the portal's node
@@ -19,7 +19,7 @@ RUN echo 'Server = https://archive.archlinux.org/repos/2026/10/21/$repo/os/$arch
 # mirror minute does not fail the whole job.
 RUN for attempt in 1 2 3 4; do \
         pacman -Syyuu --noconfirm --needed --disable-download-timeout \
-            dotnet-sdk-8.0 aspnet-runtime-8.0 sway swaybg xdg-desktop-portal xdg-desktop-portal-wlr pipewire wireplumber \
+            dotnet-sdk aspnet-runtime sway swaybg xdg-desktop-portal xdg-desktop-portal-wlr pipewire wireplumber \
             gst-plugin-pipewire gst-plugins-base dbus libxcb alsa-lib curl xz ca-certificates \
         && break; \
         [ "$attempt" = 4 ] && exit 1; echo "pacman failed, retrying ($attempt)"; sleep 30; \
