@@ -1,6 +1,6 @@
 # Linux E2E image: real headless sender + real .NET viewer (ClientManager) on a virtual X display.
 # Build context is the repo root:  docker build -f docker/e2e/Dockerfile .
-FROM mcr.microsoft.com/dotnet/sdk:8.0
+FROM mcr.microsoft.com/dotnet/sdk:10.0
 
 # xvfb              - virtual X display the sender captures (x11grab) and injects input into (XTest)
 # xdotool           - lets the test read the real pointer position
@@ -8,11 +8,11 @@ FROM mcr.microsoft.com/dotnet/sdk:8.0
 #                     Xvfb grabs the root window as black, so xsetroot cannot be used)
 # xclip             - lets the clipboard tests set and read the sender display's real X clipboard
 # xterm, xfonts-base - a text window the typing test types into (xterm needs the fixed font)
-# libxtst6, libx11-6, libxcb*, libasound2 - native libs the sender P/Invokes (libX11, libXtst)
+# libxtst6, libx11-6, libxcb*, libasound2t64 - native libs the sender P/Invokes (libX11, libXtst)
 #                     and that FFmpeg's x11grab device links against
 RUN apt-get update && apt-get install -y --no-install-recommends \
         xvfb xdotool xclip x11-utils xterm xfonts-base libxtst6 libx11-6 \
-        libxcb1 libxcb-shm0 libxcb-xfixes0 libxcb-shape0 libasound2 \
+        libxcb1 libxcb-shm0 libxcb-xfixes0 libxcb-shape0 libasound2t64 \
         curl xz-utils ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

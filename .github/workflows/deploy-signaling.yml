@@ -31,10 +31,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup .NET 8
+      - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Publish SignalingServer
         run: dotnet publish src/SignalingServer/DeskShare.SignalingServer.csproj -c Release -o publish
@@ -49,6 +49,16 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # The publish is framework-dependent: the App Service runtime stack must match the TargetFramework.
+      # Idempotent, so it is safe on every deploy.
+      - name: Set App Service runtime to .NET 10
+        run: >
+          az webapp config set
+          --resource-group "$(az webapp list --query "[?name=='deskshare-signaling'].resourceGroup" -o tsv)"
+          --name deskshare-signaling
+          --linux-fx-version "DOTNETCORE|10.0"
+          --output none
 
       - name: Deploy to Azure App Service
         uses: azure/webapps-deploy@v3

@@ -12,7 +12,7 @@ public sealed class VideoEncoderFactoryTests
 {
     private static string? FindFfmpegFolder()
     {
-        // Walk up from bin/Release/net8.0 to the repo root.
+        // Walk up from bin/Release/net10.0 to the repo root.
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir != null; dir = dir.Parent)
         {
             var candidate = Path.Combine(dir.FullName, "src", "DeskShare.DesktopAvalonia", "ffmpeg");

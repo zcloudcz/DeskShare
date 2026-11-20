@@ -2,7 +2,7 @@
 
   <!-- Pure logic shared by the Windows service, its elevated installer and the desktop app (no Windows APIs here except the few marked [SupportedOSPlatform("windows")], so it is unit-testable anywhere). -->
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>

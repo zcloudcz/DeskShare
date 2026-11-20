@@ -18,10 +18,10 @@
     <PackageReference Include="MessageBox.Avalonia" Version="3.1.6" />
 
     <!-- Configuration & DI -->
-    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.11" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.11" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.11" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.11" />
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.15" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.15" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.15" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.15" />
 
     <!-- Logging with Serilog -->
     <PackageReference Include="Serilog.Extensions.Hosting" Version="9.0.0" />
@@ -33,7 +33,7 @@
     <PackageReference Include="SIPSorceryMedia.FFmpeg" Version="10.0.16" />
     <PackageReference Include="Velopack" Version="1.2.161" />
     <!-- Status of the unattended-access Windows service (Server Mode tab) -->
-    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.1" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.15" />
     <!-- Optional ZCLOUD Login sign-in for "My devices" (system browser + loopback redirect), see Services/AccountSession.cs -->
     <PackageReference Include="Microsoft.Identity.Client" Version="4.90.0" />
   </ItemGroup>
@@ -55,8 +55,8 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <!-- Target net8.0 (cross-platform) instead of net8.0-windows (WPF) -->
-    <TargetFramework>net8.0</TargetFramework>
+    <!-- Target net10.0 (cross-platform) instead of net10.0-windows (WPF) -->
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <!-- Required for unsafe memory operations in VideoSink frame rendering -->
