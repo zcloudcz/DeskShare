@@ -78,3 +78,7 @@ certs/
 .env
 # FFmpeg native DLLs (downloaded, ~140 MB)
 src/DeskShare.DesktopAvalonia/ffmpeg/
+
+# Local build output and agent worktrees
+/artifacts/
+/.claude/worktrees/
