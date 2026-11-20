@@ -9,7 +9,7 @@ FROM archlinux:latest
 # Bump the date deliberately (and re-run the test) to move to newer sway/portal/PipeWire versions.
 RUN echo 'Server = https://archive.archlinux.org/repos/2026/10/21/$repo/os/$arch' > /etc/pacman.d/mirrorlist
 
-# dotnet-sdk, aspnet-runtime (.NET 10) - build and run the sender and the test assembly (it references ASP.NET)
+# icu                             - globalization data for the Microsoft .NET 10 SDK installed below
 # sway, swaybg                    - headless wlroots compositor and a solid-colour background the test looks for
 # xdg-desktop-portal(-wlr)        - the ScreenCast portal the sender talks to over D-Bus (wlr has no RemoteDesktop)
 # pipewire, wireplumber           - the video stream; wireplumber links the sender's stream to the portal's node
@@ -19,7 +19,7 @@ RUN echo 'Server = https://archive.archlinux.org/repos/2026/10/21/$repo/os/$arch
 # mirror minute does not fail the whole job.
 RUN for attempt in 1 2 3 4; do \
         pacman -Syyuu --noconfirm --needed --disable-download-timeout \
-            dotnet-sdk aspnet-runtime sway swaybg xdg-desktop-portal xdg-desktop-portal-wlr pipewire wireplumber \
+            icu sway swaybg xdg-desktop-portal xdg-desktop-portal-wlr pipewire wireplumber \
             gst-plugin-pipewire gst-plugins-base dbus libxcb alsa-lib curl xz ca-certificates \
         && break; \
         [ "$attempt" = 4 ] && exit 1; echo "pacman failed, retrying ($attempt)"; sleep 30; \
@@ -29,6 +29,15 @@ RUN for attempt in 1 2 3 4; do \
     && setcap -r /usr/bin/sway \
     # Every desktop has a machine id; the image does not, and the D-Bus client reads it.
     && mkdir -p /var/lib/dbus && dbus-uuidgen > /etc/machine-id && ln -sf /etc/machine-id /var/lib/dbus/machine-id
+
+# .NET 10 SDK from Microsoft, not Arch's source-built dotnet-sdk: that one lacks the package-pruning data for
+# Microsoft.AspNetCore.App (NETSDK1226) and fails the build of the ASP.NET-referencing test assembly.
+RUN curl -sSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh \
+    && bash /tmp/dotnet-install.sh --channel 10.0 --install-dir /usr/share/dotnet \
+    && ln -sf /usr/share/dotnet/dotnet /usr/bin/dotnet \
+    && rm /tmp/dotnet-install.sh
+ENV DOTNET_ROOT=/usr/share/dotnet \
+    DOTNET_CLI_TELEMETRY_OPTOUT=1
 
 # FFmpeg 8.1 LGPL shared libs, same build as the X11 E2E image and the release.
 RUN curl -sSL -o /tmp/ffmpeg.tar.xz "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-lgpl-shared-8.1.tar.xz" \
