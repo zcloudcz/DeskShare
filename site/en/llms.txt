@@ -1,0 +1,35 @@
+# DeskShare
+
+> DeskShare is a free, open source app for remote computer help: you show your screen to someone you trust, and they connect in the browser or in the app.
+
+- What it is: screen sharing and remote help over WebRTC with low latency and end-to-end encrypted media (DTLS/SRTP), directly or through a TURN relay.
+- Who it is for: people who need help with their computer from someone they trust, and the people who help them. An MSI package is available for companies.
+- How it works: download DeskShare, choose "I need help" and tell your helper your number and code. The helper enters them in the browser or app and sees your screen.
+- Safety: the code changes every 60 seconds. You approve mouse and keyboard control for every connection; without an answer the request is denied after 30 seconds. You can stop sharing at any time.
+- Price: free.
+- Platforms: Windows (Setup .exe, Portable .zip, MSI), macOS (Apple Silicon and Intel .pkg), Linux (AppImage, beta). The helper can also connect from a web browser.
+- Operator: Martin Zahálka, Boskovice, Czech Republic, company ID (IČO) 07783809.
+- Contact: martin@zcloud.cz
+- Source code: https://github.com/zcloudcz/DeskShare
+- Czech version (main): https://deskshare.zcloud.cz/llms.txt
+
+## Pages
+
+- [DeskShare (English)](https://deskshare.zcloud.cz/en/): home page in English, three-step guide, safety tips and downloads.
+- [DeskShare (Czech)](https://deskshare.zcloud.cz/): home page in Czech.
+- [Privacy](https://deskshare.zcloud.cz/en/privacy/): how DeskShare processes personal data (website, app, signaling server and TURN relay).
+- [Connect in your browser](https://app.deskshare.zcloud.cz/webclient/index.html?lang=en): web viewer for the helper, who enters the other person's number and code.
+
+## Downloads
+
+- [Windows Setup .exe](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Setup.exe): Windows installer.
+- [Windows Portable .zip](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Portable.zip): portable version, no installation.
+- [MSI for companies](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-x64.msi): package for company deployment.
+- [macOS Apple Silicon .pkg](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-osx-Setup.pkg): installer for Apple Silicon Macs.
+- [macOS Intel .pkg](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-osx-x64-Setup.pkg): installer for Intel Macs.
+- [Linux AppImage](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare.AppImage): Linux version (beta).
+
+## Optional
+
+- [Other languages](https://deskshare.zcloud.cz/sitemap.xml): sitemap with all 17 language versions (sk, de, pl, uk, fr, es, it, pt, ru, tr, ar, zh, ja, ko, id) and the privacy pages.
+- [GitHub](https://github.com/zcloudcz/DeskShare): source code and releases.

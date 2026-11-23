@@ -54,3 +54,17 @@ all 17 pages at 390 px with both menus open without horizontal overflow. All ten
 required screenshots were visually reviewed; missing glyphs found in the first
 pass were corrected with the bundled fonts. No app or authentication changes
 are part of the landing-site implementation.
+
+## GEO a SEO (povinné)
+
+- `llms.txt` (česky, `/llms.txt`) a `en/llms.txt` (anglicky) jsou ručně psané
+  statické soubory. Při změně textů, cen, platforem nebo stránek je upravte
+  ve stejném commitu. Jen fakta ze stránek, nic nevymýšlet.
+- JSON-LD (`@graph`: SoftwareApplication, Organization, WebSite) generuje
+  `build.py` (`jsonld()`) do každé jazykové stránky. FAQPage přidejte jen
+  s reálnou FAQ sekcí a přesně jejími otázkami a odpověďmi.
+- `sitemap.xml` generuje build, `robots.txt` na ni odkazuje a neblokuje AI
+  crawlery (GPTBot, OAI-SearchBot, ClaudeBot, PerplexityBot, Google-Extended).
+- Každá stránka má title, description, canonical, og:* a hreflang.
+- Obsah je ve statickém HTML, ne až po JavaScriptu.
+- Nikde dlouhá pomlčka (U+2014).
