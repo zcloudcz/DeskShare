@@ -1,3 +1,14 @@
 User-agent: *
 Allow: /
+
+# AI search and answer crawlers are welcome.
+User-agent: GPTBot
+User-agent: OAI-SearchBot
+User-agent: ChatGPT-User
+User-agent: ClaudeBot
+User-agent: Claude-SearchBot
+User-agent: PerplexityBot
+User-agent: Google-Extended
+Allow: /
+
 Sitemap: https://deskshare.zcloud.cz/sitemap.xml

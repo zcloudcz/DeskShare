@@ -1,0 +1,35 @@
+# DeskShare
+
+> DeskShare je bezplatná aplikace s otevřeným zdrojovým kódem pro vzdálenou pomoc s počítačem: ukážete svou obrazovku někomu, komu důvěřujete, a ten se připojí v prohlížeči nebo v aplikaci.
+
+- Co to je: sdílení obrazovky a vzdálená pomoc přes WebRTC s nízkým zpožděním a koncovým šifrováním (DTLS/SRTP), přímo nebo přes přenosovou službu TURN.
+- Pro koho: pro lidi, kteří potřebují pomoct s počítačem od někoho, komu důvěřují, a pro ty, kdo pomáhají. Pro firmy je k dispozici MSI balíček.
+- Jak to funguje: stáhnete DeskShare, zvolíte „Potřebuji pomoc“ a sdělíte své číslo a kód. Pomáhající je zadá v prohlížeči nebo aplikaci a uvidí vaši obrazovku.
+- Bezpečnost: kód se mění každých 60 sekund. Ovládání myši a klávesnice povolujete u každého připojení, bez odpovědi se žádost po 30 sekundách zamítne. Sdílení lze kdykoli zastavit.
+- Cena: zdarma.
+- Platformy: Windows (Setup .exe, Portable .zip, MSI), macOS (Apple Silicon a Intel .pkg), Linux (AppImage, beta). Pomáhající se může připojit i z webového prohlížeče.
+- Provozovatel: Martin Zahálka, Boskovice, IČO 07783809.
+- Kontakt: martin@zcloud.cz
+- Zdrojový kód: https://github.com/zcloudcz/DeskShare
+- English version: https://deskshare.zcloud.cz/en/llms.txt
+
+## Stránky
+
+- [DeskShare](https://deskshare.zcloud.cz/): hlavní stránka česky, postup ve třech krocích, bezpečnostní rady a odkazy ke stažení.
+- [DeskShare English](https://deskshare.zcloud.cz/en/): hlavní stránka anglicky.
+- [Ochrana osobních údajů](https://deskshare.zcloud.cz/zasady-ochrany-osobnich-udaju/): jak DeskShare zpracovává osobní údaje (web, aplikace, signaling server a TURN relay).
+- [Připojit se v prohlížeči](https://app.deskshare.zcloud.cz/webclient/index.html?lang=cs): webový prohlížeč obrazovky pro pomáhajícího, zadá číslo a kód od druhého člověka.
+
+## Ke stažení
+
+- [Windows Setup .exe](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Setup.exe): instalátor pro Windows.
+- [Windows Portable .zip](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-win-Portable.zip): přenosná verze bez instalace.
+- [MSI pro firmy](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-x64.msi): balíček pro firemní nasazení.
+- [macOS Apple Silicon .pkg](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-osx-Setup.pkg): instalátor pro Macy s Apple Silicon.
+- [macOS Intel .pkg](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare-osx-x64-Setup.pkg): instalátor pro Macy s procesorem Intel.
+- [Linux AppImage](https://github.com/zcloudcz/DeskShare/releases/latest/download/DeskShare.AppImage): verze pro Linux (beta).
+
+## Optional
+
+- [Další jazyky](https://deskshare.zcloud.cz/sitemap.xml): sitemap se všemi 17 jazykovými verzemi (sk, de, pl, uk, fr, es, it, pt, ru, tr, ar, zh, ja, ko, id) a stránkami o ochraně osobních údajů.
+- [GitHub](https://github.com/zcloudcz/DeskShare): zdrojový kód a vydání.
